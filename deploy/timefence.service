@@ -1,0 +1,25 @@
+[Unit]
+Description=TimeFence for AdGuard Home
+Documentation=https://github.com/sbhas2k/timefence-adguardhome
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=timefence
+Group=timefence
+WorkingDirectory=/opt/timefence
+EnvironmentFile=/etc/timefence/timefence.env
+ExecStart=/opt/timefence/venv/bin/uvicorn timefence.main:app --host ${LISTEN_HOST} --port ${LISTEN_PORT} --no-server-header --proxy-headers
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/timefence
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,53 @@
+# Example: TimeFence next to an official AdGuard Home container.
+#
+# 1. cp .env.example .env and set ADGUARD_PASSWORD (or point
+#    ADGUARD_PASSWORD_FILE at a file inside the container).
+# 2. docker compose up -d
+# 3. open http://<host>:8099/ and complete the first-run setup.
+#
+# NOTE: AdGuard Home needs port 53, so it uses host networking below. If you
+# already run AdGuard on the host, delete the adguardhome service and point
+# ADGUARD_URL at it instead.
+
+services:
+  adguardhome:
+    image: adguard/adguardhome:latest
+    container_name: adguardhome
+    network_mode: host
+    volumes:
+      - adguard-work:/opt/adguardhome/work
+      - adguard-conf:/opt/adguardhome/conf
+    restart: unless-stopped
+
+  timefence:
+    image: ghcr.io/sbhas2k/timefence-adguardhome:latest
+    container_name: timefence
+    environment:
+      ADGUARD_URL: http://host.docker.internal:3000
+      ADGUARD_USER: admin
+      ADGUARD_PASSWORD_FILE: /run/secrets/adguard_password
+      BASE_PATH: /
+      TZ: UTC
+      LISTEN_HOST: 0.0.0.0
+      LISTEN_PORT: "8099"
+      DATA_DIR: /data
+      SECURE_COOKIES: "false"
+      RECONCILE_INTERVAL: "30"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - timefence-data:/data
+    ports:
+      - "127.0.0.1:8099:8099"
+    secrets:
+      - adguard_password
+    restart: unless-stopped
+
+secrets:
+  adguard_password:
+    file: ./adguard_password.txt
+
+volumes:
+  adguard-work:
+  adguard-conf:
+  timefence-data:

@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends tzdata ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --system --uid 10001 --user-group --home-dir /app --shell /usr/sbin/nologin timefence \
+ && install -d -o timefence -g timefence -m 700 /data
+
+WORKDIR /app
+COPY pyproject.toml README.md LICENSE ./
+COPY src ./src
+RUN pip install . && rm -rf /app/src
+
+USER timefence:timefence
+ENV DATA_DIR=/data \
+    BASE_PATH=/ \
+    LISTEN_HOST=0.0.0.0 \
+    LISTEN_PORT=8099 \
+    SECURE_COOKIES=false \
+    TZ=UTC \
+    LOG_LEVEL=INFO
+
+EXPOSE 8099
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8099/healthz', timeout=3).status==200 else 1)"
+
+CMD ["uvicorn", "timefence.main:app", "--host", "0.0.0.0", "--port", "8099", "--no-server-header", "--proxy-headers"]
