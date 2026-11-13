@@ -1,0 +1,207 @@
+"""All user-facing strings in one place (English for 0.1.0).
+
+Adding a language means adding another dict to STRINGS and a locale switch; the
+templates and the JavaScript UI both read from here (via /api/i18n).
+"""
+
+from __future__ import annotations
+
+LANG = "en"
+
+STRINGS: dict[str, dict[str, str]] = {
+    "en": {
+        # --- generic -----------------------------------------------------
+        "app.title": "TimeFence for AdGuard Home",
+        "app.tagline": "Daily time budgets for websites and apps, for AdGuard Home.",
+        "app.unofficial": "Unofficial community project, not affiliated with or endorsed by AdGuard.",
+        "common.save": "Save",
+        "common.cancel": "Cancel",
+        "common.delete": "Delete",
+        "common.edit": "Edit",
+        "common.close": "Close",
+        "common.confirm": "Are you sure?",
+        "common.yes": "Yes",
+        "common.no": "No",
+        "common.loading": "Loading…",
+        "common.error": "Something went wrong",
+        "common.saved": "Saved",
+        "common.minutes": "min",
+        "common.minutes_short": "min",
+        "common.back": "Back",
+        # --- login / setup ----------------------------------------------
+        "login.heading": "Sign in",
+        "login.user_tab": "User",
+        "login.admin_tab": "Admin",
+        "login.pin_label": "Enter your PIN",
+        "login.password_label": "Enter the admin password",
+        "login.button": "Sign in",
+        "login.wrong": "Wrong PIN or password",
+        "login.locked": "Too many attempts. Try again in {minutes} minutes.",
+        "login.logout": "Log out",
+        "login.setup_needed": "First run: sign in as Admin, then choose a new password.",
+        "setup.heading": "First-run setup",
+        "setup.intro": "Choose a new admin password and a user PIN before using the app.",
+        "setup.admin_label": "New admin password (at least 10 characters)",
+        "setup.admin_repeat": "Repeat admin password",
+        "setup.pin_label": "New user PIN (4–8 digits)",
+        "setup.pin_repeat": "Repeat user PIN",
+        "setup.button": "Save and continue",
+        "setup.mismatch": "The values do not match",
+        "setup.admin_short": "The admin password must be at least 10 characters long.",
+        "setup.admin_default": "The admin password must not be 'admin'.",
+        "setup.pin_bad": "The PIN must be 4–8 digits and must not be 0000.",
+        # --- user view --------------------------------------------------
+        "user.heading": "Today",
+        "status.blocked": "Blocked",
+        "status.allowed": "Allowed · {time} left",
+        "status.allowed_prefix": "Allowed · ",
+        "status.left_suffix": "left",
+        "status.paused": "Paused",
+        "status.free": "Free until {time}",
+        "budget.left": "{left} of {total} min left",
+        "budget.used": "used {used} min today",
+        "session.done": "Done for today",
+        "session.start": "Start",
+        "session.stop": "Stop",
+        "session.stop_hint": "Only the minutes you used are counted.",
+        "toast.started": "{name} unlocked for {minutes} minutes",
+        "toast.stopped": "{name} blocked again",
+        "toast.paused": "{name} paused",
+        "toast.resumed": "{name} resumed",
+        "toast.blocked": "{name} is blocked now",
+        "toast.bonus": "Added {minutes} bonus minutes to {name}",
+        "toast.free": "{name} is free until {time}",
+        "toast.deleted": "Group {name} deleted",
+        "toast.created": "Group {name} created",
+        "toast.updated": "Group {name} updated",
+        "toast.password": "Password updated",
+        "toast.pin": "PIN updated",
+        "toast.domains_added": "Added {count} domain(s) to {name}",
+        # --- admin tabs -------------------------------------------------
+        "admin.tab.today": "Today",
+        "admin.tab.groups": "Groups",
+        "admin.tab.history": "History",
+        "admin.tab.settings": "Settings",
+        "admin.block_now": "Block now",
+        "admin.bonus": "+15 min",
+        "admin.free_label": "Allow freely until",
+        "admin.free_apply": "Allow freely",
+        "admin.clear_free": "End free time",
+        "admin.pin_title": "Change user PIN",
+        "admin.password_title": "Change admin password",
+        "admin.pin_label": "New PIN (4–8 digits)",
+        "admin.password_label": "New admin password (min 10 chars)",
+        "admin.adguard_title": "AdGuard Home connection",
+        "admin.adguard_test": "Test connection",
+        "admin.adguard_ok": "Connected: {detail}",
+        "admin.adguard_fail": "Not reachable: {detail}",
+        "admin.version": "Version",
+        "admin.setup_complete": "Setup completed",
+        # --- groups -----------------------------------------------------
+        "groups.heading": "Groups",
+        "groups.empty": "No groups yet. Create one to start budgeting.",
+        "groups.add": "New group",
+        "groups.edit": "Edit group",
+        "groups.name": "Name",
+        "groups.emoji": "Emoji",
+        "groups.weekday": "Minutes on weekdays",
+        "groups.weekend": "Minutes on weekends",
+        "groups.weekend_same": "Same as weekdays",
+        "groups.domains": "Custom domains (one per line)",
+        "groups.domains_help": "Paste links or hostnames; they are reduced to the hostname and blocked with subdomains.",
+        "groups.services": "AdGuard services",
+        "groups.services_help": "Search and pick the apps/services to block.",
+        "groups.paused": "Paused (always blocked, no sessions)",
+        "groups.delete_warning": "Delete this group? Its rules are removed from AdGuard; the history is kept.",
+        "groups.delete_confirm": "Type the group name to confirm",
+        "groups.test": "Test",
+        "groups.test_result": "Blocked: {blocked} · Allowed: {allowed}",
+        "groups.need_target": "Add at least one service or domain.",
+        "groups.critical_title": "This looks like a shared or critical domain",
+        "groups.critical_body": "{domains}",
+        "groups.critical_confirm": "I understand — block it anyway",
+        "groups.duplicate": "That service or domain is already used by another group.",
+        # --- discover ---------------------------------------------------
+        "discover.heading": "Discover domains",
+        "discover.help": "Open the app or game on the device for 2–3 minutes, then click Discover.",
+        "discover.client": "Client",
+        "discover.all_clients": "All clients",
+        "discover.window": "Window",
+        "discover.run": "Discover",
+        "discover.show_all": "Show all (including system noise)",
+        "discover.domain": "Domain",
+        "discover.queries": "Queries",
+        "discover.seen": "Seen",
+        "discover.add_to": "Add to group",
+        "discover.add": "Add selected",
+        "discover.none": "Nothing new in this window.",
+        "discover.empty_hint": "If nothing appears, use the app for a bit and try a longer window.",
+        "discover.last_seen": "last {ago} ago",
+        # --- history ----------------------------------------------------
+        "history.heading": "Last 7 days",
+        "history.day": "Day",
+        "history.total": "Total",
+        "history.sessions_today": "Today's sessions",
+        "history.no_sessions": "No sessions today.",
+        "history.group": "Group",
+        "history.started": "Started",
+        "history.length": "Length",
+        "history.used": "Used",
+        "history.reason": "Ended",
+        "history.reason.stopped": "stopped",
+        "history.reason.expired": "expired",
+        "history.reason.service_restart": "service restart",
+        "history.reason.admin_block": "blocked by admin",
+        "history.reason.deleted": "group deleted",
+        # --- errors -----------------------------------------------------
+        "error.forbidden": "You are not allowed to do that.",
+        "error.setup_required": "Finish the first-run setup first.",
+        "error.no_budget": "No minutes left today.",
+        "error.already_active": "A session is already running.",
+        "error.paused": "This group is paused.",
+        "error.not_found": "Not found.",
+        "error.adguard": "AdGuard Home did not answer: {detail}",
+        "error.invalid_group": "{detail}",
+    }
+}
+
+
+def t(key: str, **kwargs) -> str:
+    template = STRINGS.get(LANG, STRINGS["en"]).get(key, key)
+    try:
+        return template.format(**kwargs) if kwargs else template
+    except (KeyError, IndexError):
+        return template
+
+
+def strings() -> dict[str, str]:
+    return dict(STRINGS.get(LANG, STRINGS["en"]))
+
+
+# Plain-language explanations for the critical-domain confirmation dialog.
+CRITICAL_NOTES: dict[str, str] = {
+    "apple.com": "Blocking apple.com blocks the App Store, iCloud and app updates, not one app.",
+    "apps.apple.com": "Blocking apps.apple.com blocks the whole App Store, not one app.",
+    "icloud.com": "Blocking icloud.com breaks iCloud sync, backups and Find My.",
+    "google.com": "Blocking google.com breaks Search, sign-in and many apps that rely on Google.",
+    "googleapis.com": "Blocking googleapis.com breaks sign-in, push and updates for many apps.",
+    "gstatic.com": "Blocking gstatic.com breaks fonts, maps and other Google content.",
+    "play.google.com": "Blocking play.google.com blocks the Play Store and app updates.",
+    "microsoft.com": "Blocking microsoft.com breaks Microsoft accounts, updates and Office.",
+    "live.com": "Blocking live.com breaks Microsoft sign-in.",
+    "cloudflare.com": "Blocking cloudflare.com breaks a large part of the web.",
+    "akamai*": "Blocking Akamai breaks many apps and websites that use their CDN.",
+    "akamaized.net": "Blocking akamaized.net breaks many apps and websites that use Akamai.",
+    "amazonaws.com": "Blocking amazonaws.com breaks many services hosted on AWS.",
+    "cloudfront.net": "Blocking cloudfront.net breaks many sites and apps using AWS CloudFront.",
+    "facebook.com": "Blocking facebook.com also breaks 'Log in with Facebook' for other apps.",
+    "fbcdn.net": "Blocking fbcdn.net breaks images and videos in Facebook/Instagram.",
+    "whatsapp.net": "Blocking whatsapp.net breaks WhatsApp messaging and calls.",
+}
+
+
+def critical_note(pattern: str) -> str:
+    return CRITICAL_NOTES.get(
+        pattern.lower(),
+        f"Blocking {pattern} can break other sites and apps that depend on it.",
+    )

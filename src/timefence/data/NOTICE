@@ -1,0 +1,10 @@
+Bundled third-party data
+=======================
+
+public_suffix_list.dat
+  Mozilla Public Suffix List - https://publicsuffix.org/
+  License: Mozilla Public License 2.0 (MPL-2.0)
+  Used offline to group query-log hostnames by registrable domain.
+
+critical_domains.txt, noise_domains.txt
+  Original TimeFence data, MIT licensed (same as the project).

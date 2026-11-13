@@ -1,0 +1,40 @@
+# Shared / critical domains.
+# Blocking one of these (or a subdomain of it) needs an explicit confirmation
+# in the UI, because it breaks more than the app the user had in mind.
+# Matching: exact or any subdomain. A trailing * is a prefix match (akamai*).
+apple.com
+apps.apple.com
+icloud.com
+apple-cloudkit.com
+mzstatic.com
+google.com
+googleapis.com
+gstatic.com
+googlevideo.com
+ytimg.com
+play.google.com
+android.com
+microsoft.com
+live.com
+office.com
+office365.com
+microsoftonline.com
+windowsupdate.com
+cloudflare.com
+cloudflare-dns.com
+akamai*
+akamaized.net
+amazonaws.com
+cloudfront.net
+facebook.com
+fbcdn.net
+whatsapp.net
+whatsapp.com
+instagram.com
+cdninstagram.com
+tiktokcdn.com
+github.com
+githubusercontent.com
+pypi.org
+debian.org
+ubuntu.com
