@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "timefence"
+version = "0.1.0"
+description = "Daily time budgets for websites and apps, for AdGuard Home."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "sbhas2k" }]
+keywords = ["adguard-home", "parental-controls", "screen-time", "dns", "self-hosted"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Web Environment",
+  "Framework :: FastAPI",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Home Automation",
+]
+dependencies = [
+  "fastapi==0.115.6",
+  "uvicorn[standard]==0.34.0",
+  "jinja2==3.1.5",
+  "itsdangerous==2.2.0",
+  "argon2-cffi==23.1.0",
+  "requests==2.32.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.3.4", "httpx==0.28.1", "ruff==0.8.4"]
+
+[project.scripts]
+timefence = "timefence.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/sbhas2k/timefence-adguardhome"
+Issues = "https://github.com/sbhas2k/timefence-adguardhome/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+timefence = ["templates/*.html", "static/*", "data/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["B008", "SIM105"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff.lint.per-file-ignores]
+# UI copy is naturally long; wrapping it would hurt translatability.
+"src/timefence/i18n.py" = ["E501"]
