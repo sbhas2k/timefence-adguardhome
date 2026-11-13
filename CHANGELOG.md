@@ -6,6 +6,18 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `timefence passwd --role admin|user` recovery command (offline password/PIN
+  reset, works while the service runs).
+- `timefence.credentials` module shared by the web app and the CLI, with
+  explicit tests for legacy Werkzeug `scrypt:` hashes.
+
+### Changed
+
+- Login hashes are upgraded to Argon2id automatically after a successful
+  sign-in with a legacy hash.
+
 ## [0.1.0] - 2026-11-13
 
 ### Added

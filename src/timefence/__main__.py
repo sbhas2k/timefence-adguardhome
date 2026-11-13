@@ -3,10 +3,21 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import logging
+import os
 import sys
 
 from . import __version__
+
+
+def _prompt_secret(role: str) -> str:
+    label = "New admin password" if role == "admin" else "New user PIN"
+    first = getpass.getpass(f"{label}: ")
+    second = getpass.getpass(f"Repeat {label.lower()}: ")
+    if first != second:
+        raise SystemExit("the two values do not match")
+    return first
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -20,8 +31,33 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("check", help="validate configuration and test the AdGuard connection")
 
+    passwd = sub.add_parser(
+        "passwd",
+        help="set the admin password or the user PIN (works while the service runs)",
+    )
+    passwd.add_argument("--role", choices=("admin", "user"), default="admin")
+    passwd.add_argument(
+        "--data-dir",
+        default=os.environ.get("DATA_DIR", "/var/lib/timefence"),
+        help="directory holding timefence.db (default: $DATA_DIR or /var/lib/timefence)",
+    )
+
     args = parser.parse_args(argv)
     command = args.command or "run"
+
+    if command == "passwd":
+        from . import credentials
+
+        try:
+            secret = _prompt_secret(args.role)
+            path = credentials.reset(args.data_dir, args.role, secret)
+        except credentials.CredentialError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        print(f"{args.role} credential updated in {path}")
+        if args.role == "admin":
+            print("You can now sign in at the Admin tab; existing sessions stay valid.")
+        return 0
 
     from .config import ConfigError, Settings
 

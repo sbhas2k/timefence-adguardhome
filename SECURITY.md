@@ -20,5 +20,8 @@ about a week.
   `X-Forwarded-For` is only trusted from `TRUSTED_PROXIES`.
 - The app is meant to listen on loopback behind a TLS reverse proxy. It does not
   manage TLS itself.
+- Anyone who can run commands as root (or as the `timefence` service user) can
+  reset the admin password with `timefence passwd`; this is deliberate
+  break-glass recovery, not a remote feature.
 - TimeFence talks to AdGuard Home's control API with the credentials you give
   it; protect `/etc/timefence/timefence.env` (600) and any password file.

@@ -131,6 +131,23 @@ expires. TimeFence sets AdGuard's `cache_ttl_max` to 60 seconds so changes take
 effect within about a minute — a deliberate trade-off between responsiveness
 and cache efficiency. TimeFence does not touch any other AdGuard setting.
 
+## Recovering access
+
+If the admin password is lost or a sign-in is refused, set a new one from the
+server. Nothing is printed, and the service can keep running:
+
+```bash
+sudo -u timefence env DATA_DIR=/var/lib/timefence \
+  /opt/timefence/venv/bin/python -m timefence passwd --role admin
+```
+
+The same command with `--role user` sets a new 4–8 digit PIN (used by the
+"User" tab). Rules: admin password ≥ 10 characters and not `admin`; PIN 4–8
+digits and not `0000`.
+
+Five failed sign-ins lock that client IP for 15 minutes. The lockout is held in
+memory, so `sudo systemctl restart timefence` clears it immediately.
+
 ## Documentation
 
 - [How it works](docs/how-it-works.md) — reconciler, ownership, fail-safety

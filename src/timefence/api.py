@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import re
 import threading
 import time
 from pathlib import Path
@@ -16,7 +15,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from . import APP_TITLE, __version__, budget, db, i18n, security
+from . import APP_TITLE, __version__, budget, credentials, db, i18n, security
 from .adguard import AdGuardClient, AdGuardError
 from .config import Settings
 from .discover import PublicSuffixList, SuffixList, aggregate, humanize_age, recent_clients
@@ -24,9 +23,6 @@ from .reconciler import Reconciler
 
 log = logging.getLogger("timefence.web")
 
-PIN_RE = re.compile(r"^\d{4,8}$")
-DEFAULT_ADMIN = "admin"
-DEFAULT_PIN = "0000"
 DATA = Path(__file__).parent / "data"
 STATIC = Path(__file__).parent / "static"
 TEMPLATES = Path(__file__).parent / "templates"
@@ -49,18 +45,8 @@ def client_ip(request: Request, settings: Settings) -> str:
     )
 
 
-def validate_password(value: str) -> str | None:
-    if len(value or "") < 10:
-        return i18n.t("setup.admin_short")
-    if value == DEFAULT_ADMIN:
-        return i18n.t("setup.admin_default")
-    return None
-
-
-def validate_pin(value: str) -> str | None:
-    if not PIN_RE.match(value or "") or value == DEFAULT_PIN:
-        return i18n.t("setup.pin_bad")
-    return None
+validate_password = credentials.validate_admin_password
+validate_pin = credentials.validate_user_pin
 
 
 # --------------------------------------------------------------------------- #
@@ -109,13 +95,13 @@ def create_app(
             if "admin" not in rows:
                 conn.execute(
                     "INSERT INTO credentials(role, hash, updated_at) VALUES(?,?,?)",
-                    ("admin", security.hash_secret(DEFAULT_ADMIN), now),
+                    ("admin", security.hash_secret(credentials.DEFAULT_ADMIN_PASSWORD), now),
                 )
                 db.set_bool_setting(conn, "setup_complete", False)
             if "user" not in rows:
                 conn.execute(
                     "INSERT INTO credentials(role, hash, updated_at) VALUES(?,?,?)",
-                    ("user", security.hash_secret(DEFAULT_PIN), now),
+                    ("user", security.hash_secret(credentials.DEFAULT_USER_PIN), now),
                 )
             conn.commit()
 
@@ -123,26 +109,10 @@ def create_app(
         return db.get_bool_setting(conn, "setup_complete", False)
 
     def verify(role: str, secret: str) -> bool:
-        row = conn.execute("SELECT hash FROM credentials WHERE role=?", (role,)).fetchone()
-        if not row:
-            return False
-        if not security.verify_secret(row["hash"], secret):
-            return False
-        if security.needs_rehash(row["hash"]):
-            conn.execute(
-                "UPDATE credentials SET hash=?, updated_at=? WHERE role=?",
-                (security.hash_secret(secret), int(time.time()), role),
-            )
-            conn.commit()
-        return True
+        return credentials.verify(conn, role, secret)
 
     def set_credential(role: str, secret: str) -> None:
-        conn.execute(
-            "INSERT INTO credentials(role, hash, updated_at) VALUES(?,?,?) "
-            "ON CONFLICT(role) DO UPDATE SET hash=excluded.hash, updated_at=excluded.updated_at",
-            (role, security.hash_secret(secret), int(time.time())),
-        )
-        conn.commit()
+        credentials.set_secret(conn, role, secret)
 
     def current_session(request: Request) -> security.SessionData | None:
         return getattr(request.state, "session", None)

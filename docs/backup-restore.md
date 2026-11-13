@@ -45,6 +45,18 @@ sudo systemctl start timefence
 On startup TimeFence closes any session that was open when the backup was taken
 and re-blocks everything, so a restore never leaves something unblocked.
 
+## Locked out of the admin account
+
+```bash
+sudo -u timefence env DATA_DIR=/var/lib/timefence \
+  /opt/timefence/venv/bin/python -m timefence passwd --role admin
+```
+
+It prompts twice (input hidden), validates the rules (≥ 10 characters, not
+`admin`) and writes a fresh Argon2id hash into the database. Use
+`--role user` for the shared PIN. If sign-in is being refused because of the
+login lockout, `sudo systemctl restart timefence` resets it (it is in-memory).
+
 ## AdGuard Home side
 
 TimeFence only owns its `# timefence:begin … # timefence:end` user-rule section
