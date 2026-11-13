@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block page %}setup{% endblock %}
+{% block title %}{{ t("setup.heading") }} · {{ app_name }}{% endblock %}
+{% block topbar %}<a class="btn ghost" href="{{ base }}/login">Log out</a>{% endblock %}
+{% block content %}
+<div class="login-wrap">
+  <div class="card">
+    <h2>{{ t("setup.heading") }}</h2>
+    <p class="sub">{{ t("setup.intro") }}</p>
+    <form id="setup-form" class="stack mt" autocomplete="off">
+      <div>
+        <label for="admin_password">{{ t("setup.admin_label") }}</label>
+        <input type="password" id="admin_password" name="admin_password" minlength="10" required autocomplete="new-password">
+      </div>
+      <div>
+        <label for="admin_password2">{{ t("setup.admin_repeat") }}</label>
+        <input type="password" id="admin_password2" minlength="10" required autocomplete="new-password">
+      </div>
+      <div>
+        <label for="user_pin">{{ t("setup.pin_label") }}</label>
+        <input type="password" id="user_pin" name="user_pin" inputmode="numeric" pattern="[0-9]*" required autocomplete="new-password">
+      </div>
+      <div>
+        <label for="user_pin2">{{ t("setup.pin_repeat") }}</label>
+        <input type="password" id="user_pin2" inputmode="numeric" pattern="[0-9]*" required autocomplete="new-password">
+      </div>
+      <button class="btn primary wide" type="submit">{{ t("setup.button") }}</button>
+      <p class="alert bad hidden" id="setup-error" role="alert"></p>
+    </form>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ base }}/static/auth.js"></script>{% endblock %}

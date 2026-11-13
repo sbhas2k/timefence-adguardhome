@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block page %}app{% endblock %}
+{% block title %}{{ app_name }}{% endblock %}
+{% block topbar %}
+  <span class="pill muted" id="role-badge" aria-live="polite"></span>
+  <button class="btn ghost" id="logout">{{ t("login.logout") }}</button>
+{% endblock %}
+{% block content %}
+<div class="alert bad hidden" id="global-alert" role="alert"></div>
+
+<div class="tabs hidden" id="admin-tabs" role="tablist">
+  <button class="tab" data-tab="today" role="tab" aria-selected="true">{{ t("admin.tab.today") }}</button>
+  <button class="tab" data-tab="groups" role="tab" aria-selected="false">{{ t("admin.tab.groups") }}</button>
+  <button class="tab" data-tab="history" role="tab" aria-selected="false">{{ t("admin.tab.history") }}</button>
+  <button class="tab" data-tab="settings" role="tab" aria-selected="false">{{ t("admin.tab.settings") }}</button>
+</div>
+
+<section id="panel-today" aria-label="{{ t('user.heading') }}">
+  <div id="groups" class="stack"></div>
+  <p class="muted small center hidden" id="no-groups">{{ t("groups.empty") }}</p>
+</section>
+
+<section id="panel-groups" class="hidden" aria-label="{{ t('groups.heading') }}">
+  <div class="between">
+    <h2>{{ t("groups.heading") }}</h2>
+    <button class="btn primary" id="new-group">{{ t("groups.add") }}</button>
+  </div>
+  <div class="list mt" id="group-list"></div>
+
+  <div class="card mt">
+    <h2>{{ t("discover.heading") }}</h2>
+    <p class="sub">{{ t("discover.help") }}</p>
+    <div class="row mt">
+      <div>
+        <label for="discover-minutes">{{ t("discover.window") }}</label>
+        <select id="discover-minutes">
+          <option value="5">5 {{ t("common.minutes") }}</option>
+          <option value="15" selected>15 {{ t("common.minutes") }}</option>
+          <option value="30">30 {{ t("common.minutes") }}</option>
+        </select>
+      </div>
+      <div>
+        <label for="discover-client">{{ t("discover.client") }}</label>
+        <select id="discover-client"><option value="">{{ t("discover.all_clients") }}</option></select>
+      </div>
+      <div>
+        <label for="discover-showall">{{ t("discover.show_all") }}</label>
+        <input type="checkbox" id="discover-showall">
+      </div>
+      <button class="btn primary" id="discover-run">{{ t("discover.run") }}</button>
+    </div>
+    <div id="discover-results" class="mt"></div>
+  </div>
+</section>
+
+<section id="panel-history" class="hidden" aria-label="{{ t('history.heading') }}">
+  <div class="card">
+    <h2>{{ t("history.heading") }}</h2>
+    <div class="table-wrap"><table id="history-table"></table></div>
+  </div>
+  <div class="card">
+    <h2>{{ t("history.sessions_today") }}</h2>
+    <div class="table-wrap"><table id="sessions-table"></table></div>
+  </div>
+</section>
+
+<section id="panel-settings" class="hidden" aria-label="{{ t('admin.tab.settings') }}">
+  <div class="card">
+    <h2>{{ t("admin.pin_title") }}</h2>
+    <form id="pin-form" class="row mt">
+      <input type="password" id="new-pin" inputmode="numeric" autocomplete="new-password" placeholder="{{ t('admin.pin_label') }}" aria-label="{{ t('admin.pin_label') }}">
+      <button class="btn" type="submit">{{ t("common.save") }}</button>
+    </form>
+  </div>
+  <div class="card">
+    <h2>{{ t("admin.password_title") }}</h2>
+    <form id="password-form" class="row mt">
+      <input type="password" id="new-password" autocomplete="new-password" placeholder="{{ t('admin.password_label') }}" aria-label="{{ t('admin.password_label') }}">
+      <button class="btn" type="submit">{{ t("common.save") }}</button>
+    </form>
+  </div>
+  <div class="card">
+    <h2>{{ t("admin.adguard_title") }}</h2>
+    <button class="btn mt" id="adguard-test">{{ t("admin.adguard_test") }}</button>
+    <p class="sub mt" id="adguard-result"></p>
+  </div>
+  <div class="card">
+    <h2>{{ t("admin.version") }}</h2>
+    <p class="sub">{{ version }} · {{ app_title }}</p>
+  </div>
+</section>
+
+<div class="modal hidden" id="modal" role="dialog" aria-modal="true">
+  <div class="sheet" id="modal-sheet"></div>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+{% endblock %}
+{% block scripts %}<script src="{{ base }}/static/app.js"></script>{% endblock %}
