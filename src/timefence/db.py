@@ -125,6 +125,10 @@ def connect(path: Path | str) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    try:  # the database holds password hashes; keep it private
+        path.chmod(0o600)
+    except OSError:
+        pass
     return conn
 
 
