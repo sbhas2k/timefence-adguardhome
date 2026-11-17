@@ -15,7 +15,8 @@ RUN apt-get update \
 WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
-RUN pip install . && rm -rf /app/src
+COPY deploy/docker-entrypoint.sh /usr/local/bin/timefence-entrypoint
+RUN pip install . && rm -rf /app/src && chmod 755 /usr/local/bin/timefence-entrypoint
 
 USER timefence:timefence
 ENV DATA_DIR=/data \
@@ -30,4 +31,4 @@ EXPOSE 8099
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8099/healthz', timeout=3).status==200 else 1)"
 
-CMD ["uvicorn", "timefence.main:app", "--host", "0.0.0.0", "--port", "8099", "--no-server-header", "--proxy-headers"]
+ENTRYPOINT ["/usr/local/bin/timefence-entrypoint"]

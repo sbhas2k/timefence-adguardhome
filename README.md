@@ -163,6 +163,7 @@ memory, so `sudo systemctl restart timefence` clears it immediately.
 - [Discover workflow](docs/discover.md) — worked example
 - [Backup & restore](docs/backup-restore.md)
 - [Upgrading](docs/upgrading.md)
+- [Running in Docker](docs/docker.md)
 
 ## FAQ
 

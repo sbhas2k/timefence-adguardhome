@@ -1,0 +1,21 @@
+# AdGuard Home with host networking (needed to own port 53) and its data on the
+# host, for a setup where TimeFence runs next to it in Docker.
+#
+#   mkdir -p /opt/adguard-docker/{conf,work}
+#   install -m 600 AdGuardHome.yaml /opt/adguard-docker/conf/
+#   docker compose -f deploy/adguard-compose.host.yml up -d
+services:
+  adguardhome:
+    image: adguard/adguardhome:v0.107.80     # pin to your version
+    container_name: adguardhome
+    network_mode: host
+    environment:
+      TZ: UTC                                 # "Local" schedules follow this
+    volumes:
+      - /opt/adguard-docker/conf:/opt/adguardhome/conf
+      - /opt/adguard-docker/work:/opt/adguardhome/work
+    logging:
+      driver: journald
+      options:
+        tag: adguardhome
+    restart: unless-stopped

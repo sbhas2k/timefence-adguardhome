@@ -1,0 +1,38 @@
+# TimeFence with host networking.
+#
+# Use this when AdGuard Home is NOT in the same compose project (for example
+# when it runs natively or in another compose file on the same host and binds
+# 127.0.0.1:3000). A bridge network cannot reach the host's loopback, so host
+# networking is the simplest correct option -- and it keeps TimeFence itself on
+# 127.0.0.1 (LISTEN_HOST) so only your reverse proxy can reach it.
+#
+#   cp deploy/docker-compose.host.yml docker-compose.yml
+#   docker compose up -d
+services:
+  timefence:
+    image: ghcr.io/sbhas2k/timefence-adguardhome:latest
+    container_name: timefence
+    network_mode: host
+    environment:
+      ADGUARD_URL: http://127.0.0.1:3000
+      ADGUARD_USER: admin
+      ADGUARD_PASSWORD_FILE: /run/secrets/adguard.pass
+      BASE_PATH: /
+      TZ: UTC
+      LISTEN_HOST: 127.0.0.1
+      LISTEN_PORT: "8099"
+      DATA_DIR: /data
+      RECONCILE_INTERVAL: "30"
+      TRUSTED_PROXIES: 127.0.0.1/32
+      SECURE_COOKIES: "true"
+    volumes:
+      - timefence-data:/data
+      - /etc/timefence/adguard.pass:/run/secrets/adguard.pass:ro
+    logging:
+      driver: journald
+      options:
+        tag: timefence
+    restart: unless-stopped
+
+volumes:
+  timefence-data:
