@@ -27,6 +27,17 @@ in-memory fake of the control API.
 - New behaviour needs a test. Keep `ruff` clean.
 - No frontend build step, no CDNs, no inline scripts (the CSP forbids them).
 
+## Pre-push hook
+
+The repository ships a hook that runs `ruff` and `pytest` before anything is
+pushed, so a broken commit cannot reach the remote (or CI):
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Emergency bypass: `SKIP_HOOKS=1 git push`.
+
 ## Commits and PRs
 
 - Conventional-ish commit subjects (`fix:`, `feat:`, `docs:`, `test:`...).

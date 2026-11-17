@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# TimeFence pre-push gate: lint + tests before anything reaches the remote.
+# Bypass for a genuine emergency with:  SKIP_HOOKS=1 git push
+set -euo pipefail
+
+if [ "${SKIP_HOOKS:-0}" = "1" ]; then
+    echo "pre-push: skipped (SKIP_HOOKS=1)"
+    exit 0
+fi
+
+cd "$(git rev-parse --show-toplevel)"
+
+python_bin="python3"
+[ -x .venv/bin/python ] && python_bin=".venv/bin/python"
+
+ruff_bin="ruff"
+[ -x .venv/bin/ruff ] && ruff_bin=".venv/bin/ruff"
+
+if [ -x "$ruff_bin" ] || command -v "$ruff_bin" >/dev/null 2>&1; then
+    echo "pre-push: ruff check"
+    "$ruff_bin" check src tests
+    echo "pre-push: ruff format --check"
+    "$ruff_bin" format --check src tests
+else
+    echo "pre-push: ruff not installed, skipping lint (pip install -e '.[dev]')"
+fi
+
+echo "pre-push: pytest"
+"$python_bin" -m pytest -q
+
+echo "pre-push: OK"
