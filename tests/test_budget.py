@@ -30,6 +30,7 @@ def make_group(
     domains=(),
     name="YouTube",
     paused=False,
+    mode="session",
 ):
     return budget.create_group(
         conn,
@@ -40,6 +41,7 @@ def make_group(
         services=list(services),
         domains=list(domains),
         paused=paused,
+        mode=mode,
     )
 
 
@@ -120,8 +122,8 @@ def test_usage_does_not_leak_across_midnight(conn):
 
     today = budget.day_str(before_midnight, TZ)
     tomorrow = budget.day_str(before_midnight + 86400, TZ)
-    assert budget.used_seconds(conn, group.id, today, TZ, before_midnight + 400) == 300
-    assert budget.used_seconds(conn, group.id, tomorrow, TZ, before_midnight + 86400) == 0
+    assert budget.used_seconds(conn, group, today, TZ, before_midnight + 400) == 300
+    assert budget.used_seconds(conn, group, tomorrow, TZ, before_midnight + 86400) == 0
     assert budget.remaining_seconds(conn, group, TZ, before_midnight + 86400) == 600
 
 
@@ -198,7 +200,7 @@ def test_free_allow_does_not_charge_budget(conn):
     assert budget.is_permitted(conn, group, TZ, now)
     assert not budget.is_permitted(conn, group, TZ, now + 3700)
     assert budget.remaining_seconds(conn, group, TZ, now) == 600
-    assert budget.used_seconds(conn, group.id, budget.day_str(now, TZ), TZ, now) == 0
+    assert budget.used_seconds(conn, group, budget.day_str(now, TZ), TZ, now) == 0
 
 
 def test_parse_hhmm_rolls_to_tomorrow():

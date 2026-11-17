@@ -112,11 +112,16 @@
   // ------------------------------------------------------------------ render
   function statusFor(group, now) {
     if (group.paused) { return { cls: "warn", text: t("status.paused") }; }
+    if (group.force_block_until) { return { cls: "bad", text: t("status.forced") }; }
     if (group.active_session) {
       return { cls: "ok", text: t("status.allowed", { time: fmtClock(group.active_session.ends_at - now) }), ends: group.active_session.ends_at };
     }
     if (group.free_until) {
       return { cls: "warn", text: t("status.free", { time: fmtTime(group.free_until) }) };
+    }
+    if (group.mode === "auto") {
+      if (group.remaining_minutes <= 0) { return { cls: "bad", text: t("status.limit_reached") }; }
+      return { cls: "ok", text: t("status.allowed_auto", { minutes: fmtMinutes(group.remaining_minutes) }) };
     }
     return { cls: "bad", text: t("status.blocked") };
   }
@@ -143,16 +148,19 @@
     var usedPercent = total > 0 ? Math.min(100, (group.used_minutes / total) * 100) : 0;
     var leftover = total - group.used_minutes;
     var controls = "";
-    if (group.active_session) {
+    if (group.mode === "session" && group.active_session) {
       controls = '<button class="btn danger big-btn" data-action="stop" data-group="' + group.id + '">' + esc(t("session.stop")) + "</button>";
-    } else if (!group.paused) {
+    } else if (group.mode === "session" && !group.paused && !group.force_block_until) {
       controls = startButtons(group);
+    } else if (group.mode === "auto" && !group.paused) {
+      controls = '<div class="muted small">' + esc(t("groups.mode.auto")) + "</div>";
     }
     var adminRow = "";
     if (admin) {
       adminRow =
         '<div class="row tight mt">' +
         '<button class="btn" data-action="block" data-group="' + group.id + '">' + esc(t("admin.block_now")) + "</button>" +
+        (group.force_block_until ? '<button class="btn" data-action="unblock" data-group="' + group.id + '">' + esc(t("toast.unblocked", { name: "" })) + "</button>" : "") +
         '<button class="btn" data-action="bonus" data-group="' + group.id + '" data-minutes="15">' + esc(t("admin.bonus")) + "</button>" +
         '<input type="time" data-free-time="' + group.id + '" value="21:00" aria-label="' + esc(t("admin.free_label")) + '">' +
         '<button class="btn" data-action="free" data-group="' + group.id + '">' + esc(t("admin.free_apply")) + "</button>" +
@@ -198,7 +206,7 @@
         '<div class="item">' +
         '<span aria-hidden="true">' + esc(g.emoji || "⏳") + "</span>" +
         '<div class="grow"><div class="name">' + esc(g.name) + "</div>" +
-        '<div class="muted small">' + g.weekday_minutes + "/" + g.weekend_minutes + " " + esc(t("common.minutes")) +
+        '<div class="muted small">' + (g.mode === "auto" ? "auto" : "sessions") + " · " + g.weekday_minutes + "/" + g.weekend_minutes + " " + esc(t("common.minutes")) +
         " · " + esc([].concat(g.services, g.domains).join(", ").slice(0, 70)) + "</div></div>" +
         (g.paused ? '<span class="pill warn">' + esc(t("status.paused")) + "</span>" : "") +
         '<button class="btn ghost" data-action="edit" data-group="' + g.id + '">' + esc(t("common.edit")) + "</button>" +
@@ -252,6 +260,7 @@
     renderToday();
     if (isAdmin && tab === "groups") { renderGroupList(); }
     if (isAdmin && tab === "history") { renderHistory(); }
+    if (isAdmin && tab === "settings") { loadUsers(); }
     alertBox(state.adguard_error ? t("error.adguard", { detail: state.adguard_error }) : "");
   }
 
@@ -338,7 +347,7 @@
   }
 
   function openGroupEditor(group) {
-    group = group || { name: "", emoji: "⏳", weekday_minutes: 60, weekend_minutes: 60, services: [], domains: [], paused: false };
+    group = group || { name: "", emoji: "⏳", weekday_minutes: 60, weekend_minutes: 60, services: [], domains: [], paused: false, mode: "auto" };
     var selected = { services: (group.services || []).slice(), paused: !!group.paused };
 
     function sheet() {
@@ -359,6 +368,10 @@
         '<input type="number" id="g-weekend" min="0" max="1440" value="' + group.weekend_minutes + '"></div></div>' +
         '<div><label>' + esc(t("groups.services")) + "</label><div class=\"row tight\" id=\"service-chips\">" + chips +
         ' <button type="button" class="btn" data-action="pick-services">+ ' + esc(t("groups.services")) + "</button></div></div>" +
+        '<div><label for="g-mode">' + esc(t("groups.mode")) + "</label>" +
+        '<select id="g-mode"><option value="auto"' + ((group.mode || "auto") === "auto" ? " selected" : "") + ">" + esc(t("groups.mode.auto")) + "</option>" +
+        '<option value="session"' + (group.mode === "session" ? " selected" : "") + ">" + esc(t("groups.mode.session")) + "</option></select>" +
+        '<p class="sub">' + esc(t("groups.mode_help")) + "</p></div>" +
         '<div><label for="g-domains">' + esc(t("groups.domains")) + "</label>" +
         '<textarea id="g-domains" placeholder="example.com">' + esc((group.domains || []).join("\n")) + "</textarea>" +
         '<p class="sub">' + esc(t("groups.domains_help")) + "</p></div>" +
@@ -384,7 +397,8 @@
           weekend_minutes: Number($("#g-weekend").value),
           domains_text: $("#g-domains").value,
           services: selected.services,
-          paused: $("#g-paused").checked
+          paused: $("#g-paused").checked,
+          mode: $("#g-mode").value
         };
         saveGroup(payload, group.id);
       });
@@ -482,6 +496,37 @@
     }).catch(function (error) { toast(error.message); });
   }
 
+  // ------------------------------------------------------------------ users
+  function renderUsers() {
+    var list = $("#user-list");
+    if (!list || !state.users) { return; }
+    if (!state.users.length) {
+      list.innerHTML = '<p class="muted small">' + esc(t("users.none")) + "</p>";
+      return;
+    }
+    list.innerHTML = state.users.map(function (u) {
+      var isAdmin = u.role === "admin";
+      return '<div class="item">' +
+        '<div class="grow"><div class="name">' + esc(u.username) +
+        ' <span class="pill ' + (isAdmin ? "ok" : "muted") + '">' + esc(t("users.role." + u.role)) + "</span>" +
+        (u.disabled ? ' <span class="pill bad">' + esc(t("users.disabled")) + "</span>" : "") + "</div>" +
+        '<div class="muted small">' + (u.last_login ? "last login " + fmtTime(u.last_login) : "never signed in") + "</div></div>" +
+        '<div class="row tight">' +
+        '<button class="btn ghost" data-action="user-password" data-user="' + u.id + '" data-username="' + esc(u.username) + '">' + esc(t("users.reset")) + "</button>" +
+        '<button class="btn ghost" data-action="user-role" data-user="' + u.id + '" data-role="' + (isAdmin ? "user" : "admin") + '">' + esc(isAdmin ? t("users.role.user") : t("users.role.admin")) + "</button>" +
+        '<button class="btn ghost" data-action="user-toggle" data-user="' + u.id + '" data-disabled="' + (u.disabled ? "0" : "1") + '">' + esc(u.disabled ? t("users.enable") : t("users.disable")) + "</button>" +
+        '<button class="btn danger" data-action="user-delete" data-user="' + u.id + '" data-username="' + esc(u.username) + '">' + esc(t("users.delete")) + "</button>" +
+        "</div></div>";
+    }).join("");
+  }
+
+  function loadUsers() {
+    return api("GET", "/api/users").then(function (data) {
+      state.users = data.users || [];
+      renderUsers();
+    }).catch(function (error) { toast(error.message); });
+  }
+
   // --------------------------------------------------------------- discover
   function renderDiscover(data) {
     discoverData = data;
@@ -555,6 +600,19 @@
       adminAction("free", groupId, { until: input ? input.value : "21:00" });
     }
     else if (action === "clearfree") { adminAction("free/clear", groupId); }
+    else if (action === "unblock") { adminAction("force/clear", groupId); }
+    else if (action === "user-password") { resetUserPassword(Number(target.dataset.user), target.dataset.username); }
+    else if (action === "user-role") {
+      api("POST", "/api/users/" + target.dataset.user + "/role", { role: target.dataset.role })
+        .then(function () { toast(t("common.saved")); loadUsers(); })
+        .catch(function (error) { toast(error.message); });
+    }
+    else if (action === "user-toggle") {
+      api("POST", "/api/users/" + target.dataset.user + "/disabled", { disabled: target.dataset.disabled === "1" })
+        .then(function () { toast(t("common.saved")); loadUsers(); })
+        .catch(function (error) { toast(error.message); });
+    }
+    else if (action === "user-delete") { deleteUser(Number(target.dataset.user), target.dataset.username); }
     else if (action === "edit") {
       var group = state.groups.filter(function (g) { return g.id === groupId; })[0];
       if (group) { openGroupEditor(group); }
@@ -606,6 +664,56 @@
       api("POST", "/api/admin/credentials", { role: "admin", secret: $("#new-password").value })
         .then(function () { $("#new-password").value = ""; toast(t("toast.password")); })
         .catch(function (error) { toast(error.message); });
+    });
+  }
+
+  var userForm = $("#user-form");
+  if (userForm) {
+    userForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      api("POST", "/api/users", {
+        username: $("#new-username").value.trim(),
+        password: $("#new-user-password").value,
+        role: $("#new-user-role").value
+      }).then(function (data) {
+        toast(t("users.created", { name: data.user.username }));
+        $("#new-username").value = "";
+        $("#new-user-password").value = "";
+        loadUsers();
+      }).catch(function (error) { toast(error.message); });
+    });
+  }
+
+  function resetUserPassword(userId, username) {
+    openModal(
+      '<h2 class="wrap-anywhere">' + esc(t("users.reset")) + " — " + esc(username) + "</h2>" +
+      '<form id="user-password-form" class="stack mt">' +
+      '<input type="password" id="user-password" autocomplete="new-password" placeholder="' + esc(t("users.password")) + '" aria-label="' + esc(t("users.password")) + '">' +
+      '<p class="sub">' + esc(t("users.password_hint")) + "</p>" +
+      '<div class="row"><button class="btn primary" type="submit">' + esc(t("common.save")) + "</button>" +
+      '<button class="btn" type="button" data-action="modal-close">' + esc(t("common.cancel")) + "</button></div></form>"
+    );
+    $("#user-password-form").addEventListener("submit", function (event) {
+      event.preventDefault();
+      api("POST", "/api/users/" + userId + "/password", { password: $("#user-password").value })
+        .then(function () { closeModal(); toast(t("toast.user_password", { name: username })); })
+        .catch(function (error) { toast(error.message); });
+    });
+  }
+
+  function deleteUser(userId, username) {
+    openModal(
+      '<h2 class="wrap-anywhere">' + esc(t("users.delete")) + " — " + esc(username) + "</h2>" +
+      '<p class="sub">' + esc(t("common.confirm")) + "</p>" +
+      '<div class="row mt"><button class="btn" data-action="modal-close">' + esc(t("common.cancel")) + "</button>" +
+      '<button class="btn danger" id="user-delete-confirm">' + esc(t("common.delete")) + "</button></div>"
+    );
+    $("#user-delete-confirm").addEventListener("click", function () {
+      api("DELETE", "/api/users/" + userId).then(function () {
+        closeModal();
+        toast(t("users.deleted", { name: username }));
+        loadUsers();
+      }).catch(function (error) { toast(error.message); });
     });
   }
 

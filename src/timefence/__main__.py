@@ -12,7 +12,7 @@ from . import __version__
 
 
 def _prompt_secret(role: str) -> str:
-    label = "New admin password" if role == "admin" else "New user PIN"
+    label = "New admin password" if role == "admin" else "New user password"
     first = getpass.getpass(f"{label}: ")
     second = getpass.getpass(f"Repeat {label.lower()}: ")
     if first != second:
@@ -33,8 +33,9 @@ def main(argv: list[str] | None = None) -> int:
 
     passwd = sub.add_parser(
         "passwd",
-        help="set the admin password or the user PIN (works while the service runs)",
+        help="set an account password (works while the service runs)",
     )
+    passwd.add_argument("--username", default="admin", help="account to update (default admin)")
     passwd.add_argument("--role", choices=("admin", "user"), default="admin")
     passwd.add_argument(
         "--data-dir",
@@ -50,13 +51,12 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             secret = _prompt_secret(args.role)
-            path = credentials.reset(args.data_dir, args.role, secret)
+            path = credentials.reset(args.data_dir, args.role, secret, username=args.username)
         except credentials.CredentialError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
-        print(f"{args.role} credential updated in {path}")
-        if args.role == "admin":
-            print("You can now sign in at the Admin tab; existing sessions stay valid.")
+        print(f"password for {args.username!r} ({args.role}) updated in {path}")
+        print("Sign in with the new password; existing sessions stay valid.")
         return 0
 
     from .config import ConfigError, Settings

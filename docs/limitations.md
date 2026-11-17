@@ -10,6 +10,14 @@ One set of budgets applies to the whole network. There is no per-device or
 per-child accounting in 0.1.0. Workaround: give each child their own group
 (e.g. "Games – Anna"), which is per-site, not per-person.
 
+## Metering is approximate
+
+In *auto* mode TimeFence charges time based on DNS activity in AdGuard's query
+log. It cannot see the screen: a device that keeps streaming on cached IPs, or
+that uses Private DNS/DoH, a VPN or mobile data, will use less (or no) budget.
+If you need close accounting, prefer *session* mode (explicit start/stop) — or
+fix the device/router so all DNS goes through AdGuard Home.
+
 ## DNS caching adds a delay
 
 A block/unblock can take up to ~1 minute to reach a device (TimeFence caps

@@ -4,7 +4,36 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project uses [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.0] - 2026-11-17
+
+### Changed
+
+- **Groups are allowed by default.** A group now has a `mode`:
+  - `auto` (new default) — nothing is blocked until the day's minutes are used
+    up, then the group is blocked until midnight. Usage is metered from the
+    AdGuard query log (see below).
+  - `session` — the previous behaviour: blocked unless a session is running.
+- **Multiple accounts.** Login is now username + password. Each account is
+  either `admin` or `user`; admins manage groups/users, users can see status and
+  start/stop sessions for session-mode groups. The shared "user PIN" is gone
+  (the old PIN becomes the password of an account called `user`).
+- `Block now` sets a force-block until local midnight (instead of pausing the
+  group), and can be cleared with `Unblock`.
+- The first-run setup only asks for a new admin password.
+
+### Added
+
+- Usage metering: every reconcile tick, query-log activity for a group's
+  domains/services charges the elapsed seconds to that group (loopback queries
+  ignored, never above the budget).
+- Users admin UI (create, change password, promote/demote, disable, delete) with
+  guards for the last admin and self-deletion.
+- Mobile layout pass: 2-column tabs, stacked controls, 16px inputs (no iOS
+  zoom), safe-area insets, larger tap targets.
+
+### Removed
+
+- The 4–8 digit shared PIN login and the PIN fields in the setup screen.
 
 ### Added
 

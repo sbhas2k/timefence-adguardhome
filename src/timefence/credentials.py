@@ -14,6 +14,7 @@ from pathlib import Path
 from . import db, security
 
 PIN_RE = re.compile(r"^\d{4,8}$")
+USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$")
 
 DEFAULT_ADMIN_PASSWORD = "admin"
 DEFAULT_USER_PIN = "0000"
@@ -22,6 +23,12 @@ ROLES = ("admin", "user")
 
 class CredentialError(ValueError):
     """The requested role or secret is not acceptable."""
+
+
+def validate_username(value: str) -> str | None:
+    if not USERNAME_RE.match(value or ""):
+        return "Username must be 3-32 characters: letters, digits, dot, dash, underscore."
+    return None
 
 
 def validate_admin_password(value: str) -> str | None:
@@ -43,7 +50,9 @@ def validate(role: str, secret: str) -> str | None:
     if role == "admin":
         return validate_admin_password(secret)
     if role == "user":
-        return validate_user_pin(secret)
+        if len(secret or "") < 8:
+            return "The password must be at least 8 characters long."
+        return None
     return f"unknown role {role!r}"
 
 
@@ -75,8 +84,8 @@ def db_path_for(data_dir: str | Path) -> Path:
     return Path(data_dir) / "timefence.db"
 
 
-def reset(data_dir: str | Path, role: str, secret: str) -> Path:
-    """Set a new secret offline (service may be running; SQLite handles it)."""
+def reset(data_dir: str | Path, role: str, secret: str, username: str = "admin") -> Path:
+    """Set a new password offline (service may be running; SQLite handles it)."""
     if role not in ROLES:
         raise CredentialError(f"role must be one of {', '.join(ROLES)}")
     problem = validate(role, secret)
@@ -88,7 +97,16 @@ def reset(data_dir: str | Path, role: str, secret: str) -> Path:
     conn = db.connect(path)
     try:
         db.migrate(conn)
-        set_secret(conn, role, secret)
+        row = conn.execute(
+            "SELECT id FROM users WHERE username = ? COLLATE NOCASE", (username,)
+        ).fetchone()
+        if not row:
+            raise CredentialError(f"no account called {username!r}")
+        conn.execute(
+            "UPDATE users SET hash=?, updated_at=? WHERE id=?",
+            (security.hash_secret(secret), int(time.time()), row["id"]),
+        )
+        conn.commit()
     finally:
         conn.close()
     return path

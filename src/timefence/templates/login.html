@@ -3,44 +3,24 @@
 {% block title %}{{ t("login.heading") }} · {{ app_name }}{% endblock %}
 {% block content %}
 <div class="login-wrap">
-  <div class="tabs" role="tablist" aria-label="{{ t('login.heading') }}">
-    <button class="tab" id="tab-user" role="tab" aria-selected="true" aria-controls="pane-user">{{ t("login.user_tab") }}</button>
-    <button class="tab" id="tab-admin" role="tab" aria-selected="false" aria-controls="pane-admin">{{ t("login.admin_tab") }}</button>
-  </div>
-
-  <div class="card" id="pane-user" role="tabpanel" aria-labelledby="tab-user">
-    <h2>{{ t("login.user_tab") }}</h2>
-    <p class="sub" id="user-hint">{{ t("login.pin_label") }}</p>
-    <div class="pin-display" id="pin-display" aria-live="polite" aria-label="{{ t('login.pin_label') }}"></div>
-    <div class="keypad" id="keypad">
-      <button class="btn" data-key="1">1</button>
-      <button class="btn" data-key="2">2</button>
-      <button class="btn" data-key="3">3</button>
-      <button class="btn" data-key="4">4</button>
-      <button class="btn" data-key="5">5</button>
-      <button class="btn" data-key="6">6</button>
-      <button class="btn" data-key="7">7</button>
-      <button class="btn" data-key="8">8</button>
-      <button class="btn" data-key="9">9</button>
-      <button class="btn ghost" data-key="clear" aria-label="Clear">C</button>
-      <button class="btn" data-key="0">0</button>
-      <button class="btn ghost" data-key="back" aria-label="Backspace">⌫</button>
-    </div>
-    <button class="btn primary wide mt" id="pin-submit">{{ t("login.button") }}</button>
-  </div>
-
-  <div class="card hidden" id="pane-admin" role="tabpanel" aria-labelledby="tab-admin">
-    <h2>{{ t("login.admin_tab") }}</h2>
-    <p class="sub">{{ t("login.password_label") }}</p>
-    <form id="admin-form" autocomplete="off">
-      <label for="admin-password">{{ t("login.password_label") }}</label>
-      <input type="password" id="admin-password" name="password" autocomplete="current-password" required>
-      <button class="btn primary wide mt" type="submit">{{ t("login.button") }}</button>
+  <div class="card">
+    <h1 class="login-title">{{ app_name }}</h1>
+    <p class="sub">{{ tagline }}</p>
+    <form id="login-form" class="stack mt" autocomplete="on">
+      <div>
+        <label for="username">{{ t("login.username") }}</label>
+        <input type="text" id="username" name="username" autocomplete="username"
+               autocapitalize="none" autocorrect="off" spellcheck="false" required>
+      </div>
+      <div>
+        <label for="password">{{ t("login.password") }}</label>
+        <input type="password" id="password" name="password" autocomplete="current-password" required>
+      </div>
+      <button class="btn primary wide" type="submit">{{ t("login.button") }}</button>
+      <p class="alert bad hidden" id="login-error" role="alert"></p>
     </form>
+    <p class="alert warn mt hidden" id="setup-hint">{{ t("login.setup_needed") }}</p>
   </div>
-
-  <p class="alert warn mt hidden" id="setup-hint">{{ t("login.setup_needed") }}</p>
-  <p class="alert bad mt hidden" id="login-error" role="alert"></p>
 </div>
 {% endblock %}
 {% block scripts %}<script src="{{ base }}/static/auth.js"></script>{% endblock %}

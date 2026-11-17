@@ -1,4 +1,4 @@
-"""HTTP flows: forced setup, CSRF, groups, guard, sessions, fail-safe, limiting."""
+"""HTTP flows: users, forced setup, CSRF, groups, modes, guard, sessions, fail-safe."""
 
 from __future__ import annotations
 
@@ -8,139 +8,207 @@ from timefence.api import create_app
 
 from .conftest import FakeAdGuard, make_entry
 
+ADMIN = {"username": "admin", "password": "admin"}
+ADMIN2 = {"username": "admin", "password": "correct horse battery"}
+
+
+def login(client, username, password):
+    response = client.post("/api/login", json={"username": username, "password": password})
+    if response.status_code == 200:
+        client.headers.update({"X-CSRF-Token": response.json()["csrf"]})
+    return response
+
 
 def complete_setup(client):
-    client.post("/api/login", json={"role": "admin", "secret": "admin"})
-    csrf = client.post("/api/login", json={"role": "admin", "secret": "admin"}).json()["csrf"]
-    client.headers.update({"X-CSRF-Token": csrf})
-    response = client.post(
-        "/api/setup", json={"admin_password": "correct horse battery", "user_pin": "2468"}
-    )
-    assert response.status_code == 200, response.text
-    response = client.post("/api/login", json={"role": "admin", "secret": "correct horse battery"})
-    assert response.status_code == 200
-    client.headers.update({"X-CSRF-Token": response.json()["csrf"]})
+    login(client, **ADMIN)
+    assert client.post("/api/setup", json={"admin_password": ADMIN2["password"]}).status_code == 200
+    login(client, **ADMIN2)
     return client
 
 
+def make_group(client, **overrides):
+    payload = {"name": "Games", "weekday_minutes": 45, "services": ["roblox"], "mode": "session"}
+    payload.update(overrides)
+    response = client.post("/api/groups", json=payload)
+    assert response.status_code == 200, response.text
+    return response.json()["group"]
+
+
 # --------------------------------------------------------------------------- #
-# forced first-run setup
+# first-run setup and login
 # --------------------------------------------------------------------------- #
 
 
-def test_before_setup_everything_but_login_is_blocked(client):
+def test_before_setup_only_login_and_setup_work(client):
     assert client.get("/api/state").status_code == 403
-    assert client.get("/api/groups").status_code == 403
-    # the user PIN is disabled until setup is done
-    response = client.post("/api/login", json={"role": "user", "secret": "0000"})
-    assert response.status_code == 403
-    assert response.json()["code"] == "setup_required"
-    # admin can log in with the documented default
-    response = client.post("/api/login", json={"role": "admin", "secret": "admin"})
+    assert (
+        client.post("/api/login", json={"username": "nobody", "password": "x"}).status_code == 401
+    )
+    response = login(client, **ADMIN)
     assert response.status_code == 200
-    meta = client.get("/api/meta").json()
-    assert meta["setup_complete"] is False
+    assert response.json()["role"] == "admin"
+    assert client.get("/api/meta").json()["setup_complete"] is False
+    assert client.get("/api/state").status_code == 403  # still gated
 
 
 def test_setup_validates_and_completes(admin):
     client = admin["client"]
-    assert (
-        client.post("/api/setup", json={"admin_password": "admin", "user_pin": "1357"}).status_code
-        == 400
-    )
-    assert (
-        client.post("/api/setup", json={"admin_password": "short", "user_pin": "1357"}).status_code
-        == 400
-    )
-    assert (
-        client.post(
-            "/api/setup", json={"admin_password": "a good long password", "user_pin": "0000"}
-        ).status_code
-        == 400
-    )
-    assert (
-        client.post(
-            "/api/setup", json={"admin_password": "a good long password", "user_pin": "12"}
-        ).status_code
-        == 400
-    )
-
-    good = client.post(
-        "/api/setup", json={"admin_password": "a good long password", "user_pin": "13579"}
-    )
-    assert good.status_code == 200
+    assert client.post("/api/setup", json={"admin_password": "admin"}).status_code == 400
+    assert client.post("/api/setup", json={"admin_password": "short"}).status_code == 400
+    assert client.post("/api/setup", json={"admin_password": ADMIN2["password"]}).status_code == 200
     assert client.get("/api/meta").json()["setup_complete"] is True
-
-    # old defaults are dead, new ones work
-    assert client.post("/api/login", json={"role": "admin", "secret": "admin"}).status_code == 401
-    assert client.post("/api/login", json={"role": "user", "secret": "0000"}).status_code == 401
-    assert client.post("/api/login", json={"role": "user", "secret": "13579"}).status_code == 200
+    assert client.post("/api/login", json=ADMIN).status_code == 401
+    assert login(client, **ADMIN2).status_code == 200
     assert client.get("/api/state").status_code == 200
 
 
 def test_csrf_is_required_for_writes(ready):
     client = ready["client"]
-    response = client.post(
-        "/api/session/stop", json={"group_id": 1}, headers={"X-CSRF-Token": "nope"}
-    )
+    response = client.post("/api/session/stop", json={"group_id": 1}, headers={"X-CSRF-Token": "x"})
     assert response.status_code == 403
     assert response.json()["code"] == "csrf"
 
 
 def test_login_rate_limit_locks_the_client(settings):
-    fake = FakeAdGuard()
-    app = create_app(settings, adguard=fake)
+    app = create_app(settings, adguard=FakeAdGuard())
     with TestClient(app) as client:
         complete_setup(client)
         for _ in range(4):
-            assert (
-                client.post("/api/login", json={"role": "user", "secret": "9999"}).status_code
-                == 401
-            )
-        # the 5th failure locks the client IP for 15 minutes
-        assert client.post("/api/login", json={"role": "user", "secret": "9999"}).status_code == 429
-        response = client.post("/api/login", json={"role": "user", "secret": "2468"})
-        assert response.status_code == 429
-        assert response.json()["code"] == "locked"
+            assert login(client, "admin", "nope").status_code == 401
+        assert login(client, "admin", "nope").status_code == 429
+        assert login(client, **ADMIN2).status_code == 429
 
 
 # --------------------------------------------------------------------------- #
-# groups
+# users
 # --------------------------------------------------------------------------- #
 
 
-def test_group_crud_and_reconcile(ready, fake):
+def test_user_crud_and_guards(ready):
     client = ready["client"]
-    response = client.post(
-        "/api/groups",
-        json={"name": "YouTube", "emoji": "▶️", "weekday_minutes": 60, "services": ["youtube"]},
+    created = client.post(
+        "/api/users", json={"username": "kid", "password": "kid-password", "role": "user"}
     )
-    assert response.status_code == 200, response.text
-    group = response.json()["group"]
-    assert group["remaining_minutes"] == 60
-    assert fake.ids == ["youtube"]  # blocked by default
+    assert created.status_code == 200, created.text
+    kid = created.json()["user"]
+    assert kid["role"] == "user"
 
-    response = client.put(
+    assert (
+        client.post(
+            "/api/users", json={"username": "kid", "password": "x" * 10, "role": "user"}
+        ).status_code
+        == 409
+    )
+    assert (
+        client.post("/api/users", json={"username": "bad name", "password": "x" * 10}).status_code
+        == 400
+    )
+    assert (
+        client.post("/api/users", json={"username": "shortpw", "password": "123"}).status_code
+        == 400
+    )
+
+    users = client.get("/api/users").json()["users"]
+    assert {u["username"] for u in users} == {"admin", "kid"}
+
+    # promote + demote
+    assert client.post(f"/api/users/{kid['id']}/role", json={"role": "admin"}).status_code == 200
+    assert client.post(f"/api/users/{kid['id']}/role", json={"role": "user"}).status_code == 200
+
+    # can't demote/disable/delete the last admin (only admin is 'admin' and it is ourselves)
+    me = [u for u in users if u["username"] == "admin"][0]
+    assert client.post(f"/api/users/{me['id']}/role", json={"role": "user"}).status_code == 409
+    assert (
+        client.post(f"/api/users/{me['id']}/disabled", json={"disabled": True}).status_code == 409
+    )
+    assert client.delete(f"/api/users/{me['id']}").status_code == 409
+
+    # disable the kid, delete it
+    assert (
+        client.post(f"/api/users/{kid['id']}/disabled", json={"disabled": True}).status_code == 200
+    )
+    assert login(client, "kid", "kid-password").status_code == 401
+    assert client.delete(f"/api/users/{kid['id']}").status_code == 200
+    assert [u["username"] for u in client.get("/api/users").json()["users"]] == ["admin"]
+
+
+def test_normal_user_cannot_use_admin_endpoints(ready):
+    client = ready["client"]
+    client.post("/api/users", json={"username": "kid", "password": "kid-password", "role": "user"})
+    user = login(client, "kid", "kid-password")
+    assert user.status_code == 200
+    headers = {"X-CSRF-Token": user.json()["csrf"]}
+    assert client.get("/api/state", headers=headers).status_code == 200
+    assert client.get("/api/groups", headers=headers).status_code == 200
+    assert client.get("/api/users", headers=headers).status_code == 403
+    assert (
+        client.post(
+            "/api/groups",
+            json={"name": "x", "weekday_minutes": 1, "domains_text": "x.com"},
+            headers=headers,
+        ).status_code
+        == 403
+    )
+
+
+# --------------------------------------------------------------------------- #
+# groups and modes
+# --------------------------------------------------------------------------- #
+
+
+def test_auto_mode_is_allowed_by_default(ready, fake):
+    client = ready["client"]
+    group = client.post(
+        "/api/groups", json={"name": "YouTube", "weekday_minutes": 60, "services": ["youtube"]}
+    ).json()["group"]
+    assert group["mode"] == "auto"
+    assert group["permitted"] is True
+    assert fake.ids == []  # nothing blocked: ads only
+    assert fake.rules == []
+
+
+def test_session_mode_is_blocked_by_default(ready, fake):
+    client = ready["client"]
+    group = make_group(client, services=["youtube"])
+    assert group["permitted"] is False
+    assert fake.ids == ["youtube"]
+
+    client.put(
+        f"/api/groups/{group['id']}",
+        json={
+            "name": group["name"],
+            "weekday_minutes": 60,
+            "services": ["youtube"],
+            "mode": "auto",
+        },
+    )
+    assert fake.ids == []  # switched to auto -> unblocked
+
+
+def test_group_crud(ready, fake):
+    client = ready["client"]
+    group = make_group(client, name="YouTube", emoji="▶️", weekday_minutes=60, services=["youtube"])
+    updated = client.put(
         f"/api/groups/{group['id']}",
         json={
             "name": "YouTube",
             "weekday_minutes": 30,
             "weekend_minutes": 45,
             "services": ["youtube"],
+            "mode": "session",
         },
     )
-    assert response.status_code == 200
-    assert response.json()["group"]["weekend_minutes"] == 45
+    assert updated.status_code == 200
+    assert updated.json()["group"]["weekend_minutes"] == 45
 
-    # pause -> stays blocked, sessions refused
-    client.post(f"/api/groups/{group['id']}/pause", json={"paused": True})
+    assert client.post(f"/api/groups/{group['id']}/pause", json={"paused": True}).status_code == 200
     assert (
         client.post("/api/session/start", json={"group_id": group["id"], "minutes": 15}).status_code
         == 409
-    )
+    )  # paused
 
     assert client.delete(f"/api/groups/{group['id']}").status_code == 200
-    assert fake.ids == []  # rules removed from AdGuard
+    assert fake.ids == []
 
 
 def test_domains_are_normalised_and_unique(ready, fake):
@@ -151,6 +219,7 @@ def test_domains_are_normalised_and_unique(ready, fake):
             "name": "Games",
             "weekday_minutes": 45,
             "domains_text": "https://Example-Game.com/play?x=1",
+            "mode": "session",
         },
     )
     assert first.status_code == 200, first.text
@@ -165,7 +234,7 @@ def test_domains_are_normalised_and_unique(ready, fake):
     assert "already used" in second.json()["error"]
 
 
-def test_critical_domain_needs_confirmation(ready, fake):
+def test_critical_domain_needs_confirmation(ready):
     client = ready["client"]
     response = client.post(
         "/api/groups",
@@ -209,10 +278,10 @@ def test_discover_hides_noise_and_managed_domains(ready, fake):
     names = [d["domain"] for d in data["domains"]]
     assert "example-game.com" in names
     assert "other-site.net" in names
-    assert "google-analytics.com" not in names  # noise
-    assert "known.com" not in names  # already managed
-    assert "youtube.com" in names  # not yet in a group here
-    assert "roblox.com" not in names  # covered by a group's AdGuard service
+    assert "google-analytics.com" not in names
+    assert "known.com" not in names
+    assert "roblox.com" not in names
+    assert "youtube.com" in names
 
     all_data = client.get("/api/discover?minutes=15&show_all=true").json()
     assert "google-analytics.com" in [d["domain"] for d in all_data["domains"]]
@@ -220,59 +289,45 @@ def test_discover_hides_noise_and_managed_domains(ready, fake):
 
 def test_test_endpoint_reports_blocked_hosts(ready, fake):
     client = ready["client"]
-    group = client.post(
-        "/api/groups",
-        json={"name": "Games", "weekday_minutes": 45, "services": ["roblox"]},
-    ).json()["group"]
+    group = make_group(client, services=["roblox"])
     results = client.get(f"/api/groups/{group['id']}/test").json()["results"]
     hosts = {r["host"]: r["blocked"] for r in results}
     assert hosts["roblox.com"] is True
 
 
 # --------------------------------------------------------------------------- #
-# sessions
+# sessions (session mode) and fail-safety
 # --------------------------------------------------------------------------- #
 
 
 def test_session_start_unblocks_then_blocks_at_expiry(ready, fake):
     client = ready["client"]
-    group = client.post(
-        "/api/groups",
-        json={
-            "name": "Games",
-            "weekday_minutes": 2,
-            "services": ["roblox"],
-            "domains_text": "example-game-test.com",
-        },
-    ).json()["group"]
+    group = make_group(
+        client, weekday_minutes=2, services=["roblox"], domains_text="example-game-test.com"
+    )
     assert fake.ids == ["roblox"]
     assert "||example-game-test.com^" in fake.rules
 
     started = client.post("/api/session/start", json={"group_id": group["id"], "minutes": 60})
     assert started.status_code == 200, started.text
-    assert started.json()["session"]["planned_seconds"] == 120  # capped at the budget
+    assert started.json()["session"]["planned_seconds"] == 120
     assert fake.ids == []
     assert fake.rules == []
 
-    # force the session into the past and let the reconciler close it
     conn = client.app.state.conn
     conn.execute("UPDATE sessions SET started_at=started_at-180 WHERE ended_at IS NULL")
     conn.commit()
     client.app.state.reconciler.run("test")
     assert fake.ids == ["roblox"]
     assert "||example-game-test.com^" in fake.rules
-
-    state = client.get("/api/state").json()
-    entry = state["groups"][0]
+    entry = client.get("/api/state").json()["groups"][0]
     assert entry["remaining_minutes"] <= 0.5
     assert entry["active_session"] is None
 
 
 def test_stop_bills_only_used_minutes(ready, fake):
     client = ready["client"]
-    group = client.post(
-        "/api/groups", json={"name": "Games", "weekday_minutes": 60, "services": ["roblox"]}
-    ).json()["group"]
+    group = make_group(client, weekday_minutes=60)
     client.post("/api/session/start", json={"group_id": group["id"], "minutes": 15})
     conn = client.app.state.conn
     conn.execute("UPDATE sessions SET started_at=started_at-90 WHERE ended_at IS NULL")
@@ -286,25 +341,33 @@ def test_fail_safe_restart_blocks_everything(settings, fake):
     app = create_app(settings, adguard=fake)
     with TestClient(app) as client:
         complete_setup(client)
-        group = client.post(
-            "/api/groups", json={"name": "Games", "weekday_minutes": 60, "services": ["roblox"]}
-        ).json()["group"]
+        group = make_group(client, weekday_minutes=60)
         client.post("/api/session/start", json={"group_id": group["id"], "minutes": 15})
         assert fake.ids == []
 
-    # "restart": a fresh app on the same data dir must close the session and block
     fake2 = FakeAdGuard()
     app2 = create_app(settings, adguard=fake2)
     with TestClient(app2) as client2:
-        conn = client2.app.state.conn
-        rows = list(conn.execute("SELECT end_reason, used_seconds FROM sessions"))
+        rows = list(client2.app.state.conn.execute("SELECT end_reason FROM sessions"))
         assert rows and all(row["end_reason"] == "service_restart" for row in rows)
         assert fake2.ids == ["roblox"]
 
 
-# --------------------------------------------------------------------------- #
-# misc
-# --------------------------------------------------------------------------- #
+def test_block_now_sets_a_force_block(ready, fake):
+    client = ready["client"]
+    group = client.post(
+        "/api/groups", json={"name": "YouTube", "weekday_minutes": 60, "services": ["youtube"]}
+    ).json()["group"]
+    assert fake.ids == []  # auto mode: allowed
+    client.post(f"/api/groups/{group['id']}/block", json={})
+    assert fake.ids == ["youtube"]
+    state = client.get("/api/state").json()["groups"][0]
+    assert state["force_block_until"] > 0
+    assert state["permitted"] is False
+
+    client.post(f"/api/groups/{group['id']}/force/clear", json={})
+    assert fake.ids == []
+    assert client.get("/api/state").json()["groups"][0]["permitted"] is True
 
 
 def test_healthz_and_meta_are_public(client):
@@ -312,36 +375,3 @@ def test_healthz_and_meta_are_public(client):
     meta = client.get("/api/meta").json()
     assert meta["version"]
     assert "unofficial" in meta
-
-
-def test_admin_only_endpoints_reject_user(ready):
-    client = ready["client"]
-    user = client.post("/api/login", json={"role": "user", "secret": "2468"})
-    csrf = user.json()["csrf"]
-    headers = {"X-CSRF-Token": csrf}
-    assert client.get("/api/groups", headers=headers).status_code == 200
-    assert (
-        client.post(
-            "/api/groups",
-            json={"name": "x", "weekday_minutes": 1, "domains_text": "x.com"},
-            headers=headers,
-        ).status_code
-        == 403
-    )
-
-
-def test_settings_tab_endpoints(ready, fake):
-    client = ready["client"]
-    assert client.post("/api/adguard/test", json={}).json()["ok"] is True
-    assert (
-        client.post("/api/admin/credentials", json={"role": "user", "secret": "1234"}).status_code
-        == 200
-    )
-    assert (
-        client.post("/api/admin/credentials", json={"role": "user", "secret": "0000"}).status_code
-        == 400
-    )
-    assert (
-        client.post("/api/admin/credentials", json={"role": "admin", "secret": "short"}).status_code
-        == 400
-    )

@@ -19,9 +19,12 @@ the time is up.
 - **Unlimited groups.** Each group has a name, an emoji, weekday/weekend
   minutes, any number of AdGuard *blocked services* and any number of custom
   domains.
-- **Blocked by default.** The default state of every group is blocked; a
-  session is the only way to unblock it. On restart TimeFence closes any open
-  session and re-blocks, so a crash can never leave something unblocked.
+- **Allowed by default (auto mode).** Nothing is blocked until a group's daily
+  minutes are used up — usage is metered from AdGuard's query log — then the
+  group is blocked until local midnight. An optional `session` mode keeps the
+  stricter "blocked unless a session is running" behaviour.
+- **Multiple accounts.** Admins manage everything; normal users see status and
+  can start/stop sessions. Both levels use username + password.
 - **Live countdown**, progress bar, "40 of 60 min left", and a big Stop button.
   Stop bills only the seconds actually used.
 - **Reconciler** every 30 seconds: AdGuard is only written to when the desired
@@ -67,11 +70,14 @@ and the `timefence.service` unit.
 
 ### First login
 
-> ⚠️ **The fresh install uses `admin` / `admin` and the user PIN `0000`.**
-> The first admin login forces you to choose a new password (at least 10
-> characters, not `admin`) and a new PIN (4–8 digits, not `0000`). Until you
-> do that, every API call except login/setup/logout is rejected and the user
-> PIN is disabled.
+> ⚠️ **The fresh install uses `admin` / `admin`.** The first admin login forces
+> you to choose a new password (at least 10 characters, not `admin`). Until you
+> do that, every API call except login/setup/logout is rejected.
+
+Accounts are username + password. Create one per child/family member in
+**Settings → Users** and pick the role: `admin` (everything) or `user` (status,
+plus start/stop for session-mode groups). A `user` password needs 8 characters,
+an `admin` password 10.
 
 Open `http://127.0.0.1:8099/` (or your reverse-proxied URL) and sign in as
 **Admin**.
@@ -106,11 +112,13 @@ Admin → **Groups** → **New group**:
 
 1. Name + emoji (e.g. `Games` 🎮).
 2. Weekday minutes, and weekend minutes if they differ.
-3. Pick AdGuard **services** with the searchable picker (these are the official
+3. **Mode**: *Allowed until the daily minutes run out* (default, nothing is
+   blocked up front) or *Blocked unless a session is running*.
+4. Pick AdGuard **services** with the searchable picker (these are the official
    AdGuard "blocked services" ids), and/or paste **domains**, one per line.
    Pasted URLs are reduced to their hostname; each becomes `||domain^`, which
    also covers subdomains. A domain or service can belong to only one group.
-4. If a domain is shared/critical (App Store, iCloud, Google, Akamai, ...),
+5. If a domain is shared/critical (App Store, iCloud, Google, Akamai, ...),
    TimeFence asks for explicit confirmation and explains what else breaks.
 
 Changes are applied immediately; no restart is needed.
@@ -141,9 +149,8 @@ sudo -u timefence env DATA_DIR=/var/lib/timefence \
   /opt/timefence/venv/bin/python -m timefence passwd --role admin
 ```
 
-The same command with `--role user` sets a new 4–8 digit PIN (used by the
-"User" tab). Rules: admin password ≥ 10 characters and not `admin`; PIN 4–8
-digits and not `0000`.
+Add `--username NAME` to reset another account (`--role admin|user`). Rules:
+admin password ≥ 10 characters and not `admin`; user password ≥ 8 characters.
 
 Five failed sign-ins lock that client IP for 15 minutes. The lockout is held in
 memory, so `sudo systemctl restart timefence` clears it immediately.
@@ -163,6 +170,14 @@ memory, so `sudo systemctl restart timefence` clears it immediately.
 
 **Does it need the AdGuard Home add-on/Pro?** No, the free AdGuard Home has the
 control API it uses.
+
+**How is "used" time measured?** In *auto* mode TimeFence charges the seconds
+between reconcile ticks when the group's domains were resolved through AdGuard.
+It ignores its own loopback lookups. Apps that keep streaming on cached IPs (or
+bypass DNS with DoH/VPN/mobile data) can therefore under-report — see
+[limitations](docs/limitations.md).
+
+**I forgot the admin password.** See [Recovering access](#recovering-access).
 
 **Why are my changes to AdGuard's user rules not visible?** TimeFence owns only
 the `# timefence:begin … # timefence:end` block and the services belonging to

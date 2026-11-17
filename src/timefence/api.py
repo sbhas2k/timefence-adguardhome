@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -88,22 +88,28 @@ def create_app(
     querylog_cache: dict[str, Any] = {"ts": 0.0, "data": []}
 
     # ---------------------------------------------------------------- setup
-    def seed_credentials() -> None:
+    def seed_users() -> None:
         with lock:
-            rows = {r["role"] for r in conn.execute("SELECT role FROM credentials")}
             now = int(time.time())
-            if "admin" not in rows:
+            count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+            if count == 0:
                 conn.execute(
-                    "INSERT INTO credentials(role, hash, updated_at) VALUES(?,?,?)",
-                    ("admin", security.hash_secret(credentials.DEFAULT_ADMIN_PASSWORD), now),
+                    "INSERT INTO users(username, role, hash, created_at, updated_at) "
+                    "VALUES('admin', 'admin', ?, ?, ?)",
+                    (security.hash_secret(credentials.DEFAULT_ADMIN_PASSWORD), now, now),
                 )
                 db.set_bool_setting(conn, "setup_complete", False)
-            if "user" not in rows:
-                conn.execute(
-                    "INSERT INTO credentials(role, hash, updated_at) VALUES(?,?,?)",
-                    ("user", security.hash_secret(credentials.DEFAULT_USER_PIN), now),
-                )
-            conn.commit()
+                conn.commit()
+
+    def users_count(role: str | None = None) -> int:
+        if role:
+            return conn.execute(
+                "SELECT COUNT(*) FROM users WHERE role=? AND disabled=0", (role,)
+            ).fetchone()[0]
+        return conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+
+    def user_row(user_id: int):
+        return conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
 
     def setup_complete() -> bool:
         return db.get_bool_setting(conn, "setup_complete", False)
@@ -237,7 +243,7 @@ def create_app(
     # ------------------------------------------------------------- lifespan
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI):
-        seed_credentials()
+        seed_users()
         ok, detail = agh.test_connection()
         if ok:
             log.info("AdGuard Home connection OK: %s", detail)
@@ -354,25 +360,27 @@ def create_app(
 
     # ------------------------------------------------------------------ auth
     @app.post(f"{base}/api/login")
-    async def api_login(request: Request, response: Response):
+    async def api_login(request: Request):
         ip = client_ip(request, settings)
         locked = limiter.locked_for(ip)
         if locked:
             return json_error(
-                429,
-                i18n.t("login.locked", minutes=max(1, locked // 60 + 1)),
-                "locked",
+                429, i18n.t("login.locked", minutes=max(1, locked // 60 + 1)), "locked"
             )
         data = await read_json(request)
-        role = str(data.get("role", "user"))
-        secret = str(data.get("secret", ""))
-        if role not in {"user", "admin"}:
-            return json_error(400, "bad role", "bad_role")
-        if role == "user" and not setup_complete():
+        username = str(data.get("username", "")).strip()
+        password = str(data.get("password", ""))
+        if not username or not password:
+            return json_error(400, i18n.t("login.missing"), "bad_request")
+        row = conn.execute(
+            "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (username,)
+        ).fetchone()
+        ok = bool(row) and not row["disabled"] and security.verify_secret(row["hash"], password)
+        if ok and row["role"] != "admin" and not setup_complete():
             return json_error(403, i18n.t("error.setup_required"), "setup_required")
-        if not verify(role, secret):
+        if not ok:
             limiter.record_failure(ip)
-            budget.log_event(conn, "login_failed", {"role": role, "ip": ip})
+            budget.log_event(conn, "login_failed", {"username": username[:40], "ip": ip})
             remaining = limiter.locked_for(ip)
             if remaining:
                 return json_error(
@@ -380,10 +388,25 @@ def create_app(
                 )
             return json_error(401, i18n.t("login.wrong"), "bad_credentials")
         limiter.reset(ip)
-        token, csrf = session_manager.issue(role)
-        budget.log_event(conn, "login", {"role": role, "ip": ip})
+        if security.needs_rehash(row["hash"]):
+            conn.execute(
+                "UPDATE users SET hash=?, updated_at=? WHERE id=?",
+                (security.hash_secret(password), int(time.time()), row["id"]),
+            )
+        conn.execute("UPDATE users SET last_login=? WHERE id=?", (int(time.time()), row["id"]))
+        conn.commit()
+        token, csrf = session_manager.issue(row["role"], row["username"])
+        budget.log_event(
+            conn, "login", {"username": row["username"], "role": row["role"], "ip": ip}
+        )
         response = JSONResponse(
-            {"ok": True, "role": role, "csrf": csrf, "setup_complete": setup_complete()}
+            {
+                "ok": True,
+                "role": row["role"],
+                "username": row["username"],
+                "csrf": csrf,
+                "setup_complete": setup_complete(),
+            }
         )
         response.set_cookie(
             session_manager.COOKIE,
@@ -409,15 +432,23 @@ def create_app(
             return json_error(400, "setup already completed", "already_setup")
         data = await read_json(request)
         admin_password = str(data.get("admin_password", ""))
-        pin = str(data.get("user_pin", ""))
-        problem = validate_password(admin_password) or validate_pin(pin)
+        problem = validate_password(admin_password)
         if problem:
             return json_error(400, problem, "invalid")
         with lock:
-            set_credential("admin", admin_password)
-            set_credential("user", pin)
+            conn.execute(
+                "UPDATE users SET hash=?, updated_at=? "
+                "WHERE role='admin' AND username=? COLLATE NOCASE",
+                (security.hash_secret(admin_password), int(time.time()), sess.username or "admin"),
+            )
+            if conn.total_changes == 0:
+                conn.execute(
+                    "UPDATE users SET hash=?, updated_at=? WHERE role='admin'",
+                    (security.hash_secret(admin_password), int(time.time())),
+                )
+            conn.commit()
             db.set_bool_setting(conn, "setup_complete", True)
-            budget.log_event(conn, "setup_completed", {"role": sess.role})
+            budget.log_event(conn, "setup_completed", {"username": sess.username})
         log.info("first-run setup completed")
         return JSONResponse({"ok": True})
 
@@ -447,6 +478,7 @@ def create_app(
         sess = require("user", request)
         payload = state_payload(sess.role)
         payload["app"]["csrf"] = sess.csrf
+        payload["app"]["username"] = sess.username
         return payload
 
     # -------------------------------------------------------------- sessions
@@ -482,6 +514,7 @@ def create_app(
             result = reconciler.run("session_start")
         payload = state_payload(sess.role)
         payload["app"]["csrf"] = sess.csrf
+        payload["app"]["username"] = sess.username
         return {"ok": True, "session": dict(session), "reconcile": result, "state": payload}
 
     @app.post(f"{base}/api/session/stop")
@@ -511,6 +544,7 @@ def create_app(
             result = reconciler.run("session_stop")
         payload = state_payload(sess.role)
         payload["app"]["csrf"] = sess.csrf
+        payload["app"]["username"] = sess.username
         return {
             "ok": True,
             "stopped": [dict(s) for s in stopped],
@@ -540,11 +574,15 @@ def create_app(
             domains = data.get("domains") or (existing.domains if existing else [])
         else:
             domains = budget.normalize_domains(str(domains_text))
+        mode = str(data.get("mode", existing.mode if existing else "auto")).strip().lower()
+        if mode not in ("auto", "session"):
+            mode = "auto"
         return {
             "name": str(data.get("name", existing.name if existing else "")).strip(),
             "emoji": str(data.get("emoji", existing.emoji if existing else "")).strip(),
             "weekday_minutes": weekday,
             "weekend_minutes": weekend,
+            "mode": mode,
             "services": [
                 str(s).strip().lower() for s in (data.get("services") or []) if str(s).strip()
             ],
@@ -691,6 +729,9 @@ def create_app(
             if not group or group.deleted:
                 return json_error(404, i18n.t("error.not_found"), "not_found")
             budget.clear_free(conn, group_id)
+            budget.set_force_block(
+                conn, group_id, budget.local_midnight(int(time.time()), settings.zone) + 86400
+            )
             stopped = budget.stop_sessions(conn, group_id, "admin_block")
             budget.log_event(conn, "admin_block", {"group": group.name, "actor": sess.role})
             reconciler.run("admin_block")
@@ -854,6 +895,154 @@ def create_app(
             set_credential(role, secret)
             budget.log_event(conn, "credentials_changed", {"role": role, "actor": sess.role})
         return {"ok": True}
+
+    # --------------------------------------------------------------- users
+    def public_user(row) -> dict:
+        return {
+            "id": row["id"],
+            "username": row["username"],
+            "role": row["role"],
+            "disabled": bool(row["disabled"]),
+            "created_at": row["created_at"],
+            "last_login": row["last_login"],
+        }
+
+    @app.get(f"{base}/api/users")
+    def api_users(request: Request):
+        require("admin", request)
+        rows = conn.execute("SELECT * FROM users ORDER BY role DESC, username").fetchall()
+        return {"users": [public_user(r) for r in rows]}
+
+    @app.post(f"{base}/api/users")
+    async def api_user_create(request: Request):
+        sess = require("admin", request)
+        data = await read_json(request)
+        username = str(data.get("username", "")).strip()
+        password = str(data.get("password", ""))
+        role = str(data.get("role", "user")).strip().lower()
+        problem = credentials.validate_username(username) or credentials.validate(role, password)
+        if problem:
+            return json_error(400, problem, "invalid")
+        with lock:
+            exists = conn.execute(
+                "SELECT 1 FROM users WHERE username=? COLLATE NOCASE", (username,)
+            ).fetchone()
+            if exists:
+                return json_error(409, i18n.t("users.exists"), "exists")
+            now = int(time.time())
+            cur = conn.execute(
+                "INSERT INTO users(username, role, hash, created_at, updated_at) VALUES(?,?,?,?,?)",
+                (username, role, security.hash_secret(password), now, now),
+            )
+            conn.commit()
+            budget.log_event(
+                conn, "user_create", {"username": username, "role": role, "actor": sess.username}
+            )
+            row = user_row(int(cur.lastrowid))
+        return {"ok": True, "user": public_user(row)}
+
+    @app.post(f"{base}/api/users/{{user_id}}/password")
+    async def api_user_password(user_id: int, request: Request):
+        sess = require("admin", request)
+        data = await read_json(request)
+        password = str(data.get("password", ""))
+        with lock:
+            row = user_row(user_id)
+            if not row:
+                return json_error(404, i18n.t("error.not_found"), "not_found")
+            problem = credentials.validate(row["role"], password)
+            if problem:
+                return json_error(400, problem, "invalid")
+            conn.execute(
+                "UPDATE users SET hash=?, updated_at=? WHERE id=?",
+                (security.hash_secret(password), int(time.time()), user_id),
+            )
+            conn.commit()
+            budget.log_event(
+                conn, "user_password", {"username": row["username"], "actor": sess.username}
+            )
+        return {"ok": True}
+
+    @app.post(f"{base}/api/users/{{user_id}}/role")
+    async def api_user_role(user_id: int, request: Request):
+        sess = require("admin", request)
+        data = await read_json(request)
+        role = str(data.get("role", "")).strip().lower()
+        if role not in ("admin", "user"):
+            return json_error(400, i18n.t("users.bad_role"), "invalid")
+        with lock:
+            row = user_row(user_id)
+            if not row:
+                return json_error(404, i18n.t("error.not_found"), "not_found")
+            if row["role"] == "admin" and role != "admin" and users_count("admin") <= 1:
+                return json_error(409, i18n.t("users.last_admin"), "last_admin")
+            conn.execute(
+                "UPDATE users SET role=?, updated_at=? WHERE id=?",
+                (role, int(time.time()), user_id),
+            )
+            conn.commit()
+            budget.log_event(
+                conn,
+                "user_role",
+                {"username": row["username"], "role": role, "actor": sess.username},
+            )
+        return {"ok": True, "user": public_user(user_row(user_id))}
+
+    @app.post(f"{base}/api/users/{{user_id}}/disabled")
+    async def api_user_disabled(user_id: int, request: Request):
+        sess = require("admin", request)
+        data = await read_json(request)
+        disabled = bool(data.get("disabled", True))
+        with lock:
+            row = user_row(user_id)
+            if not row:
+                return json_error(404, i18n.t("error.not_found"), "not_found")
+            if row["role"] == "admin" and disabled and users_count("admin") <= 1:
+                return json_error(409, i18n.t("users.last_admin"), "last_admin")
+            conn.execute(
+                "UPDATE users SET disabled=?, updated_at=? WHERE id=?",
+                (int(disabled), int(time.time()), user_id),
+            )
+            conn.commit()
+            budget.log_event(
+                conn,
+                "user_disabled",
+                {"username": row["username"], "disabled": disabled, "actor": sess.username},
+            )
+        return {"ok": True, "user": public_user(user_row(user_id))}
+
+    @app.delete(f"{base}/api/users/{{user_id}}")
+    def api_user_delete(user_id: int, request: Request):
+        sess = require("admin", request)
+        with lock:
+            row = user_row(user_id)
+            if not row:
+                return json_error(404, i18n.t("error.not_found"), "not_found")
+            if row["username"].lower() == (sess.username or "").lower():
+                return json_error(409, i18n.t("users.self_delete"), "self")
+            if row["role"] == "admin" and users_count("admin") <= 1:
+                return json_error(409, i18n.t("users.last_admin"), "last_admin")
+            conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+            conn.commit()
+            budget.log_event(
+                conn, "user_delete", {"username": row["username"], "actor": sess.username}
+            )
+        return {"ok": True, "deleted": row["username"]}
+
+    @app.post(f"{base}/api/groups/{{group_id}}/force/clear")
+    def api_group_force_clear(group_id: int, request: Request):
+        sess = require("admin", request)
+        with lock:
+            group = budget.get_group(conn, group_id)
+            if not group or group.deleted:
+                return json_error(404, i18n.t("error.not_found"), "not_found")
+            budget.clear_force_block(conn, group_id)
+            budget.log_event(conn, "admin_unblock", {"group": group.name, "actor": sess.username})
+            reconciler.run("admin_unblock")
+        return {
+            "ok": True,
+            "group": group_payload(budget.get_group(conn, group_id), int(time.time())),
+        }
 
     @app.post(f"{base}/api/adguard/test")
     def api_adguard_test(request: Request):

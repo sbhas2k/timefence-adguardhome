@@ -226,3 +226,50 @@ tbody tr:last-child td { border-bottom: none; }
 .grow1 { flex: 1 1 auto; min-width: 0; }
 .w-emoji { flex: 0 0 76px; }
 .scroll-y { max-height: 52vh; overflow-y: auto; }
+
+/* ---------------------------------------------------------------- mobile */
+.login-title { margin: 0; font-size: 22px; letter-spacing: -0.02em; }
+
+@media (max-width: 480px) {
+  body { font-size: 15px; }
+  .wrap { padding: 12px calc(12px + env(safe-area-inset-right)) 12px calc(12px + env(safe-area-inset-left)); }
+  .topbar { padding: 10px 12px; padding-top: calc(10px + env(safe-area-inset-top)); }
+  .brand { font-size: 15px; }
+  .card { padding: 13px; margin-bottom: 10px; border-radius: 12px; }
+  .card h2 { font-size: 16px; flex-wrap: wrap; }
+  .big { font-size: 23px; }
+  /* two rows of tabs instead of a scrolling strip */
+  .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .tab { font-size: 13px; padding: 10px 8px; }
+  /* big touch targets, stacked where it matters */
+  .btn { min-height: 46px; padding: 11px 12px; }
+  .btn.big-btn { min-height: 56px; font-size: 17px; }
+  .row > .btn { flex: 1 1 40%; }
+  .row > input[type="time"] { flex: 1 1 40%; }
+  .row > select { flex: 1 1 100%; }
+  .item { flex-wrap: wrap; }
+  .item .row { width: 100%; }
+  .item .row .btn { flex: 1 1 auto; }
+  /* inputs at 16px stop iOS from zooming on focus */
+  input[type="text"], input[type="password"], input[type="number"],
+  input[type="time"], input[type="search"], textarea, select { font-size: 16px; }
+  th, td { padding: 8px 6px; }
+  .table-wrap { margin: 0 -6px; padding: 0 6px; }
+  .modal .sheet { padding: 16px calc(16px + env(safe-area-inset-left)) calc(16px + env(safe-area-inset-bottom)); }
+  .toast { bottom: calc(18px + env(safe-area-inset-bottom)); }
+  .login-wrap { margin-top: 4vh; }
+}
+
+@media (max-width: 360px) {
+  .brand .logo { display: none; }
+  .pill { font-size: 11px; }
+}
+
+@media (hover: none) {
+  .btn:hover { border-color: var(--border); }
+  .btn.primary:hover { border-color: var(--accent); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}

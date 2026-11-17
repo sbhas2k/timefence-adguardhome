@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 MIGRATION_1 = """
 CREATE TABLE settings (
@@ -83,7 +83,39 @@ CREATE TABLE events (
 CREATE INDEX events_ts ON events(ts);
 """
 
-MIGRATIONS: dict[int, str] = {1: MIGRATION_1}
+# v2: multi-user accounts, "allowed until the budget runs out" groups and
+#     query-log usage metering.
+MIGRATION_2 = """
+CREATE TABLE users (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    username    TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    role        TEXT NOT NULL CHECK (role IN ('admin', 'user')),
+    hash        TEXT NOT NULL,
+    disabled    INTEGER NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    last_login  INTEGER
+);
+
+ALTER TABLE groups ADD COLUMN mode TEXT NOT NULL DEFAULT 'auto';
+ALTER TABLE groups ADD COLUMN force_block_until INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE usage_seconds (
+    day      TEXT NOT NULL,
+    group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    seconds  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, group_id)
+);
+
+INSERT OR IGNORE INTO users(username, role, hash, created_at, updated_at)
+    SELECT 'admin', 'admin', hash, updated_at, updated_at
+    FROM credentials WHERE role = 'admin';
+INSERT OR IGNORE INTO users(username, role, hash, created_at, updated_at)
+    SELECT 'user', 'user', hash, updated_at, updated_at
+    FROM credentials WHERE role = 'user';
+"""
+
+MIGRATIONS: dict[int, str] = {1: MIGRATION_1, 2: MIGRATION_2}
 
 
 def connect(path: Path | str) -> sqlite3.Connection:

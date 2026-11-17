@@ -85,6 +85,26 @@
     <p class="sub mt" id="adguard-result"></p>
   </div>
   <div class="card">
+    <h2>{{ t("users.heading") }}</h2>
+    <p class="sub">{{ t("users.note") }}</p>
+    <div id="user-list" class="list mt"></div>
+    <form id="user-form" class="stack mt" autocomplete="off">
+      <div class="row">
+        <input type="text" id="new-username" placeholder="{{ t('users.username') }}" aria-label="{{ t('users.username') }}" autocomplete="off" autocapitalize="none" required>
+        <input type="password" id="new-user-password" placeholder="{{ t('users.password') }}" aria-label="{{ t('users.password') }}" autocomplete="new-password" required>
+      </div>
+      <div class="row">
+        <select id="new-user-role" aria-label="{{ t('users.role') }}">
+          <option value="user">{{ t("users.role.user") }}</option>
+          <option value="admin">{{ t("users.role.admin") }}</option>
+        </select>
+        <button class="btn primary" type="submit">{{ t("users.add") }}</button>
+      </div>
+      <p class="sub">{{ t("users.password_hint") }}</p>
+    </form>
+  </div>
+
+  <div class="card">
     <h2>{{ t("admin.version") }}</h2>
     <p class="sub">{{ version }} · {{ app_title }}</p>
   </div>

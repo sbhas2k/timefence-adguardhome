@@ -70,13 +70,20 @@ def test_reset_writes_a_usable_hash(tmp_path):
     path = tmp_path / "timefence.db"
     conn = db.connect(path)
     db.migrate(conn)
+    conn.execute(
+        "INSERT INTO users(username, role, hash, created_at, updated_at) "
+        "VALUES('admin','admin',?,0,0)",
+        (security.hash_secret("old-password"),),
+    )
+    conn.commit()
     conn.close()
 
     written = credentials.reset(tmp_path, "admin", "brand new password")
     assert written == path
 
     conn = db.connect(path)
-    assert credentials.verify(conn, "admin", "brand new password")
+    stored = conn.execute("SELECT hash FROM users WHERE username='admin'").fetchone()[0]
+    assert security.verify_secret(stored, "brand new password")
     conn.close()
 
 
@@ -84,7 +91,7 @@ def test_reset_rejects_bad_values(tmp_path):
     with pytest.raises(credentials.CredentialError):
         credentials.reset(tmp_path, "admin", "short")
     with pytest.raises(credentials.CredentialError):
-        credentials.reset(tmp_path, "user", "0000")
+        credentials.reset(tmp_path, "user", "short")
     with pytest.raises(credentials.CredentialError):
         credentials.reset(tmp_path, "nobody", "whatever")
 
@@ -93,6 +100,12 @@ def test_cli_passwd(tmp_path):
     path = tmp_path / "timefence.db"
     conn = db.connect(path)
     db.migrate(conn)
+    conn.execute(
+        "INSERT INTO users(username, role, hash, created_at, updated_at) "
+        "VALUES('admin','admin',?,0,0)",
+        (security.hash_secret("old-password"),),
+    )
+    conn.commit()
     conn.close()
 
     result = subprocess.run(
@@ -106,12 +119,13 @@ def test_cli_passwd(tmp_path):
             "--data-dir",
             str(tmp_path),
         ],
-        input="1357\n1357\n",
+        input="new-password-123\nnew-password-123\n",
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    assert "user credential updated" in result.stdout
+    assert "updated" in result.stdout
     conn = db.connect(path)
-    assert credentials.verify(conn, "user", "1357")
+    stored = conn.execute("SELECT hash FROM users WHERE username='admin'").fetchone()[0]
+    assert security.verify_secret(stored, "new-password-123")
     conn.close()

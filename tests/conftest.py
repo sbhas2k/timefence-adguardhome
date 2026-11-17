@@ -17,7 +17,11 @@ class FakeAdGuard(AdGuardClient):
     """In-memory stand-in for the AdGuard Home control API."""
 
     SERVICES = [
-        {"id": "youtube", "name": "YouTube", "rules": ["||youtube.com^", "||youtu.be^"]},
+        {
+            "id": "youtube",
+            "name": "YouTube",
+            "rules": ["||youtube.com^", "||youtu.be^", "||googlevideo.com^", "||ytimg.com^"],
+        },
         {"id": "instagram", "name": "Instagram", "rules": ["||instagram.com^"]},
         {"id": "roblox", "name": "Roblox", "rules": ["||roblox.com^"]},
     ]
@@ -118,7 +122,7 @@ def client(app):
 @pytest.fixture()
 def admin(client):
     """Logged-in admin client plus its CSRF token."""
-    response = client.post("/api/login", json={"role": "admin", "secret": "admin"})
+    response = client.post("/api/login", json={"username": "admin", "password": "admin"})
     assert response.status_code == 200, response.text
     csrf = response.json()["csrf"]
     client.headers.update({"X-CSRF-Token": csrf})
@@ -130,12 +134,14 @@ def ready(admin):
     """Admin that already completed first-run setup."""
     response = admin["client"].post(
         "/api/setup",
-        json={"admin_password": "correct horse battery", "user_pin": "2468"},
+        json={"admin_password": "correct horse battery"},
     )
     assert response.status_code == 200, response.text
     # re-login because the admin password changed
     client = admin["client"]
-    response = client.post("/api/login", json={"role": "admin", "secret": "correct horse battery"})
+    response = client.post(
+        "/api/login", json={"username": "admin", "password": "correct horse battery"}
+    )
     assert response.status_code == 200, response.text
     csrf = response.json()["csrf"]
     client.headers.update({"X-CSRF-Token": csrf})

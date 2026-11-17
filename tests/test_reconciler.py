@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import UTC
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -27,7 +28,7 @@ def conn(tmp_path):
     connection.close()
 
 
-def add_group(conn, name="YouTube", services=("youtube",), domains=(), minutes=60):
+def add_group(conn, name="YouTube", services=("youtube",), domains=(), minutes=60, mode="session"):
     return budget.create_group(
         conn,
         name=name,
@@ -36,6 +37,7 @@ def add_group(conn, name="YouTube", services=("youtube",), domains=(), minutes=6
         weekend_minutes=minutes,
         services=list(services),
         domains=list(domains),
+        mode=mode,
     )
 
 
@@ -99,7 +101,7 @@ def test_build_rules_is_idempotent():
 def test_service_sync_preserves_unmanaged_services_and_schedule(conn, fake):
     fake.ids = ["tiktok", "youtube"]
     fake.schedule = {"time_zone": "Asia/Kolkata", "mon": {"start": 0, "end": 86400}}
-    add_group(conn, services=("youtube",))
+    add_group(conn, services=("youtube",), mode="session")
     reconciler = Reconciler(conn, fake, TZ)
 
     changed = reconciler.sync_services(int(time.time()))
@@ -115,7 +117,7 @@ def test_service_sync_preserves_unmanaged_services_and_schedule(conn, fake):
 
 
 def test_service_sync_unblocks_a_permitted_group(conn, fake):
-    group = add_group(conn, services=("youtube",))
+    group = add_group(conn, services=("youtube",), mode="session")
     now = int(time.time())
     reconciler = Reconciler(conn, fake, TZ)
     reconciler.sync_services(now)
@@ -133,7 +135,7 @@ def test_service_sync_unblocks_a_permitted_group(conn, fake):
 
 
 def test_paused_group_is_always_blocked(conn, fake):
-    group = add_group(conn, services=("roblox",), minutes=60)
+    group = add_group(conn, services=("roblox",), minutes=60, mode="session")
     now = int(time.time())
     reconciler = Reconciler(conn, fake, TZ)
     budget.update_group(conn, group.id, paused=True)
@@ -142,7 +144,7 @@ def test_paused_group_is_always_blocked(conn, fake):
 
 
 def test_domain_sync_only_costs_one_write_per_change(conn, fake):
-    group = add_group(conn, services=(), domains=("example.com",))
+    group = add_group(conn, services=(), domains=("example.com",), mode="session")
     reconciler = Reconciler(conn, fake, TZ)
     now = int(time.time())
 
@@ -168,3 +170,82 @@ def test_reconciler_survives_adguard_errors(conn, fake, monkeypatch):
     add_group(conn)
     result = Reconciler(conn, fake, TZ).run("test")
     assert result["errors"]
+
+
+# --------------------------------------------------------------------------- #
+# auto mode ("allowed until the budget runs out") + metering
+# --------------------------------------------------------------------------- #
+
+
+def test_auto_mode_is_open_until_the_budget_is_spent(conn, fake):
+    group = add_group(conn, services=("youtube",), minutes=1, mode="auto")
+    reconciler = Reconciler(conn, fake, TZ)
+    now = int(time.time())
+
+    reconciler.sync_services(now)
+    assert fake.ids == []  # nothing blocked by default
+
+    # pretend a minute of usage was metered
+    budget.add_metered_seconds(conn, group.id, budget.day_str(now, TZ), 60, cap_seconds=60)
+    assert budget.remaining_seconds(conn, group, TZ, now) == 0
+    reconciler.sync_services(now)
+    assert fake.ids == ["youtube"]  # limit reached -> blocked
+
+
+def test_metering_charges_time_only_when_the_group_was_queried(conn, fake):
+    youtube = add_group(conn, services=("youtube",), minutes=30, mode="auto")
+    roblox = add_group(conn, name="Roblox", services=("roblox",), minutes=30, mode="auto")
+    reconciler = Reconciler(conn, fake, TZ)
+    now = int(time.time())
+
+    # first pass only sets the cursor
+    reconciler.meter(now, "startup")
+    assert budget.metered_seconds(conn, youtube.id, budget.day_str(now, TZ)) == 0
+
+    fake.entries = [
+        {
+            "time": "2026-11-13T07:00:00.000000000Z",
+            "client": "192.168.1.50",
+            "question": {"name": "rr1---sn-abc.googlevideo.com", "type": "A"},
+        }
+    ]
+    # entry timestamp is outside the window on purpose -> nothing charged
+    reconciler.meter(now + 30)
+    assert budget.metered_seconds(conn, youtube.id, budget.day_str(now, TZ)) == 0
+
+    # now a fresh entry inside the window
+    from datetime import datetime
+
+    stamp = datetime.fromtimestamp(now + 40, UTC).strftime("%Y-%m-%dT%H:%M:%S.000000000Z")
+    fake.entries = [
+        {
+            "time": stamp,
+            "client": "192.168.1.50",
+            "question": {"name": "rr1---sn-abc.googlevideo.com", "type": "A"},
+        },
+        {
+            "time": stamp,
+            "client": "127.0.0.1",  # our own lookups never count
+            "question": {"name": "roblox.com", "type": "A"},
+        },
+    ]
+    charged = reconciler.meter(now + 60)
+    assert charged == 1
+    day = budget.day_str(now + 60, TZ)
+    assert budget.metered_seconds(conn, youtube.id, day) == 30
+    assert budget.metered_seconds(conn, roblox.id, day) == 0
+
+
+def test_auto_mode_blocks_for_the_rest_of_the_day_then_allows_tomorrow(conn, fake):
+    group = add_group(conn, services=("youtube",), minutes=1, mode="auto")
+    reconciler = Reconciler(conn, fake, TZ)
+    now = int(time.time())
+    day = budget.day_str(now, TZ)
+    budget.add_metered_seconds(conn, group.id, day, 60, cap_seconds=60)
+
+    reconciler.sync_services(now)
+    assert fake.ids == ["youtube"]
+    tomorrow = now + 86400
+    assert budget.is_permitted(conn, group, TZ, tomorrow) is True
+    reconciler.sync_services(tomorrow)
+    assert fake.ids == []

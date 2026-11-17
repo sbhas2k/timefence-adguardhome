@@ -33,6 +33,38 @@ A session's `planned_seconds` is `min(requested_minutes * 60, remaining)`
 rounded down to whole minutes. When it ends by expiry the full planned time is
 charged; when the user presses **Stop**, only `now - started_at` is charged.
 
+## Two modes
+
+Every group has a `mode`:
+
+- **auto** (default) — allowed while the daily budget lasts. Nothing is blocked
+  up front. Usage is metered (below); when the budget is exhausted the group is
+  blocked until local midnight. `Block now` force-blocks it earlier, `Allow
+  freely until` overrides everything.
+- **session** — blocked unless a session is running. `15/30/60` buttons start a
+  session capped at the remaining budget; `Stop` bills only the elapsed
+  seconds; expiry charges the planned window. On restart open sessions are
+  closed (`service_reason`) and the group re-blocks.
+
+## Metering (auto mode)
+
+The only usage signal available is AdGuard's query log. Once per reconcile tick
+(30 s) TimeFence looks at the queries that arrived since the previous tick and,
+for every **auto** group that is currently permitted, checks whether any of its
+domains (or the domains covered by its AdGuard services) were resolved. If so,
+the elapsed window is charged to that group's day, capped at the budget.
+
+Details that matter:
+
+- loopback queries (`127.0.0.1`, `::1`) are ignored, so TimeFence's own health
+  checks never consume budget;
+- a group only accrues usage while it is permitted, so a blocked group cannot
+  run up a debt through retries;
+- the first tick after a start only sets the cursor (no back-fill);
+- metering is an approximation: a player that streams from cached IPs or
+  bypasses DNS (DoH/VPN/mobile data) will under-report, and background API
+  calls may add a few seconds that are not "watching".
+
 ## Intended state → AdGuard
 
 Two independent things are managed:

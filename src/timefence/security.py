@@ -128,6 +128,7 @@ def load_or_create_secret(data_dir: Path) -> str:
 class SessionData:
     role: str
     csrf: str
+    username: str = ""
 
 
 class SessionManager:
@@ -139,9 +140,9 @@ class SessionManager:
         self.serializer = URLSafeTimedSerializer(secret, salt="timefence-session")
         self.max_age = max_age
 
-    def issue(self, role: str) -> tuple[str, str]:
+    def issue(self, role: str, username: str = "") -> tuple[str, str]:
         csrf = secrets.token_urlsafe(24)
-        token = self.serializer.dumps({"role": role, "csrf": csrf})
+        token = self.serializer.dumps({"role": role, "csrf": csrf, "username": username})
         return token, csrf
 
     def read(self, token: str | None) -> SessionData | None:
@@ -157,7 +158,8 @@ class SessionManager:
         csrf = payload.get("csrf")
         if role not in {"admin", "user"} or not isinstance(csrf, str):
             return None
-        return SessionData(role=role, csrf=csrf)
+        username = payload.get("username") or ""
+        return SessionData(role=role, csrf=csrf, username=str(username))
 
 
 # --------------------------------------------------------------------------- #
