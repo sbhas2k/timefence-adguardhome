@@ -123,6 +123,35 @@ def create_app(
     def current_session(request: Request) -> security.SessionData | None:
         return getattr(request.state, "session", None)
 
+    def session_user(sess: security.SessionData | None):
+        if not sess or not sess.username:
+            return None
+        return conn.execute(
+            "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (sess.username,)
+        ).fetchone()
+
+    def user_names() -> dict[int, str]:
+        return {
+            row["id"]: row["username"] for row in conn.execute("SELECT id, username FROM users")
+        }
+
+    def visible_group_ids(sess: security.SessionData) -> set[int] | None:
+        """Admins see everything; a user sees their own groups plus shared ones."""
+        if sess.role == "admin":
+            return None
+        row = session_user(sess)
+        if not row:
+            return set()
+        return {
+            group.id
+            for group in budget.list_groups(conn)
+            if group.owner_id is None or group.owner_id == row["id"]
+        }
+
+    def can_see(sess: security.SessionData, group_id: int) -> bool:
+        ids = visible_group_ids(sess)
+        return ids is None or group_id in ids
+
     def require(role: str, request: Request) -> security.SessionData:
         sess = current_session(request)
         if not sess:
@@ -170,11 +199,17 @@ def create_app(
 
     # -------------------------------------------------------------- context
     def group_payload(group: budget.Group, now: int) -> dict:
-        return budget.group_state(conn, group, settings.zone, now)
+        payload = budget.group_state(conn, group, settings.zone, now)
+        payload["owner"] = user_names().get(group.owner_id) if group.owner_id else None
+        return payload
 
-    def state_payload(role: str, now: int | None = None) -> dict:
+    def state_payload(role: str, now: int | None = None, group_ids: set[int] | None = None) -> dict:
         now = now or int(time.time())
-        groups = [group_payload(g, now) for g in budget.list_groups(conn)]
+        groups = [
+            group_payload(g, now)
+            for g in budget.list_groups(conn)
+            if group_ids is None or g.id in group_ids
+        ]
         payload: dict[str, Any] = {
             "app": {
                 "name": i18n.t("app.title"),
@@ -187,8 +222,8 @@ def create_app(
                 "now": now,
             },
             "groups": groups,
-            "history": budget.history(conn, settings.zone, days=7, now=now),
-            "sessions_today": budget.sessions_today(conn, settings.zone, now),
+            "history": budget.history(conn, settings.zone, days=7, now=now, group_ids=group_ids),
+            "sessions_today": budget.sessions_today(conn, settings.zone, now, group_ids=group_ids),
             "adguard_error": reconciler.last_error,
         }
         return payload
@@ -476,7 +511,7 @@ def create_app(
     @app.get(f"{base}/api/state")
     def api_state(request: Request):
         sess = require("user", request)
-        payload = state_payload(sess.role)
+        payload = state_payload(sess.role, group_ids=visible_group_ids(sess))
         payload["app"]["csrf"] = sess.csrf
         payload["app"]["username"] = sess.username
         return payload
@@ -493,7 +528,7 @@ def create_app(
             return json_error(400, "group_id and minutes are required", "bad_request")
         with lock:
             group = budget.get_group(conn, group_id)
-            if not group or group.deleted:
+            if not group or group.deleted or not can_see(sess, group_id):
                 return json_error(404, i18n.t("error.not_found"), "not_found")
             try:
                 session = budget.start_session(conn, group, minutes, settings.zone, actor=sess.role)
@@ -512,7 +547,7 @@ def create_app(
                 },
             )
             result = reconciler.run("session_start")
-        payload = state_payload(sess.role)
+        payload = state_payload(sess.role, group_ids=visible_group_ids(sess))
         payload["app"]["csrf"] = sess.csrf
         payload["app"]["username"] = sess.username
         return {"ok": True, "session": dict(session), "reconcile": result, "state": payload}
@@ -527,7 +562,7 @@ def create_app(
             return json_error(400, "group_id is required", "bad_request")
         with lock:
             group = budget.get_group(conn, group_id)
-            if not group:
+            if not group or not can_see(sess, group_id):
                 return json_error(404, i18n.t("error.not_found"), "not_found")
             stopped = budget.stop_sessions(conn, group_id, "stopped")
             if stopped:
@@ -542,7 +577,7 @@ def create_app(
                     },
                 )
             result = reconciler.run("session_stop")
-        payload = state_payload(sess.role)
+        payload = state_payload(sess.role, group_ids=visible_group_ids(sess))
         payload["app"]["csrf"] = sess.csrf
         payload["app"]["username"] = sess.username
         return {
@@ -555,9 +590,16 @@ def create_app(
     # ---------------------------------------------------------------- groups
     @app.get(f"{base}/api/groups")
     def api_groups(request: Request):
-        require("user", request)
+        sess = require("user", request)
         now = int(time.time())
-        return {"groups": [group_payload(g, now) for g in budget.list_groups(conn)]}
+        ids = visible_group_ids(sess)
+        return {
+            "groups": [
+                group_payload(g, now)
+                for g in budget.list_groups(conn)
+                if ids is None or g.id in ids
+            ]
+        }
 
     def group_from_payload(data: dict, existing: budget.Group | None = None) -> dict:
         def int_or(value: Any, fallback: int) -> int:
@@ -577,12 +619,27 @@ def create_app(
         mode = str(data.get("mode", existing.mode if existing else "auto")).strip().lower()
         if mode not in ("auto", "session"):
             mode = "auto"
+        owner_raw = data.get("owner_id", existing.owner_id if existing else None)
+        if owner_raw in ("", None):
+            owner_id = None
+        else:
+            try:
+                owner_id = int(owner_raw)
+            except (TypeError, ValueError):
+                owner_id = None
+        if (
+            owner_id is not None
+            and not conn.execute("SELECT 1 FROM users WHERE id=?", (owner_id,)).fetchone()
+        ):
+            raise ValueError("owner not found")
         return {
             "name": str(data.get("name", existing.name if existing else "")).strip(),
             "emoji": str(data.get("emoji", existing.emoji if existing else "")).strip(),
             "weekday_minutes": weekday,
             "weekend_minutes": weekend,
             "mode": mode,
+            "owner_id": owner_id,
+            "set_owner": "owner_id" in data,
             "services": [
                 str(s).strip().lower() for s in (data.get("services") or []) if str(s).strip()
             ],
@@ -604,6 +661,7 @@ def create_app(
                 critical=hits,
             )
         with lock:
+            fields.pop("set_owner", None)
             try:
                 group = budget.create_group(conn, **fields)
             except budget.ValidationError as exc:
@@ -684,6 +742,7 @@ def create_app(
             budget.log_event(
                 conn, "admin_bonus", {"group": group.name, "minutes": minutes, "actor": sess.role}
             )
+            reconciler.run("admin_bonus")
         return {"ok": True, "group": group_payload(group, int(time.time()))}
 
     @app.post(f"{base}/api/groups/{{group_id}}/free")
@@ -1028,6 +1087,23 @@ def create_app(
                 conn, "user_delete", {"username": row["username"], "actor": sess.username}
             )
         return {"ok": True, "deleted": row["username"]}
+
+    @app.post(f"{base}/api/groups/{{group_id}}/reset")
+    def api_group_reset(group_id: int, request: Request):
+        sess = require("admin", request)
+        with lock:
+            group = budget.get_group(conn, group_id)
+            if not group or group.deleted:
+                return json_error(404, i18n.t("error.not_found"), "not_found")
+            budget.stop_sessions(conn, group_id, "admin_reset")
+            budget.reset_today(conn, group_id, settings.zone)
+            budget.clear_force_block(conn, group_id)
+            budget.log_event(conn, "admin_reset", {"group": group.name, "actor": sess.username})
+            reconciler.run("admin_reset")
+        return {
+            "ok": True,
+            "group": group_payload(budget.get_group(conn, group_id), int(time.time())),
+        }
 
     @app.post(f"{base}/api/groups/{{group_id}}/force/clear")
     def api_group_force_clear(group_id: int, request: Request):

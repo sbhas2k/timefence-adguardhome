@@ -160,11 +160,17 @@
       adminRow =
         '<div class="row tight mt">' +
         '<button class="btn" data-action="block" data-group="' + group.id + '">' + esc(t("admin.block_now")) + "</button>" +
-        (group.force_block_until ? '<button class="btn" data-action="unblock" data-group="' + group.id + '">' + esc(t("toast.unblocked", { name: "" })) + "</button>" : "") +
+        '<button class="btn" data-action="bonus" data-group="' + group.id + '" data-minutes="-15">' + esc(t("admin.decrease")) + "</button>" +
         '<button class="btn" data-action="bonus" data-group="' + group.id + '" data-minutes="15">' + esc(t("admin.bonus")) + "</button>" +
+        '<input type="number" inputmode="numeric" step="5" data-custom-bonus="' + group.id + '" placeholder="' + esc(t("admin.custom_placeholder")) + '" aria-label="' + esc(t("admin.custom_placeholder")) + '">' +
+        '<button class="btn" data-action="bonus-custom" data-group="' + group.id + '">' + esc(t("admin.apply")) + "</button>" +
+        (group.force_block_until ? '<button class="btn" data-action="unblock" data-group="' + group.id + '">' + esc(t("toast.unblocked", { name: "" })) + "</button>" : "") +
+        "</div>" +
+        '<div class="row tight mt">' +
         '<input type="time" data-free-time="' + group.id + '" value="21:00" aria-label="' + esc(t("admin.free_label")) + '">' +
         '<button class="btn" data-action="free" data-group="' + group.id + '">' + esc(t("admin.free_apply")) + "</button>" +
         (group.free_until ? '<button class="btn" data-action="clearfree" data-group="' + group.id + '">' + esc(t("admin.clear_free")) + "</button>" : "") +
+        '<button class="btn ghost" data-action="reset" data-group="' + group.id + '">' + esc(t("admin.reset_today")) + "</button>" +
         "</div>";
     }
     return (
@@ -207,6 +213,7 @@
         '<span aria-hidden="true">' + esc(g.emoji || "⏳") + "</span>" +
         '<div class="grow"><div class="name">' + esc(g.name) + "</div>" +
         '<div class="muted small">' + (g.mode === "auto" ? "auto" : "sessions") + " · " + g.weekday_minutes + "/" + g.weekend_minutes + " " + esc(t("common.minutes")) +
+        " · " + esc(g.owner || t("groups.owner_shared")) +
         " · " + esc([].concat(g.services, g.domains).join(", ").slice(0, 70)) + "</div></div>" +
         (g.paused ? '<span class="pill warn">' + esc(t("status.paused")) + "</span>" : "") +
         '<button class="btn ghost" data-action="edit" data-group="' + g.id + '">' + esc(t("common.edit")) + "</button>" +
@@ -304,7 +311,12 @@
       if (data.state) { setState(data.state); } else { return refresh(); }
       var group = data.group || (state.groups.filter(function (g) { return g.id === groupId; })[0] || {});
       if (action === "block") { toast(t("toast.blocked", { name: group.name })); }
-      if (action === "bonus") { toast(t("toast.bonus", { name: group.name, minutes: payload.minutes })); }
+      if (action === "bonus") {
+        toast(payload.minutes < 0
+          ? t("toast.bonus_removed", { name: group.name, minutes: Math.abs(payload.minutes) })
+          : t("toast.bonus", { name: group.name, minutes: payload.minutes }));
+      }
+      if (action === "reset") { toast(t("toast.reset", { name: group.name })); }
       if (action === "free") { toast(t("toast.free", { name: group.name, time: fmtTime(data.until) })); }
       if (action === "clearfree") { toast(t("common.saved")); }
       render();
@@ -347,7 +359,13 @@
   }
 
   function openGroupEditor(group) {
-    group = group || { name: "", emoji: "⏳", weekday_minutes: 60, weekend_minutes: 60, services: [], domains: [], paused: false, mode: "auto" };
+    api("GET", "/api/users")
+      .then(function (data) { openGroupEditorWith(group, data.users || []); })
+      .catch(function () { openGroupEditorWith(group, []); });
+  }
+
+  function openGroupEditorWith(group, users) {
+    group = group || { name: "", emoji: "⏳", weekday_minutes: 60, weekend_minutes: 60, services: [], domains: [], paused: false, mode: "auto", owner_id: null };
     var selected = { services: (group.services || []).slice(), paused: !!group.paused };
 
     function sheet() {
@@ -368,6 +386,12 @@
         '<input type="number" id="g-weekend" min="0" max="1440" value="' + group.weekend_minutes + '"></div></div>' +
         '<div><label>' + esc(t("groups.services")) + "</label><div class=\"row tight\" id=\"service-chips\">" + chips +
         ' <button type="button" class="btn" data-action="pick-services">+ ' + esc(t("groups.services")) + "</button></div></div>" +
+        '<div><label for="g-owner">' + esc(t("groups.owner")) + "</label>" +
+        '<select id="g-owner"><option value="">' + esc(t("groups.owner_shared")) + "</option>" +
+        users.map(function (u) {
+          var sel = String(group.owner_id) === String(u.id) ? " selected" : "";
+          return '<option value="' + u.id + '"' + sel + ">" + esc(u.username) + " (" + esc(u.role) + ")</option>";
+        }).join("") + "</select></div>" +
         '<div><label for="g-mode">' + esc(t("groups.mode")) + "</label>" +
         '<select id="g-mode"><option value="auto"' + ((group.mode || "auto") === "auto" ? " selected" : "") + ">" + esc(t("groups.mode.auto")) + "</option>" +
         '<option value="session"' + (group.mode === "session" ? " selected" : "") + ">" + esc(t("groups.mode.session")) + "</option></select>" +
@@ -398,7 +422,8 @@
           domains_text: $("#g-domains").value,
           services: selected.services,
           paused: $("#g-paused").checked,
-          mode: $("#g-mode").value
+          mode: $("#g-mode").value,
+          owner_id: $("#g-owner").value === "" ? null : Number($("#g-owner").value)
         };
         saveGroup(payload, group.id);
       });
@@ -463,6 +488,22 @@
 
     $("#service-done").addEventListener("click", function () { closeModal(); done(selected); });
     load();
+  }
+
+  function resetGroup(groupId, name) {
+    openModal(
+      '<h2 class="wrap-anywhere">' + esc(t("admin.reset_today")) + " — " + esc(name) + "</h2>" +
+      '<p class="sub">' + esc(t("admin.reset_confirm", { name: name })) + "</p>" +
+      '<div class="row mt"><button class="btn" data-action="modal-close">' + esc(t("common.cancel")) + "</button>" +
+      '<button class="btn danger" id="reset-confirm">' + esc(t("admin.reset_today")) + "</button></div>"
+    );
+    $("#reset-confirm").addEventListener("click", function () {
+      api("POST", "/api/groups/" + groupId + "/reset", {}).then(function (data) {
+        closeModal();
+        toast(t("toast.reset", { name: data.group.name }));
+        refresh();
+      }).catch(function (error) { toast(error.message); });
+    });
   }
 
   function deleteGroup(groupId, name) {
@@ -595,6 +636,16 @@
     else if (action === "stop") { stop(groupId); }
     else if (action === "block") { adminAction("block", groupId); }
     else if (action === "bonus") { adminAction("bonus", groupId, { minutes: Number(target.dataset.minutes || 15) }); }
+    else if (action === "bonus-custom") {
+      var input = document.querySelector('[data-custom-bonus="' + groupId + '"]');
+      var value = input ? Number(input.value) : 0;
+      if (!value) { toast(t("admin.custom_placeholder")); return; }
+      adminAction("bonus", groupId, { minutes: value });
+    }
+    else if (action === "reset") {
+      var g = state.groups.filter(function (x) { return x.id === groupId; })[0];
+      resetGroup(groupId, g ? g.name : "");
+    }
     else if (action === "free") {
       var input = document.querySelector('[data-free-time="' + groupId + '"]');
       adminAction("free", groupId, { until: input ? input.value : "21:00" });

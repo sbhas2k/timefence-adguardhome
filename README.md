@@ -23,8 +23,12 @@ the time is up.
   minutes are used up — usage is metered from AdGuard's query log — then the
   group is blocked until local midnight. An optional `session` mode keeps the
   stricter "blocked unless a session is running" behaviour.
-- **Multiple accounts.** Admins manage everything; normal users see status and
-  can start/stop sessions. Both levels use username + password.
+- **Multiple accounts, per-account budgets.** Admins manage everything; normal
+  users only see their own groups (plus shared ones) and can start/stop
+  sessions. A group can be assigned to a user, so each child has their own
+  budget. Both levels use username + password.
+- **Adjust in both directions.** `+15`, `−15` or any custom amount on the Today
+  card, and a `Reset today` action that clears today's usage and bonus.
 - **Live countdown**, progress bar, "40 of 60 min left", and a big Stop button.
   Stop bills only the seconds actually used.
 - **Reconciler** every 30 seconds: AdGuard is only written to when the desired

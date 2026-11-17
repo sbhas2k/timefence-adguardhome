@@ -140,6 +140,7 @@ class Group:
     deleted: bool
     mode: str = "auto"  # "auto" = allowed until the budget runs out
     force_block_until: int = 0  # admin "Block now" until midnight
+    owner_id: int | None = None  # user this group belongs to (None = shared)
     services: list[str] = field(default_factory=list)
     domains: list[str] = field(default_factory=list)
 
@@ -171,6 +172,7 @@ def _group_from_row(conn: sqlite3.Connection, row: sqlite3.Row) -> Group:
         deleted=bool(row["deleted"]),
         mode=row["mode"] or "auto",
         force_block_until=int(row["force_block_until"] or 0),
+        owner_id=row["owner_id"],
         services=services,
         domains=domains,
     )
@@ -248,6 +250,7 @@ def create_group(
     domains: list[str] | None = None,
     paused: bool = False,
     mode: str = "auto",
+    owner_id: int | None = None,
     now: int | None = None,
 ) -> Group:
     name = (name or "").strip()
@@ -269,7 +272,7 @@ def create_group(
     _assert_unique(conn, services, domains, None)
     cur = conn.execute(
         "INSERT INTO groups(name, emoji, weekday_minutes, weekend_minutes, paused, mode, "
-        "created_at) VALUES(?,?,?,?,?,?,?)",
+        "owner_id, created_at) VALUES(?,?,?,?,?,?,?,?)",
         (
             name,
             emoji.strip()[:8],
@@ -277,6 +280,7 @@ def create_group(
             int(weekend),
             int(paused),
             mode,
+            owner_id,
             now or int(time.time()),
         ),
     )
@@ -299,6 +303,8 @@ def update_group(
     domains: list[str] | None = None,
     paused: bool | None = None,
     mode: str | None = None,
+    owner_id: int | None = None,
+    set_owner: bool = False,
 ) -> Group:
     group = get_group(conn, group_id)
     if not group or group.deleted:
@@ -335,7 +341,7 @@ def update_group(
 
     conn.execute(
         "UPDATE groups SET name=?, emoji=?, weekday_minutes=?, weekend_minutes=?, "
-        "paused=?, mode=? WHERE id=?",
+        "paused=?, mode=?, owner_id=? WHERE id=?",
         (
             new_name,
             (group.emoji if emoji is None else emoji.strip()[:8]),
@@ -343,6 +349,7 @@ def update_group(
             new_weekend,
             int(group.paused if paused is None else paused),
             (group.mode if mode is None else mode),
+            (owner_id if set_owner else group.owner_id),
             group_id,
         ),
     )
@@ -602,8 +609,21 @@ def clear_free(conn: sqlite3.Connection, gid: int) -> None:
     conn.commit()
 
 
+def reset_today(conn: sqlite3.Connection, gid: int, tz: ZoneInfo, now: int | None = None) -> None:
+    """Forget today's metered usage, bonus and free-allow window for a group."""
+    day = day_str(now or int(time.time()), tz)
+    conn.execute("DELETE FROM usage_seconds WHERE day=? AND group_id=?", (day, gid))
+    conn.execute("DELETE FROM bonus WHERE day=? AND group_id=?", (day, gid))
+    conn.execute("DELETE FROM free_allow WHERE group_id=?", (gid,))
+    conn.commit()
+
+
 def history(
-    conn: sqlite3.Connection, tz: ZoneInfo, days: int = 7, now: int | None = None
+    conn: sqlite3.Connection,
+    tz: ZoneInfo,
+    days: int = 7,
+    now: int | None = None,
+    group_ids: set[int] | None = None,
 ) -> list[dict]:
     now = now or int(time.time())
     start = local_midnight(now, tz) - (days - 1) * 86400
@@ -620,6 +640,9 @@ def history(
         day = day_str(start + offset * 86400, tz)
         entry: dict[str, float | str] = {"day": day}
         for gid, group in groups.items():
+            if group_ids is not None and gid not in group_ids:
+                entry.pop(str(gid), None)
+                continue
             if group.mode == "session":
                 used = 0
                 for row in sessions:
@@ -637,7 +660,12 @@ def history(
     return out
 
 
-def sessions_today(conn: sqlite3.Connection, tz: ZoneInfo, now: int | None = None) -> list[dict]:
+def sessions_today(
+    conn: sqlite3.Connection,
+    tz: ZoneInfo,
+    now: int | None = None,
+    group_ids: set[int] | None = None,
+) -> list[dict]:
     now = now or int(time.time())
     start = local_midnight(now, tz)
     groups = {g.id: g for g in list_groups(conn, include_deleted=True)}
@@ -645,6 +673,8 @@ def sessions_today(conn: sqlite3.Connection, tz: ZoneInfo, now: int | None = Non
     for row in conn.execute(
         "SELECT * FROM sessions WHERE started_at>=? ORDER BY started_at DESC", (start,)
     ):
+        if group_ids is not None and row["group_id"] not in group_ids:
+            continue
         group = groups.get(row["group_id"])
         used = (
             row["used_seconds"]
@@ -693,6 +723,7 @@ def group_state(
         "paused": group.paused,
         "mode": group.mode,
         "force_block_until": group.force_block_until if group.force_block_until > now else 0,
+        "owner_id": group.owner_id,
         "services": group.services,
         "domains": group.domains,
         "bonus_minutes": round(bonus_seconds(conn, group.id, day) / 60, 1),

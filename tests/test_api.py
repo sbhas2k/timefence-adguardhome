@@ -375,3 +375,123 @@ def test_healthz_and_meta_are_public(client):
     meta = client.get("/api/meta").json()
     assert meta["version"]
     assert "unofficial" in meta
+
+
+# --------------------------------------------------------------------------- #
+# per-account budgets, bonus adjustments, reset
+# --------------------------------------------------------------------------- #
+
+
+def test_groups_can_be_owned_and_users_only_see_their_own(ready, fake):
+    client = ready["client"]
+    kid1 = client.post(
+        "/api/users", json={"username": "kid1", "password": "kid1-password", "role": "user"}
+    ).json()["user"]
+    kid2 = client.post(
+        "/api/users", json={"username": "kid2", "password": "kid2-password", "role": "user"}
+    ).json()["user"]
+
+    own = client.post(
+        "/api/groups",
+        json={
+            "name": "Kid1 games",
+            "weekday_minutes": 20,
+            "services": ["roblox"],
+            "mode": "session",
+            "owner_id": kid1["id"],
+        },
+    ).json()["group"]
+    assert own["owner"] == "kid1"
+
+    other = client.post(
+        "/api/groups",
+        json={
+            "name": "Kid2 games",
+            "weekday_minutes": 20,
+            "services": ["youtube"],
+            "mode": "session",
+            "owner_id": kid2["id"],
+        },
+    ).json()["group"]
+    shared = client.post(
+        "/api/groups", json={"name": "Shared", "weekday_minutes": 10, "services": ["instagram"]}
+    ).json()["group"]
+    assert shared["owner"] is None
+
+    # admin sees everything
+    admin_names = {g["name"] for g in client.get("/api/state").json()["groups"]}
+    assert admin_names == {"Kid1 games", "Kid2 games", "Shared"}
+
+    # kid1 sees their own + shared only
+    assert login(client, "kid1", "kid1-password").status_code == 200
+    kid_state = client.get("/api/state").json()
+    assert {g["name"] for g in kid_state["groups"]} == {"Kid1 games", "Shared"}
+
+    # and cannot touch kid2's group
+    assert (
+        client.post("/api/session/start", json={"group_id": other["id"], "minutes": 15}).status_code
+        == 404
+    )
+    assert (
+        client.post("/api/session/start", json={"group_id": own["id"], "minutes": 15}).status_code
+        == 200
+    )
+
+    # admin can reassign a group (log back in as admin first)
+    login(client, "admin", "correct horse battery")
+    moved = client.put(
+        f"/api/groups/{own['id']}",
+        json={
+            "name": "Kid1 games",
+            "weekday_minutes": 20,
+            "services": ["roblox"],
+            "mode": "session",
+            "owner_id": kid2["id"],
+        },
+    )
+    assert moved.status_code == 200
+    assert moved.json()["group"]["owner"] == "kid2"
+
+
+def test_negative_bonus_reduces_the_budget(ready, fake):
+    client = ready["client"]
+    group = client.post(
+        "/api/groups", json={"name": "YouTube", "weekday_minutes": 30, "services": ["youtube"]}
+    ).json()["group"]
+    assert group["remaining_minutes"] == 30
+
+    assert client.post(f"/api/groups/{group['id']}/bonus", json={"minutes": -10}).status_code == 200
+    state = client.get("/api/state").json()["groups"][0]
+    assert state["bonus_minutes"] == -10
+    assert state["remaining_minutes"] == 20
+    assert fake.ids == []  # still allowed
+
+    # minus the rest -> blocked
+    client.post(f"/api/groups/{group['id']}/bonus", json={"minutes": -20})
+    assert client.get("/api/state").json()["groups"][0]["permitted"] is False
+    assert fake.ids == ["youtube"]
+
+
+def test_reset_today_clears_metered_usage(ready, fake):
+    client = ready["client"]
+    group = client.post(
+        "/api/groups", json={"name": "YouTube", "weekday_minutes": 10, "services": ["youtube"]}
+    ).json()["group"]
+    conn = client.app.state.conn
+    from timefence import budget
+
+    now = int(__import__("time").time())
+    day = budget.day_str(now, client.app.state.settings.zone)
+    budget.add_bonus(conn, group["id"], 15, client.app.state.settings.zone)  # 10 + 15 min
+    budget.add_metered_seconds(conn, group["id"], day, 1500)  # use it all
+    client.app.state.reconciler.run("test")
+    assert client.get("/api/state").json()["groups"][0]["permitted"] is False
+    assert fake.ids == ["youtube"]
+
+    assert client.post(f"/api/groups/{group['id']}/reset", json={}).status_code == 200
+    state = client.get("/api/state").json()["groups"][0]
+    assert state["used_minutes"] == 0
+    assert state["bonus_minutes"] == 0
+    assert state["remaining_minutes"] == 10
+    assert state["permitted"] is True
+    assert fake.ids == []

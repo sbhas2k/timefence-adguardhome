@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 MIGRATION_1 = """
 CREATE TABLE settings (
@@ -115,7 +115,12 @@ INSERT OR IGNORE INTO users(username, role, hash, created_at, updated_at)
     FROM credentials WHERE role = 'user';
 """
 
-MIGRATIONS: dict[int, str] = {1: MIGRATION_1, 2: MIGRATION_2}
+# v3: per-account budgets - a group can be owned by a user.
+MIGRATION_3 = """
+ALTER TABLE groups ADD COLUMN owner_id INTEGER REFERENCES users(id);
+"""
+
+MIGRATIONS: dict[int, str] = {1: MIGRATION_1, 2: MIGRATION_2, 3: MIGRATION_3}
 
 
 def connect(path: Path | str) -> sqlite3.Connection:

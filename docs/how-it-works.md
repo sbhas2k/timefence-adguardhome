@@ -33,6 +33,15 @@ A session's `planned_seconds` is `min(requested_minutes * 60, remaining)`
 rounded down to whole minutes. When it ends by expiry the full planned time is
 charged; when the user presses **Stop**, only `now - started_at` is charged.
 
+## Who sees what
+
+Each group has an optional `owner` (a user account). Admins see and manage
+every group; a normal user sees the groups they own plus the shared ones
+(owner = "Shared (all users)") and cannot read or change anything else — the
+state payload, history, today's sessions and the session endpoints are all
+filtered by that rule. Budgets are per group, so "one budget per child" is just
+"one group per child, owned by that child".
+
 ## Two modes
 
 Every group has a `mode`:
