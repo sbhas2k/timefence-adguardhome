@@ -12,6 +12,7 @@ services:
   timefence:
     image: ghcr.io/sbhas2k/timefence-adguardhome:latest
     container_name: timefence
+    stop_grace_period: 20s
     network_mode: host
     environment:
       ADGUARD_URL: http://127.0.0.1:3000

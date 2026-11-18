@@ -58,9 +58,22 @@ class AdGuardClient:
         except ValueError:
             return resp.text
 
+    def _request_json(self, method: str, path: str, *, expect: type = dict, **kwargs: Any) -> Any:
+        """Like `_request`, but refuse a body of the wrong shape.
+
+        AdGuard answers HTML (a captive portal, a stopped service, an error
+        page) with status 200; callers must see an AdGuardError, never a str.
+        """
+        data = self._request(method, path, **kwargs)
+        if data is None:
+            return None
+        if not isinstance(data, expect):
+            raise AdGuardError(f"{method} {path}: unexpected response")
+        return data
+
     # -- service status --------------------------------------------------
     def status(self) -> dict:
-        return self._request("GET", "/control/status") or {}
+        return self._request_json("GET", "/control/status") or {}
 
     def test_connection(self) -> tuple[bool, str]:
         try:
@@ -72,7 +85,7 @@ class AdGuardClient:
 
     # -- blocked services ------------------------------------------------
     def blocked_services(self) -> dict:
-        data = self._request("GET", "/control/blocked_services/get") or {}
+        data = self._request_json("GET", "/control/blocked_services/get") or {}
         return {
             "ids": list(data.get("ids") or []),
             "schedule": data.get("schedule") or {"time_zone": "Local"},
@@ -86,12 +99,12 @@ class AdGuardClient:
         )
 
     def all_services(self) -> list[dict]:
-        data = self._request("GET", "/control/blocked_services/all") or {}
+        data = self._request_json("GET", "/control/blocked_services/all") or {}
         return list(data.get("blocked_services") or [])
 
     # -- user rules ------------------------------------------------------
     def user_rules(self) -> list[str]:
-        data = self._request("GET", "/control/filtering/status") or {}
+        data = self._request_json("GET", "/control/filtering/status") or {}
         return list(data.get("user_rules") or [])
 
     def set_user_rules(self, rules: list[str]) -> None:
@@ -99,7 +112,7 @@ class AdGuardClient:
 
     # -- checking / discovery -------------------------------------------
     def check_host(self, name: str) -> dict:
-        data = self._request("GET", "/control/filtering/check_host", params={"name": name})
+        data = self._request_json("GET", "/control/filtering/check_host", params={"name": name})
         return data if isinstance(data, dict) else {}
 
     def is_blocked(self, name: str) -> bool:
@@ -109,5 +122,5 @@ class AdGuardClient:
         params: dict[str, Any] = {"limit": limit}
         if search:
             params["search"] = search
-        data = self._request("GET", "/control/querylog", params=params) or {}
+        data = self._request_json("GET", "/control/querylog", params=params) or {}
         return list(data.get("data") or [])

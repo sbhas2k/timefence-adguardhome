@@ -7,6 +7,7 @@ import getpass
 import logging
 import os
 import sys
+from pathlib import Path
 
 from . import __version__
 
@@ -20,6 +21,71 @@ def _prompt_secret(role: str) -> str:
     return first
 
 
+def _read_env_file(path: str) -> dict[str, str]:
+    """Parse KEY=VALUE lines; no shell evaluation, one matching quote pair is stripped."""
+    values: dict[str, str] = {}
+    for raw in Path(path).read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        key, separator, value = line.partition("=")
+        if not separator:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[key.strip()] = value
+    return values
+
+
+def _release(args) -> int:
+    """Lift TimeFence's blocks in AdGuard Home; foreign settings survive."""
+    from . import db
+    from .adguard import AdGuardClient, AdGuardError
+    from .config import ConfigError, Settings
+    from .reconciler import Reconciler
+
+    env = dict(os.environ)
+    if args.env_file:
+        try:
+            env.update(_read_env_file(args.env_file))
+        except OSError as exc:
+            print(f"error: cannot read {args.env_file}: {exc}", file=sys.stderr)
+            return 2
+    try:
+        settings = Settings.from_env(env)
+        settings.validate()
+    except ConfigError as exc:
+        print(f"configuration error: {exc}", file=sys.stderr)
+        return 2
+    if not settings.db_path.exists():
+        print(f"database not found: {settings.db_path}", file=sys.stderr)
+        return 2
+    client = AdGuardClient(
+        settings.adguard_url,
+        settings.adguard_user,
+        settings.adguard_password,
+        timeout=3.0,
+    )
+    store = db.Store(settings.db_path)
+    try:
+        removed = Reconciler(store, client, settings.zone).release()
+    except AdGuardError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    if removed["services"]:
+        print("unblocked: " + ", ".join(removed["services"]))
+    if removed["rules_removed"]:
+        print(f"removed {removed['rules_removed']} managed rule line(s)")
+    if not removed["services"] and not removed["rules_removed"]:
+        print("nothing to remove")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="timefence", description="TimeFence for AdGuard Home")
     parser.add_argument("--version", action="version", version=f"timefence {__version__}")
@@ -30,6 +96,15 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--port", type=int, default=None, help="override LISTEN_PORT")
 
     sub.add_parser("check", help="validate configuration and test the AdGuard connection")
+
+    release = sub.add_parser(
+        "release",
+        help="lift TimeFence's blocks in AdGuard Home",
+        description=(
+            "Stop TimeFence first; a running service re-applies its blocks " "within one interval."
+        ),
+    )
+    release.add_argument("--env-file", default=None, help="read settings from this KEY=VALUE file")
 
     passwd = sub.add_parser(
         "passwd",
@@ -58,6 +133,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"password for {args.username!r} ({args.role}) updated in {path}")
         print("Sign in with the new password; existing sessions stay valid.")
         return 0
+
+    if command == "release":
+        return _release(args)
 
     from .config import ConfigError, Settings
 

@@ -21,6 +21,9 @@ systemctl disable --now timefence.service 2>/dev/null || true
 rm -f /etc/systemd/system/timefence.service
 systemctl daemon-reload
 
+# A stopped TimeFence leaves every managed group blocked in AdGuard Home.
+"${INSTALL_DIR}/venv/bin/timefence" release --env-file "${CONF_DIR}/timefence.env" || echo "Could not lift TimeFence blocks. In AdGuard Home remove the custom rules between '# timefence:begin' and '# timefence:end' and unblock the services TimeFence managed."
+
 rm -rf "${INSTALL_DIR}"
 
 if [[ "${PURGE}" -eq 1 ]]; then

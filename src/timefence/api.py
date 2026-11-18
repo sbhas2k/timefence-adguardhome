@@ -247,6 +247,8 @@ def create_app(
             "groups": groups,
             "history": history,
             "adguard_error": reconciler.last_error,
+            "last_sync": int(reconciler.last_ok_ts) if reconciler.last_ok_ts else None,
+            "warnings": sorted(reconciler.warnings),
         }
         return payload
 
@@ -332,10 +334,15 @@ def create_app(
         try:
             yield
         finally:
+            # Shutdown: stop the loop, wait for it, then block every managed
+            # group. A later run() returns immediately; the write below does not.
+            reconciler.stopping.set()
+            agh.timeout = min(float(getattr(agh, "timeout", 10.0)), 3.0)
             stop.set()
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+            done, _ = await asyncio.wait({task}, timeout=8)
+            if task not in done:
+                log.warning("reconciler loop did not stop within 8 s; continuing shutdown")
+            await asyncio.to_thread(reconciler.block_all)
             store.close()
 
     app = FastAPI(
@@ -1077,7 +1084,15 @@ def create_app(
 
     @app.get(f"{base}/healthz")
     def healthz():
-        return {"ok": True, "version": __version__}
+        """No auth and no lock: a shallow, honest liveness answer."""
+        last = reconciler.last_ok_ts
+        stale = last is None or time.time() - last > 3 * settings.reconcile_interval
+        body = {
+            "ok": not stale,
+            "status": "degraded" if stale else "ok",
+            "version": __version__,
+        }
+        return JSONResponse(body, status_code=503 if stale else 200)
 
     app.mount(f"{base}/static", StaticFiles(directory=str(STATIC)), name="static")
     return app
