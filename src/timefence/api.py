@@ -54,6 +54,8 @@ USER_GROUP_KEYS = (
     "status",
     "blocked_until",
     "free_until",
+    "bedtime_active",
+    "bedtime_until",
 )
 STATIC = Path(__file__).parent / "static"
 TEMPLATES = Path(__file__).parent / "templates"
@@ -803,6 +805,7 @@ def create_app(
                 str(s).strip().lower() for s in (data.get("services") or []) if str(s).strip()
             ],
             "domains": domains,
+            "windows": data.get("windows"),
             "paused": bool(data.get("paused", existing.paused if existing else False)),
         }
 
@@ -824,6 +827,8 @@ def create_app(
         with store as conn:
             try:
                 group = budget.create_group(conn, **fields)
+            except budget.WindowError:
+                return json_error(400, i18n.t("error.windows_invalid"), "invalid_windows")
             except budget.ValidationError as exc:
                 return json_error(400, str(exc), "invalid")
             budget.log_event(conn, "group_create", {"group": group.name, "actor": sess.role})
@@ -847,6 +852,8 @@ def create_app(
                 )
             try:
                 group = budget.update_group(conn, group_id, **fields)
+            except budget.WindowError:
+                return json_error(400, i18n.t("error.windows_invalid"), "invalid_windows")
             except budget.ValidationError as exc:
                 return json_error(400, str(exc), "invalid")
             budget.log_event(conn, "group_update", {"group": group.name, "actor": sess.role})

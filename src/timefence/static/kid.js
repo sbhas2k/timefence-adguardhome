@@ -54,6 +54,9 @@
   }
 
   function bigLine(group) {
+    if (group.status === "bedtime") {
+      return { main: t("kid.bedtime", { time: group.bedtime_until }), detail: "" };
+    }
     var remaining = Math.max(0, Number(group.remaining_minutes) || 0);
     if (group.status === "limit_reached") {
       return { main: t("kid.time_up"), detail: t("kid.back_tomorrow") };
@@ -75,7 +78,7 @@
 
   function card(group) {
     var article = document.createElement("article");
-    article.className = "kid-card";
+    article.className = "kid-card" + (group.status === "bedtime" ? " bedtime" : "");
 
     var emoji = document.createElement("span");
     emoji.className = "kid-emoji";

@@ -17,8 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 log = logging.getLogger("timefence.db")
 
-SCHEMA_VERSION = 4
-BACKUP_SUFFIX = ".pre-v4.bak"
+SCHEMA_VERSION = 5
 SKIP_BACKUP_ENV = "TIMEFENCE_SKIP_MIGRATION_BACKUP"
 
 MIGRATION_1 = """
@@ -132,6 +131,27 @@ INSERT OR IGNORE INTO users(username, role, hash, created_at, updated_at)
 # v3: per-account budgets - a group can be owned by a user.
 MIGRATION_3 = """
 ALTER TABLE groups ADD COLUMN owner_id INTEGER REFERENCES users(id);
+"""
+
+# v5: bedtime windows per group and the alert de-duplication record. Pure DDL,
+# so a CLI command can still open and upgrade an older database without
+# starting the server.
+MIGRATION_5 = """
+CREATE TABLE group_windows (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id  INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    start_min INTEGER NOT NULL CHECK (start_min BETWEEN 0 AND 1439),
+    end_min   INTEGER NOT NULL CHECK (end_min BETWEEN 0 AND 1439),
+    days      TEXT NOT NULL CHECK (days IN ('all', 'weekday', 'weekend')),
+    CHECK (start_min <> end_min)
+);
+CREATE INDEX group_windows_group ON group_windows(group_id);
+
+CREATE TABLE alerts_sent (
+    key     TEXT PRIMARY KEY,
+    sent_at INTEGER NOT NULL
+);
+CREATE INDEX alerts_sent_ts ON alerts_sent(sent_at);
 """
 
 
@@ -350,6 +370,7 @@ MIGRATIONS: dict[int, str | Callable[[sqlite3.Connection, ZoneInfo], None]] = {
     2: MIGRATION_2,
     3: MIGRATION_3,
     4: _migration_4,
+    5: MIGRATION_5,
 }
 
 
@@ -360,16 +381,21 @@ def _main_path(conn: sqlite3.Connection) -> str:
     return ""
 
 
-def _backup_before_v4(conn: sqlite3.Connection, version: int) -> None:
-    """Write a verified copy of the database next to it, before v4 rewrites data."""
+def backup_path(source: Path, goal: int) -> Path:
+    """Where the pre-upgrade copy of `source` for schema v`goal` lives."""
+    return source.with_name(f"{source.name}.pre-v{goal}.bak")
+
+
+def _backup_before(conn: sqlite3.Connection, goal: int, version: int) -> None:
+    """Write one verified copy of the database next to it, before any change."""
     source = _main_path(conn)
     if not source or source == ":memory:":
         return
     if os.environ.get(SKIP_BACKUP_ENV) == "1":
         log.warning("pre-upgrade backup skipped because %s=1", SKIP_BACKUP_ENV)
         return
-    dest = Path(source + BACKUP_SUFFIX)
-    temporary = Path(source + BACKUP_SUFFIX + ".tmp")
+    dest = backup_path(Path(source), goal)
+    temporary = Path(str(dest) + ".tmp")
     conn.commit()  # the copy must not race the caller's pending writes
     try:
         temporary.unlink(missing_ok=True)
@@ -466,8 +492,8 @@ def migrate(
         )
     backed_up = False
     for step in pending:
-        if not backed_up and 1 <= initial < 4 <= step:
-            _backup_before_v4(conn, initial)
+        if not backed_up and 1 <= initial < step:
+            _backup_before(conn, pending[-1], initial)
             backed_up = True
         migration = MIGRATIONS[step]
         if callable(migration):

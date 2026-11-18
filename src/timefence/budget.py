@@ -16,10 +16,20 @@ DATA_DIR = Path(__file__).parent / "data"
 DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)(?!-)[a-z0-9_-]{1,63}(?<!-)(\.(?!-)[a-z0-9_-]{1,63}(?<!-))+$"
 )
+CLOCK_RE = re.compile(r"^([01][0-9]|2[0-3]):([0-5][0-9])$")
+
+WINDOW_LIMIT = 4
+WINDOW_DAYS = ("all", "weekday", "weekend")
+BEDTIME_SCAN_STEPS = 1500  # a window is at most a day long
+PERMITTED_STATUSES = frozenset({"allowed", "free"})
 
 
 class ValidationError(ValueError):
     """User supplied something unusable."""
+
+
+class WindowError(ValidationError):
+    """A bedtime window cannot be used as given."""
 
 
 # --------------------------------------------------------------------------- #
@@ -59,6 +69,24 @@ def parse_hhmm(value: str, now: int, tz: ZoneInfo) -> int:
     if local.timestamp() <= now:
         local += timedelta(days=1)
     return int(local.timestamp())
+
+
+def clock_text(minutes: int) -> str:
+    """Minutes since midnight -> zero-padded 'HH:MM'."""
+    return f"{int(minutes) // 60:02d}:{int(minutes) % 60:02d}"
+
+
+def clock_minutes(value: object) -> int:
+    """'HH:MM' -> minutes since midnight; anything else is refused."""
+    match = CLOCK_RE.match(str(value if value is not None else "").strip())
+    if not match:
+        raise WindowError("a window time must be HH:MM")
+    return int(match.group(1)) * 60 + int(match.group(2))
+
+
+def clock_str(ts: int, tz: ZoneInfo) -> str:
+    """Epoch -> zero-padded local 'HH:MM'."""
+    return datetime.fromtimestamp(ts, tz).strftime("%H:%M")
 
 
 # --------------------------------------------------------------------------- #
@@ -148,9 +176,106 @@ class Group:
     owner_id: int | None = None  # user this group belongs to (None = shared)
     services: list[str] = field(default_factory=list)
     domains: list[str] = field(default_factory=list)
+    windows: list[Window] = field(default_factory=list)
 
     def minutes_for(self, ts: int, tz: ZoneInfo) -> int:
         return self.weekend_minutes if is_weekend(ts, tz) else self.weekday_minutes
+
+
+@dataclass(frozen=True)
+class Window:
+    """A daily block: minutes since local midnight, on days the window starts."""
+
+    start_min: int
+    end_min: int
+    days: str = "all"
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "start": clock_text(self.start_min),
+            "end": clock_text(self.end_min),
+            "days": self.days,
+        }
+
+
+def normalize_windows(items: object) -> list[Window]:
+    """Validate the wire format and return usable windows (at most four)."""
+    if items is None:
+        return []
+    if not isinstance(items, list | tuple):
+        raise WindowError("windows must be a list")
+    if len(items) > WINDOW_LIMIT:
+        raise WindowError(f"at most {WINDOW_LIMIT} bedtime windows")
+    out: list[Window] = []
+    for item in items:
+        if isinstance(item, Window):
+            out.append(item)
+            continue
+        if not isinstance(item, dict):
+            raise WindowError("each window needs a start, an end and days")
+        start_min = clock_minutes(item.get("start"))
+        end_min = clock_minutes(item.get("end"))
+        if start_min == end_min:
+            raise WindowError("a window must start and end at different times")
+        days = str(item.get("days") or "all").strip().lower()
+        if days not in WINDOW_DAYS:
+            raise WindowError("days must be all, weekday or weekend")
+        out.append(Window(start_min, end_min, days))
+    return out
+
+
+def days_match(days: str, weekday: int) -> bool:
+    """`weekday` is 0 (Monday) .. 6 (Sunday)."""
+    if days == "weekday":
+        return weekday < 5
+    if days == "weekend":
+        return weekday >= 5
+    return True
+
+
+def window_active(window: Window, ts: int, tz: ZoneInfo) -> bool:
+    """Is the window open at `ts`? Judged on the local wall clock.
+
+    The day filter belongs to the day the window starts on, so a window that
+    wraps midnight still ends on the morning after a matching start day.
+    """
+    local = datetime.fromtimestamp(ts, tz)
+    minute = local.hour * 60 + local.minute
+    if window.start_min < window.end_min:
+        return window.start_min <= minute < window.end_min and days_match(
+            window.days, local.weekday()
+        )
+    if days_match(window.days, local.weekday()) and minute >= window.start_min:
+        return True
+    previous_day = (local.date() - timedelta(days=1)).weekday()
+    return days_match(window.days, previous_day) and minute < window.end_min
+
+
+def active_window(group: Group, ts: int, tz: ZoneInfo) -> Window | None:
+    for window in group.windows:
+        if window_active(window, ts, tz):
+            return window
+    return None
+
+
+def bedtime_state(
+    conn: sqlite3.Connection, group: Group, tz: ZoneInfo, now: int | None = None
+) -> tuple[bool, int | None]:
+    """(a window is open now, the local end of the block).
+
+    The end is the first whole minute at or after `now` that no window covers,
+    found by stepping through minute boundaries. Building a local wall time for
+    the end would silently pick a side on the days a clock skips or repeats.
+    """
+    now = now or int(time.time())
+    if not group.windows or active_window(group, now, tz) is None:
+        return False, None
+    instant = now - (now % 60)
+    for _ in range(BEDTIME_SCAN_STEPS):
+        instant += 60
+        if active_window(group, instant, tz) is None:
+            return True, instant
+    return True, None
 
 
 def _group_from_row(conn: sqlite3.Connection, row: sqlite3.Row) -> Group:
@@ -167,6 +292,14 @@ def _group_from_row(conn: sqlite3.Connection, row: sqlite3.Row) -> Group:
             "SELECT domain FROM group_domains WHERE group_id=? ORDER BY domain", (row["id"],)
         )
     ]
+    windows = [
+        Window(int(r["start_min"]), int(r["end_min"]), r["days"])
+        for r in conn.execute(
+            "SELECT start_min, end_min, days FROM group_windows "
+            "WHERE group_id=? ORDER BY start_min, id",
+            (row["id"],),
+        )
+    ]
     return Group(
         id=row["id"],
         name=row["name"],
@@ -179,6 +312,7 @@ def _group_from_row(conn: sqlite3.Connection, row: sqlite3.Row) -> Group:
         owner_id=row["owner_id"],
         services=services,
         domains=domains,
+        windows=windows,
     )
 
 
@@ -243,6 +377,15 @@ def _write_links(
     )
 
 
+def _write_windows(conn: sqlite3.Connection, gid: int, windows: list[Window]) -> None:
+    """Replace a group's bedtime windows; part of the group's own transaction."""
+    conn.execute("DELETE FROM group_windows WHERE group_id=?", (gid,))
+    conn.executemany(
+        "INSERT INTO group_windows(group_id, start_min, end_min, days) VALUES(?,?,?,?)",
+        [(gid, w.start_min, w.end_min, w.days) for w in windows],
+    )
+
+
 def create_group(
     conn: sqlite3.Connection,
     *,
@@ -252,6 +395,7 @@ def create_group(
     weekend_minutes: int | None = None,
     services: list[str] | None = None,
     domains: list[str] | None = None,
+    windows: list[dict] | None = None,
     paused: bool = False,
     owner_id: int | None = None,
     now: int | None = None,
@@ -264,6 +408,7 @@ def create_group(
     services = [s.strip().lower() for s in (services or []) if s.strip()]
     domains = [normalize_domain(d) for d in (domains or [])]
     domains = list(dict.fromkeys(domains))
+    bedtime = normalize_windows(windows)
     weekend = weekday_minutes if weekend_minutes is None else weekend_minutes
     for value in (weekday_minutes, weekend):
         if not (0 <= int(value) <= 1440):
@@ -286,6 +431,7 @@ def create_group(
     )
     gid = int(cur.lastrowid)
     _write_links(conn, gid, services, domains)
+    _write_windows(conn, gid, bedtime)
     mark_owned(conn, services)
     conn.commit()
     return get_group(conn, gid)  # type: ignore[return-value]
@@ -301,6 +447,7 @@ def update_group(
     weekend_minutes: int | None = None,
     services: list[str] | None = None,
     domains: list[str] | None = None,
+    windows: list[dict] | None = None,
     paused: bool | None = None,
     owner_id: int | None = None,
     set_owner: bool = False,
@@ -335,6 +482,7 @@ def update_group(
     if not new_services and not new_domains:
         raise ValidationError("a group needs at least one service or domain")
     _assert_unique(conn, new_services, new_domains, group_id)
+    new_windows = group.windows if windows is None else normalize_windows(windows)
 
     conn.execute(
         "UPDATE groups SET name=?, emoji=?, weekday_minutes=?, weekend_minutes=?, "
@@ -350,6 +498,7 @@ def update_group(
         ),
     )
     _write_links(conn, group_id, new_services, new_domains)
+    _write_windows(conn, group_id, new_windows)
     mark_owned(conn, new_services)
     conn.commit()
     return get_group(conn, group_id)  # type: ignore[return-value]
@@ -459,20 +608,13 @@ def clear_force_block(conn: sqlite3.Connection, gid: int) -> None:
 def is_permitted(
     conn: sqlite3.Connection, group: Group, tz: ZoneInfo, now: int | None = None
 ) -> bool:
-    """Allowed right now?
+    """Allowed right now? One predicate with `group_status`, so they always agree.
 
-    Yes while there is budget left today. Free-allow overrides a force-block;
-    a force-block overrides the remaining budget.
+    A paused group is blocked. An admin "Free until" overrides everything,
+    including a bedtime window (the admin asked for it). A force-block wins
+    over the remaining budget and over bedtime; bedtime wins over the budget.
     """
-    now = now or int(time.time())
-    if group.paused or group.deleted:
-        return False
-    until = free_until(conn, group.id)
-    if until and until > now:
-        return True
-    if group.force_block_until and group.force_block_until > now:
-        return False
-    return remaining_seconds(conn, group, tz, now) > 0
+    return group_status(conn, group, tz, now)[0] in PERMITTED_STATUSES
 
 
 def add_bonus(
@@ -545,9 +687,13 @@ def log_event(conn: sqlite3.Connection, kind: str, detail: dict | str = "") -> N
 
 
 def group_status(
-    conn: sqlite3.Connection, group: Group, tz: ZoneInfo, now: int | None = None
+    conn: sqlite3.Connection,
+    group: Group,
+    tz: ZoneInfo,
+    now: int | None = None,
+    bedtime: tuple[bool, int | None] | None = None,
 ) -> tuple[str, int | None]:
-    """One status per group, with the same precedence as `is_permitted`."""
+    """One status per group, in the same order as `is_permitted`."""
     now = now or int(time.time())
     if group.paused or group.deleted:
         return "paused", None
@@ -556,6 +702,9 @@ def group_status(
         return "free", None
     if group.force_block_until and group.force_block_until > now:
         return "blocked_admin", group.force_block_until
+    active, end_ts = bedtime if bedtime is not None else bedtime_state(conn, group, tz, now)
+    if active:
+        return "bedtime", end_ts
     if remaining_seconds(conn, group, tz, now) > 0:
         return "allowed", None
     return "limit_reached", next_local_midnight(now, tz)
@@ -567,8 +716,9 @@ def group_state(
     now = now or int(time.time())
     day = day_str(now, tz)
     until = free_until(conn, group.id)
-    permitted = is_permitted(conn, group, tz, now)
-    status, blocked_until = group_status(conn, group, tz, now)
+    bedtime = bedtime_state(conn, group, tz, now)
+    active, end_ts = bedtime
+    status, blocked_until = group_status(conn, group, tz, now, bedtime=bedtime)
     return {
         "id": group.id,
         "name": group.name,
@@ -581,13 +731,16 @@ def group_state(
         "owner_id": group.owner_id,
         "services": group.services,
         "domains": group.domains,
+        "windows": [window.as_dict() for window in group.windows],
         "bonus_minutes": round(bonus_seconds(conn, group.id, day) / 60, 1),
         "used_minutes": round(used_seconds(conn, group, day) / 60, 1),
         "remaining_minutes": round(remaining_seconds(conn, group, tz, now) / 60, 1),
-        "permitted": permitted,
+        "permitted": status in PERMITTED_STATUSES,
         "status": status,
         "blocked_until": blocked_until,
         "free_until": until if until and until > now else None,
+        "bedtime_active": active,
+        "bedtime_until": clock_str(end_ts, tz) if end_ts is not None else None,
     }
 
 

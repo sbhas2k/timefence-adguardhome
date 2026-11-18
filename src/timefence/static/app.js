@@ -204,6 +204,9 @@
   // ------------------------------------------------------------------ render
   /* One status per group, straight from the server: no clock maths here. */
   function statusFor(group) {
+    if (group.status === "bedtime") {
+      return { cls: "warn", text: t("status.bedtime", { time: group.bedtime_until }) };
+    }
     if (group.status === "paused") { return { cls: "warn", text: t("status.paused") }; }
     if (group.status === "blocked_admin") { return { cls: "bad", text: t("status.forced") }; }
     if (group.status === "free") {
@@ -552,9 +555,57 @@
   function openGroupEditorWith(group, users) {
     group = group || {
       name: "", emoji: "⏳", weekday_minutes: 60, weekend_minutes: 60,
-      services: [], domains: [], paused: false, owner_id: null
+      services: [], domains: [], windows: [], paused: false, owner_id: null
     };
     var selected = { services: (group.services || []).slice() };
+    var windows = (group.windows || []).map(function (w) {
+      return { start: w.start, end: w.end, days: w.days };
+    });
+
+    function dayOptions(selectedDay) {
+      var days = [
+        { value: "all", label: t("groups.bedtime_days_all") },
+        { value: "weekday", label: t("groups.bedtime_days_weekday") },
+        { value: "weekend", label: t("groups.bedtime_days_weekend") }
+      ];
+      return days.map(function (day) {
+        return '<option value="' + day.value + '"' +
+          (day.value === selectedDay ? " selected" : "") + ">" + esc(day.label) + "</option>";
+      }).join("");
+    }
+
+    function paintWindows() {
+      var list = $("#bedtime-windows");
+      if (!list) { return; }
+      list.innerHTML = windows.map(function (w, index) {
+        return '<div class="row tight" data-window="' + index + '">' +
+          '<input type="time" data-window-start="' + index + '" value="' + esc(w.start) +
+          '" aria-label="' + esc(t("groups.bedtime_from")) + '">' +
+          '<input type="time" data-window-end="' + index + '" value="' + esc(w.end) +
+          '" aria-label="' + esc(t("groups.bedtime_until")) + '">' +
+          '<select data-window-days="' + index + '" aria-label="' +
+          esc(t("groups.bedtime_days")) + '">' + dayOptions(w.days) + "</select>" +
+          '<button type="button" class="btn ghost" data-action="remove-window" data-window="' +
+          index + '">' + esc(t("groups.bedtime_remove")) + "</button></div>";
+      }).join("");
+      var add = document.querySelector("[data-action='add-window']");
+      if (add) { add.disabled = windows.length >= 4; }
+    }
+
+    function readWindows() {
+      var list = $("#bedtime-windows");
+      if (!list) { return windows; }
+      return windows.map(function (w, index) {
+        var start = list.querySelector('[data-window-start="' + index + '"]');
+        var end = list.querySelector('[data-window-end="' + index + '"]');
+        var days = list.querySelector('[data-window-days="' + index + '"]');
+        return {
+          start: start ? start.value : w.start,
+          end: end ? end.value : w.end,
+          days: days ? days.value : w.days
+        };
+      });
+    }
 
     function sheet() {
       var chips = selected.services.map(function (id) {
@@ -575,6 +626,11 @@
         '<div class="grow1"><label for="g-weekend">' + esc(t("groups.weekend")) +
         '</label><input type="number" id="g-weekend" min="0" max="1440" value="' +
         group.weekend_minutes + '"></div></div>' +
+        '<fieldset class="bedtime"><legend>' + esc(t("groups.bedtime_heading")) + "</legend>" +
+        '<p class="sub">' + esc(t("groups.bedtime_help")) + "</p>" +
+        '<div class="stack" id="bedtime-windows"></div>' +
+        '<button type="button" class="btn mt" data-action="add-window">' +
+        esc(t("groups.bedtime_add")) + "</button></fieldset>" +
         '<div><label>' + esc(t("groups.services")) +
         '</label><div class="row tight" id="service-chips">' + chips +
         ' <button type="button" class="btn" data-action="pick-services">+ ' +
@@ -604,7 +660,12 @@
       );
     }
 
-    function paint() { openModal(sheet()); bind(); }
+    function paint() {
+      windows = readWindows();
+      openModal(sheet());
+      paintWindows();
+      bind();
+    }
 
     function bind() {
       var form = $("#group-form");
@@ -617,11 +678,30 @@
           weekend_minutes: Number($("#g-weekend").value),
           domains_text: $("#g-domains").value,
           services: selected.services,
+          windows: readWindows(),
           paused: $("#g-paused").checked,
           owner_id: $("#g-owner").value === "" ? null : Number($("#g-owner").value)
         };
         saveGroup(payload, group.id);
       });
+      $$("[data-action='add-window']").forEach(function (button) {
+        button.addEventListener("click", function () {
+          windows = readWindows();
+          if (windows.length >= 4) { return; }
+          windows.push({ start: "21:00", end: "07:00", days: "all" });
+          paintWindows();
+        });
+      });
+      var windowList = $("#bedtime-windows");
+      if (windowList) {
+        windowList.addEventListener("click", function (event) {
+          var target = event.target.closest("[data-action='remove-window']");
+          if (!target) { return; }
+          windows = readWindows();
+          windows.splice(Number(target.dataset.window), 1);
+          paintWindows();
+        });
+      }
       $$("[data-action='pick-services']").forEach(function (button) {
         button.addEventListener("click", function () {
           openServicePicker(selected.services, function (next) {
