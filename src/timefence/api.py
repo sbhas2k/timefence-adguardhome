@@ -24,6 +24,31 @@ from .reconciler import Reconciler
 log = logging.getLogger("timefence.web")
 
 DATA = Path(__file__).parent / "data"
+
+# What a user (kid) account may see; the admin payload is a superset.
+USER_APP_KEYS = (
+    "name",
+    "version",
+    "role",
+    "now",
+    "timezone",
+    "username",
+    "csrf",
+    "setup_complete",
+)
+USER_GROUP_KEYS = (
+    "id",
+    "name",
+    "emoji",
+    "minutes_today",
+    "bonus_minutes",
+    "used_minutes",
+    "remaining_minutes",
+    "permitted",
+    "status",
+    "blocked_until",
+    "free_until",
+)
 STATIC = Path(__file__).parent / "static"
 TEMPLATES = Path(__file__).parent / "templates"
 
@@ -227,6 +252,10 @@ def create_app(
         payload["owner"] = user_names().get(group.owner_id) if group.owner_id else None
         return payload
 
+    def reduced_group(payload: dict) -> dict:
+        """What a kid account may see about a group: time and state, nothing else."""
+        return {key: payload[key] for key in USER_GROUP_KEYS if key in payload}
+
     def state_payload(role: str, now: int | None = None, group_ids: set[int] | None = None) -> dict:
         now = now or int(time.time())
         with store as conn:
@@ -368,13 +397,18 @@ def create_app(
         request.state.session = session_manager.read(request.cookies.get(session_manager.COOKIE))
         path = request.url.path
         api_prefix = f"{base}/api/"
-        if request.method in {"POST", "PUT", "PATCH", "DELETE"} and path.startswith(api_prefix):
-            exempt = {f"{base}/api/login"}
+        mutating = request.method in {"POST", "PUT", "PATCH", "DELETE"} and path.startswith(
+            api_prefix
+        )
+        if mutating and path not in {f"{base}/api/login"}:
             sess = request.state.session
-            if path not in exempt:
-                token = request.headers.get("x-csrf-token", "")
-                if not sess or not token or not _constant_eq(token, sess.csrf):
-                    return json_error(403, "CSRF token missing or invalid", "csrf")
+            token = request.headers.get("x-csrf-token", "")
+            if not sess or not token or not _constant_eq(token, sess.csrf):
+                return json_error(403, "CSRF token missing or invalid", "csrf")
+        if mutating and path not in {f"{base}/api/login", f"{base}/api/logout"}:
+            sess = request.state.session
+            if sess and sess.role != "admin":
+                return json_error(403, i18n.t("error.read_only"), "read_only")
         blocked = guard_forbidden(request)
         if blocked is not None:
             return blocked
@@ -549,6 +583,11 @@ def create_app(
         payload = state_payload(sess.role, group_ids=visible_group_ids(sess))
         payload["app"]["csrf"] = sess.csrf
         payload["app"]["username"] = sess.username
+        if sess.role != "admin":
+            return {
+                "app": {key: payload["app"][key] for key in USER_APP_KEYS if key in payload["app"]},
+                "groups": [reduced_group(group) for group in payload["groups"]],
+            }
         return payload
 
     # ---------------------------------------------------------------- groups
@@ -563,6 +602,8 @@ def create_app(
                 for g in budget.list_groups(conn)
                 if ids is None or g.id in ids
             ]
+        if sess.role != "admin":
+            groups = [reduced_group(group) for group in groups]
         return {"groups": groups}
 
     def group_from_payload(data: dict, existing: budget.Group | None = None) -> dict:

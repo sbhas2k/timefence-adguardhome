@@ -205,6 +205,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "error.paused": "This group is paused.",
         "error.not_found": "Not found.",
         "error.mode_removed": "Session mode was removed in 0.4.0. Groups are allowed until their daily minutes are used.",
+        "error.read_only": "This account can only view time left.",
         "error.adguard": "AdGuard Home did not answer: {detail}",
         "error.invalid_group": "{detail}",
     }

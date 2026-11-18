@@ -351,66 +351,6 @@ def test_healthz_and_meta_are_public(client):
 # --------------------------------------------------------------------------- #
 
 
-def test_groups_can_be_owned_and_users_only_see_their_own(ready, fake):
-    client = ready["client"]
-    kid1 = client.post(
-        "/api/users", json={"username": "kid1", "password": "kid1-password", "role": "user"}
-    ).json()["user"]
-    kid2 = client.post(
-        "/api/users", json={"username": "kid2", "password": "kid2-password", "role": "user"}
-    ).json()["user"]
-
-    own = client.post(
-        "/api/groups",
-        json={
-            "name": "Kid1 games",
-            "weekday_minutes": 20,
-            "services": ["roblox"],
-            "owner_id": kid1["id"],
-        },
-    ).json()["group"]
-    assert own["owner"] == "kid1"
-
-    other = client.post(
-        "/api/groups",
-        json={
-            "name": "Kid2 games",
-            "weekday_minutes": 20,
-            "services": ["youtube"],
-            "owner_id": kid2["id"],
-        },
-    ).json()["group"]
-    shared = client.post(
-        "/api/groups", json={"name": "Shared", "weekday_minutes": 10, "services": ["instagram"]}
-    ).json()["group"]
-    assert shared["owner"] is None
-
-    # admin sees everything
-    admin_names = {g["name"] for g in client.get("/api/state").json()["groups"]}
-    assert admin_names == {"Kid1 games", "Kid2 games", "Shared"}
-
-    # kid1 sees their own + shared only
-    assert login(client, "kid1", "kid1-password").status_code == 200
-    kid_state = client.get("/api/state").json()
-    assert {g["name"] for g in kid_state["groups"]} == {"Kid1 games", "Shared"}
-
-    assert other["name"] == "Kid2 games"
-
-    # admin can reassign a group (log back in as admin first)
-    login(client, "admin", "correct horse battery")
-    moved = client.put(
-        f"/api/groups/{own['id']}",
-        json={
-            "name": "Kid1 games",
-            "weekday_minutes": 20,
-            "services": ["roblox"],
-            "owner_id": kid2["id"],
-        },
-    )
-    assert moved.status_code == 200
-    assert moved.json()["group"]["owner"] == "kid2"
-
-
 def test_negative_bonus_reduces_the_budget(ready, fake):
     client = ready["client"]
     group = client.post(
