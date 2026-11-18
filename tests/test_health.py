@@ -173,3 +173,12 @@ def test_create_app_sets_private_umask(settings, fake, monkeypatch):
         assert 0o077 in calls
     finally:
         app.state.store.close()
+
+
+def test_tz_utc_warning_in_admin_state(settings, fake):
+    assert settings.tz == "UTC"
+    app = create_app(settings, adguard=fake)
+    with TestClient(app) as client:
+        sign_in_as_admin(client)
+        warnings = client.get("/api/state").json()["warnings"]
+        assert "tz_utc" in warnings
