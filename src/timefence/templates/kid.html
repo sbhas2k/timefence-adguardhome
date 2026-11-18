@@ -1,8 +1,14 @@
 {% extends "base.html" %}
 {% block page %}kid{% endblock %}
 {% block title %}{{ app_name }}{% endblock %}
-{% block content %}
-<div class="kid-list">
-  <p class="muted center">{{ t("kid.placeholder") }}</p>
-</div>
+{% block topbar %}
+<span class="kid-user" id="kid-user"></span>
+<button class="btn ghost small" id="kid-logout" type="button">{{ t("kid.logout") }}</button>
 {% endblock %}
+{% block content %}
+<p id="kid-offline" class="alert warn hidden" role="status"></p>
+<section id="kid-groups" class="kid-list" aria-live="polite" aria-busy="true"></section>
+<p id="kid-empty" class="muted center hidden">{{ t("kid.empty") }}</p>
+<p id="kid-updated" class="muted small center"></p>
+{% endblock %}
+{% block scripts %}<script src="{{ base }}/static/kid.js" defer></script>{% endblock %}
