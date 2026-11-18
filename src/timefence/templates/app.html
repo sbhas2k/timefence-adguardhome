@@ -58,25 +58,17 @@
     <h2>{{ t("history.heading") }}</h2>
     <div class="table-wrap"><table id="history-table"></table></div>
   </div>
-  <div class="card">
-    <h2>{{ t("history.sessions_today") }}</h2>
-    <div class="table-wrap"><table id="sessions-table"></table></div>
-  </div>
 </section>
 
 <section id="panel-settings" class="hidden" aria-label="{{ t('admin.tab.settings') }}">
   <div class="card">
-    <h2>{{ t("admin.pin_title") }}</h2>
-    <form id="pin-form" class="row mt">
-      <input type="password" id="new-pin" inputmode="numeric" autocomplete="new-password" placeholder="{{ t('admin.pin_label') }}" aria-label="{{ t('admin.pin_label') }}">
-      <button class="btn" type="submit">{{ t("common.save") }}</button>
-    </form>
-  </div>
-  <div class="card">
-    <h2>{{ t("admin.password_title") }}</h2>
-    <form id="password-form" class="row mt">
-      <input type="password" id="new-password" autocomplete="new-password" placeholder="{{ t('admin.password_label') }}" aria-label="{{ t('admin.password_label') }}">
-      <button class="btn" type="submit">{{ t("common.save") }}</button>
+    <h2>{{ t("account.password_title") }}</h2>
+    <form id="account-password-form" class="stack mt" autocomplete="off">
+      <input type="password" id="current-password" autocomplete="current-password" placeholder="{{ t('account.current') }}" aria-label="{{ t('account.current') }}" required>
+      <input type="password" id="account-new-password" autocomplete="new-password" placeholder="{{ t('account.new') }}" aria-label="{{ t('account.new') }}" required>
+      <input type="password" id="account-repeat-password" autocomplete="new-password" placeholder="{{ t('account.repeat') }}" aria-label="{{ t('account.repeat') }}" required>
+      <button class="btn primary" type="submit">{{ t("common.save") }}</button>
+      <p class="sub">{{ t("account.password_hint") }}</p>
     </form>
   </div>
   <div class="card">

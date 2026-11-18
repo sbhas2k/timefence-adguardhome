@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import secrets
@@ -305,9 +306,29 @@ def create_app(
             "history": history,
             "adguard_error": reconciler.last_error,
             "last_sync": int(reconciler.last_ok_ts) if reconciler.last_ok_ts else None,
-            "warnings": sorted(reconciler.warnings),
+            "warnings": sorted(
+                reconciler.warnings | {notice for notice in [migration_notice()] if notice}
+            ),
         }
         return payload
+
+    def migration_notice() -> str | None:
+        """A group that needed "Start" now has plain daily minutes: say so once."""
+        with store as conn:
+            row = conn.execute(
+                "SELECT ts, detail FROM events WHERE kind='migration' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            detail = json.loads(row["detail"] or "{}")
+        except (TypeError, ValueError):
+            return None
+        if int(detail.get("converted_groups") or 0) <= 0:
+            return None
+        if time.time() - int(row["ts"]) > 7 * 86400:
+            return None
+        return "session_groups_converted"
 
     def critical_hits(domains: list[str]) -> list[dict]:
         hits = []
