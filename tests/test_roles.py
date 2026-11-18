@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
@@ -259,3 +260,95 @@ def test_admin_state_warns_about_converted_session_groups(settings, fake):
             conn.commit()
         warnings = client.get("/api/state").json()["warnings"]
         assert "session_groups_converted" in warnings
+
+
+def _settings_for(tmp_path, base_path):
+    from timefence.config import Settings
+
+    return Settings.from_env(
+        {
+            "ADGUARD_URL": "http://127.0.0.1:3000",
+            "ADGUARD_USER": "admin",
+            "ADGUARD_PASSWORD": "secret",
+            "BASE_PATH": base_path,
+            "TZ": "UTC",
+            "DATA_DIR": str(tmp_path / "data"),
+            "SECURE_COOKIES": "false",
+            "RECONCILE_INTERVAL": "60",
+            "LOG_LEVEL": "WARNING",
+        }
+    )
+
+
+def _assert_page_urls(html: str, base: str, script: str) -> None:
+    assert f'href="{base}/static/style.css"' in html
+    assert f'href="{base}/static/favicon.svg"' in html
+    assert f'src="{base}/static/{script}"' in html
+    assert f'data-base="{base}"' in html
+    # no protocol-relative URL may ever reach the browser
+    assert 'href="//' not in html
+    assert 'src="//' not in html
+
+
+@pytest.mark.parametrize("prefix", ["/", "/tf"])
+def test_pages_build_urls_for_root_and_prefix(tmp_path, fake, prefix):
+    app = create_app(_settings_for(tmp_path, prefix), adguard=fake)
+    base = "" if prefix == "/" else prefix
+
+    with TestClient(app) as client:
+
+        def api(path: str) -> str:
+            return f"{base}{path}"
+
+        def login(client, username: str, password: str) -> None:
+            response = client.post(
+                api("/api/login"), json={"username": username, "password": password}
+            )
+            assert response.status_code == 200, response.text
+            client.headers.update({"X-CSRF-Token": response.json()["csrf"]})
+
+        root = client.get(api("/"), follow_redirects=False)
+        assert root.status_code in {302, 303, 307}
+        location = root.headers["location"]
+        assert location == f"{base}/login", location
+        assert "//" not in location
+        if base:
+            no_slash = client.get(base, follow_redirects=False)
+            assert no_slash.status_code in {302, 303, 307}
+            assert no_slash.headers["location"] == f"{base}/"
+
+        login_page = client.get(api("/login"))
+        assert login_page.status_code == 200
+        _assert_page_urls(login_page.text, base, "auth.js")
+
+        login(client, "admin", "admin")
+        before_setup = client.get(api("/"), follow_redirects=False)
+        assert before_setup.headers["location"] == f"{base}/setup"
+        assert "//" not in before_setup.headers["location"]
+        setup_page = client.get(api("/setup"))
+        _assert_page_urls(setup_page.text, base, "auth.js")
+
+        done = client.post(api("/api/setup"), json={"admin_password": "correct horse battery"})
+        assert done.status_code == 200, done.text
+        login(client, "admin", "correct horse battery")
+        admin_page = client.get(api("/"))
+        assert admin_page.status_code == 200
+        assert 'data-page="app"' in admin_page.text
+        _assert_page_urls(admin_page.text, base, "app.js")
+
+        created = client.post(
+            api("/api/users"),
+            json={"username": "kid", "password": "kid-password", "role": "user"},
+        )
+        assert created.status_code == 200, created.text
+
+        kid = TestClient(app)
+        login(kid, "kid", "kid-password")
+        kid_page = kid.get(api("/"))
+        assert 'data-page="kid"' in kid_page.text
+        _assert_page_urls(kid_page.text, base, "kid.js")
+        assert kid.get(api("/static/style.css")).status_code == 200
+        kid.close()
+
+        assert client.get(api("/static/style.css")).status_code == 200
+        assert client.get(api("/login")).status_code == 200

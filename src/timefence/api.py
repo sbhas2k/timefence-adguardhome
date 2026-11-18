@@ -259,7 +259,9 @@ def create_app(
         sess = current_session(request)
         template = env.get_template(name)
         html = template.render(
-            base=settings.base_path,
+            # "" at the root: "/" would turn every {{ base }}/static/... into
+            # a protocol-relative URL (host "static") and break the default install.
+            base=base,
             app_title=APP_TITLE,
             app_name=i18n.t("app.title"),
             tagline=i18n.t("app.tagline"),
