@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -16,8 +14,8 @@ __all__ = ["FakeAdGuard", "make_entry", "locked_conn"]
 
 
 def locked_conn(app):
-    """Database access for tests: a context manager that hands out a connection."""
-    return contextlib.nullcontext(app.state.conn)
+    """Database access for tests: the app's store, used as a context manager."""
+    return app.state.store
 
 
 @pytest.fixture()
