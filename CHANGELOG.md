@@ -4,6 +4,21 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.5.2] - 2026-11-18
+
+### Changed
+
+- **Mobile polish.** The header stays on one line at 390 px (a short title and a
+  compact, non-wrapping log-out button), checkbox rows are 44 px tap targets
+  ("Show all", the alerts toggles, "Paused"), icon-only buttons and chip close
+  controls meet the 44 px minimum, and the two Settings save buttons have
+  distinct accessible names ("Save password" and "Save alerts").
+- **Readable alert status.** The Settings card says "Delivered at HH:MM" or a
+  plain reason ("Failed: could not connect at HH:MM") instead of the internal
+  delivery category, shows nothing before the first delivery, and presents a
+  stored secret as "Saved (ends with ab)" rather than a host/path fragment. The
+  API shape and the category-only rule are unchanged.
+
 ## [0.5.1] - 2026-11-18
 
 ### Changed
