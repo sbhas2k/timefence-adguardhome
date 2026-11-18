@@ -40,6 +40,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "login.button": "Sign in",
         "login.wrong": "Wrong username or password",
         "login.locked": "Too many attempts. Try again in {minutes} minutes.",
+        "login.json_required": "Signing in requires a JSON request.",
         "login.logout": "Log out",
         "login.setup_needed": "First run: sign in as admin / admin, then choose a new password.",
         "setup.heading": "First-run setup",

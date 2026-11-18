@@ -169,7 +169,13 @@ def main(argv: list[str] | None = None) -> int:
 
     host = args.host or settings.listen_host
     port = args.port or settings.listen_port
-    uvicorn.run("timefence.main:app", host=host, port=port, log_level=settings.log_level.lower())
+    uvicorn.run(
+        "timefence.main:app",
+        host=host,
+        port=port,
+        proxy_headers=False,  # TimeFence reads X-Forwarded-For itself
+        log_level=settings.log_level.lower(),
+    )
     return 0
 
 

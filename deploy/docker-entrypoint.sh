@@ -11,5 +11,5 @@ exec uvicorn timefence.main:app \
     --host "$host" \
     --port "$port" \
     --no-server-header \
-    --proxy-headers \
+    --no-proxy-headers \
     --log-level "$level"

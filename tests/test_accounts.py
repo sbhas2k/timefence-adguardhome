@@ -158,12 +158,16 @@ def test_other_accounts_success_does_not_reset_lockout(settings, fake):
 
 
 def test_ip_lockout_after_20_failures_across_usernames(client):
+    statuses = []
     for index in range(10):
         for _ in range(2):
             response = client.post(
                 "/api/login", json={"username": f"user{index}", "password": "nope"}
             )
-            assert response.status_code == 401, response.text
+            statuses.append(response.status_code)
+
+    assert statuses[:19] == [401] * 19
+    assert statuses[19] == 429  # the failure that fills the address counter
 
     blocked = client.post("/api/login", json={"username": "admin", "password": "admin"})
     assert blocked.status_code == 429

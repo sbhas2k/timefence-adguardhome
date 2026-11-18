@@ -196,65 +196,121 @@ class SessionManager:
 # --------------------------------------------------------------------------- #
 
 
-def client_ip(host: str | None, headers: dict[str, str], trusted: tuple) -> str:
-    """X-Forwarded-For is honoured only when the peer is a trusted proxy."""
-    peer = host or "unknown"
-    if not trusted:
-        return peer
+def _parse_ip(value: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """Parse an address, mapping ::ffff:127.0.0.1 to 127.0.0.1."""
     try:
-        peer_ip = ipaddress.ip_address(peer)
+        address = ipaddress.ip_address(value)
     except ValueError:
-        return peer
-    if not any(peer_ip in net for net in trusted):
-        return peer
-    forwarded = headers.get("x-forwarded-for") or headers.get("X-Forwarded-For")
-    if forwarded:
-        first = forwarded.split(",")[0].strip()
+        return None
+    mapped = getattr(address, "ipv4_mapped", None)
+    return mapped or address
+
+
+def _is_trusted(address, trusted: tuple) -> bool:
+    for network in trusted:
         try:
-            return str(ipaddress.ip_address(first))
-        except ValueError:
-            return peer
-    return peer
+            if address in network:
+                return True
+        except TypeError:  # an IPv4 address never matches an IPv6 network
+            continue
+    return False
+
+
+def client_ip(peer: str | None, forwarded: str | None, trusted: tuple) -> str:
+    """The client address: the right-most X-Forwarded-For hop we do not trust.
+
+    `forwarded` is the joined value of every X-Forwarded-For header line. A hop
+    we cannot parse means the header is untrustworthy and the peer is used.
+    """
+    peer_text = peer or "unknown"
+    peer_address = _parse_ip(peer_text)
+    if peer_address is None:
+        return peer_text
+    if not trusted or not _is_trusted(peer_address, trusted):
+        return str(peer_address)
+    hops = [part.strip() for part in (forwarded or "").split(",") if part.strip()]
+    if not hops:
+        return str(peer_address)
+    for hop in reversed(hops):
+        hop_address = _parse_ip(hop)
+        if hop_address is None:
+            return str(peer_address)
+        if not _is_trusted(hop_address, trusted):
+            return str(hop_address)
+    return str(_parse_ip(hops[0]) or peer_address)
+
+
+PAIR_THRESHOLD = 5
+IP_THRESHOLD = 20
+MAX_LIMITER_KEYS = 10_000
 
 
 class LoginRateLimiter:
-    """5 failures within 15 minutes lock the client IP for 15 minutes.
+    """Failure counters keyed by `pair:<ip>|<username>` and `ip:<ip>`.
 
-    In-memory by design: a restart clears lockouts, which is acceptable for a
-    single-process household app and avoids writing attacker-controlled data
-    into the database.
+    A pair lock only stops that account from that address and is cleared by a
+    successful login of the same pair; the address lock caps distributed
+    guessing and is never cleared by a success. In memory by design: a restart
+    clears lockouts, which is acceptable for a single-process household app.
     """
 
-    def __init__(self, threshold: int = LOCK_THRESHOLD, window: int = LOCK_SECONDS) -> None:
-        self.threshold = threshold
+    def __init__(
+        self,
+        pair_threshold: int = PAIR_THRESHOLD,
+        ip_threshold: int = IP_THRESHOLD,
+        window: int = LOCK_SECONDS,
+        max_keys: int = MAX_LIMITER_KEYS,
+    ) -> None:
+        self.pair_threshold = pair_threshold
+        self.ip_threshold = ip_threshold
         self.window = window
+        self.max_keys = max_keys
         self._failures: dict[str, list[float]] = {}
         self._lock = threading.Lock()
+        self._records = 0
 
-    def _prune(self, ip: str, now: float) -> list[float]:
-        entries = [t for t in self._failures.get(ip, []) if now - t < self.window]
+    def threshold_for(self, key: str) -> int:
+        return self.ip_threshold if key.startswith("ip:") else self.pair_threshold
+
+    def _prune_key(self, key: str, now: float) -> list[float]:
+        entries = [t for t in self._failures.get(key, []) if now - t < self.window]
         if entries:
-            self._failures[ip] = entries
+            self._failures[key] = entries
         else:
-            self._failures.pop(ip, None)
+            self._failures.pop(key, None)
         return entries
 
-    def locked_for(self, ip: str) -> int:
+    def _prune_all(self, now: float) -> None:
+        for key in list(self._failures):
+            self._prune_key(key, now)
+
+    def locked_for(self, key: str) -> int:
         """Seconds remaining on the lockout, 0 when not locked."""
         with self._lock:
             now = time.time()
-            entries = self._prune(ip, now)
-            if len(entries) >= self.threshold:
+            entries = self._prune_key(key, now)
+            if len(entries) >= self.threshold_for(key):
                 return max(0, int(entries[-1] + self.window - now))
             return 0
 
-    def record_failure(self, ip: str) -> None:
+    def record_failure(self, key: str) -> None:
         with self._lock:
             now = time.time()
-            entries = self._prune(ip, now)
+            self._records += 1
+            if self._records % 256 == 0:
+                self._prune_all(now)
+            entries = self._prune_key(key, now)
             entries.append(now)
-            self._failures[ip] = entries
+            self._failures[key] = entries
+            while len(self._failures) > self.max_keys:
+                oldest = min(self._failures, key=lambda item: self._failures[item][-1])
+                del self._failures[oldest]
 
-    def reset(self, ip: str) -> None:
+    def reset(self, key: str) -> None:
         with self._lock:
-            self._failures.pop(ip, None)
+            self._failures.pop(key, None)
+
+    def keys(self) -> list[str]:
+        """The keys currently held (diagnostics and tests)."""
+        with self._lock:
+            return list(self._failures)

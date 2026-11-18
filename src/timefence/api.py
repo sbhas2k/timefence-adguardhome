@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import secrets
 import time
 from pathlib import Path
 from typing import Any
@@ -65,7 +66,7 @@ def json_error(status: int, message: str, code: str = "error", **extra: Any) -> 
 def client_ip(request: Request, settings: Settings) -> str:
     return security.client_ip(
         request.client.host if request.client else None,
-        dict(request.headers),
+        ",".join(request.headers.getlist("x-forwarded-for")),
         settings.trusted_proxies,
     )
 
@@ -103,6 +104,7 @@ def create_app(
 
     session_manager = security.SessionManager(security.load_or_create_secret(settings.data_dir))
     limiter = security.LoginRateLimiter()
+    dummy_hash = security.hash_secret(secrets.token_urlsafe(32))
     agh = adguard or AdGuardClient(
         settings.adguard_url, settings.adguard_user, settings.adguard_password
     )
@@ -413,6 +415,7 @@ def create_app(
         openapi_url=None,
     )
     app.state.settings = settings
+    app.state.limiter = limiter
     app.state.store = store
     app.state.conn = store.conn
     app.state.setup_done = setup_done
@@ -501,9 +504,15 @@ def create_app(
     # ------------------------------------------------------------------ auth
     @app.post(f"{base}/api/login")
     def api_login(request: Request, data: dict = Depends(json_body)):
+        if (
+            request.headers.get("content-type", "").split(";")[0].strip().lower()
+            != "application/json"
+        ):
+            return json_error(415, i18n.t("login.json_required"), "unsupported_media_type")
         ip = client_ip(request, settings)
-        locked = limiter.locked_for(ip)
-        if locked:
+        ip_key = f"ip:{ip}"
+        locked = limiter.locked_for(ip_key)
+        if locked:  # locked addresses do no work at all: no hash, no event
             return json_error(
                 429, i18n.t("login.locked", minutes=max(1, locked // 60 + 1)), "locked"
             )
@@ -511,25 +520,45 @@ def create_app(
         password = str(data.get("password", ""))
         if not username or not password:
             return json_error(400, i18n.t("login.missing"), "bad_request")
-        with store as conn:
-            row = conn.execute(
-                "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (username,)
-            ).fetchone()
-        # hashing is slow: never while holding the store lock
-        ok = bool(row) and not row["disabled"] and security.verify_secret(row["hash"], password)
-        if ok and row["role"] != "admin" and not setup_complete():
-            return json_error(403, i18n.t("error.setup_required"), "setup_required")
-        if not ok:
-            limiter.record_failure(ip)
-            with store as conn:
-                budget.log_event(conn, "login_failed", {"username": username[:40], "ip": ip})
-            remaining = limiter.locked_for(ip)
+        if not credentials.USERNAME_RE.match(username):
+            limiter.record_failure(ip_key)
+            security.verify_secret(dummy_hash, password)
+            remaining = limiter.locked_for(ip_key)
             if remaining:
                 return json_error(
                     429, i18n.t("login.locked", minutes=max(1, remaining // 60 + 1)), "locked"
                 )
             return json_error(401, i18n.t("login.wrong"), "bad_credentials")
-        limiter.reset(ip)
+        pair_key = f"pair:{ip}|{username.lower()}"
+        locked = limiter.locked_for(pair_key)
+        if locked:
+            return json_error(
+                429, i18n.t("login.locked", minutes=max(1, locked // 60 + 1)), "locked"
+            )
+        with store as conn:
+            row = conn.execute(
+                "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (username,)
+            ).fetchone()
+        # hashing is slow: never while holding the store lock
+        if row and not row["disabled"]:
+            ok = security.verify_secret(row["hash"], password)
+        else:
+            security.verify_secret(dummy_hash, password)
+            ok = False
+        if ok and row["role"] != "admin" and not setup_complete():
+            return json_error(403, i18n.t("error.setup_required"), "setup_required")
+        if not ok:
+            limiter.record_failure(pair_key)
+            limiter.record_failure(ip_key)
+            with store as conn:
+                budget.log_event(conn, "login_failed", {"username": username[:40], "ip": ip})
+            remaining = max(limiter.locked_for(pair_key), limiter.locked_for(ip_key))
+            if remaining:
+                return json_error(
+                    429, i18n.t("login.locked", minutes=max(1, remaining // 60 + 1)), "locked"
+                )
+            return json_error(401, i18n.t("login.wrong"), "bad_credentials")
+        limiter.reset(pair_key)  # only this pair, never the address
         new_hash = security.hash_secret(password) if security.needs_rehash(row["hash"]) else None
         with store as conn:
             if new_hash:
