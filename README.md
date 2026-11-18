@@ -11,9 +11,25 @@ local midnight once the budget is gone.
 
 > **Unofficial community project, not affiliated with or endorsed by AdGuard.**
 
-**Screenshots:** _placeholders — add `kid-390.png`, `kid-1280.png`,
-`admin-today-390.png` and `admin-today-1280.png` in
-[`docs/screenshots/`](docs/screenshots/) (see the note there)._
+## Screenshots
+
+Captured from the development server with sample data; the full set and how to
+regenerate it are in [`docs/screenshots/`](docs/screenshots/).
+
+| Kid view (phone) | Kid view (phone, dark) |
+|---|---|
+| <img src="docs/screenshots/kid-390.png" width="260" alt="Kid view on a phone: minutes left for each group and a bedtime block"> | <img src="docs/screenshots/kid-390-dark.png" width="260" alt="The kid view on a phone in dark mode"> |
+
+<img src="docs/screenshots/admin-today-1280.png" alt="Admin Today: remaining minutes, budgets and quick actions for each group">
+
+<img src="docs/screenshots/groups-1280.png" alt="Groups tab: budgets, targets and owners, with the AdGuard services picker">
+
+<img src="docs/screenshots/bedtime-editor-390.png" width="390" alt="Group editor on a phone, showing the bedtime windows">
+
+<img src="docs/screenshots/alerts-1280.png" alt="Settings, Alerts card: one ntfy or webhook channel and the event toggles">
+
+<img src="docs/screenshots/history-1280.png" alt="History tab: usage per group over 30 days and the CSV download">
+
 
 ## Features
 
