@@ -74,7 +74,10 @@ Friday night. Everything is evaluated on the local wall clock in `TZ`, one
 minute at a time, so the days a clock jumps forward or falls back are handled
 without guessing a skipped or repeated local time. The end of an open window is
 reported as a local time (`bedtime_until`, for example `07:00`), which the kid
-screen prints verbatim.
+screen prints verbatim. A set of windows can cover every minute of the day (for
+example `00:00–23:59` plus `21:00–07:00`); there is no end to report then, so
+`bedtime_until` is `null` and both screens say "Bedtime" / "Bedtime is on"
+instead of a time.
 
 The admin's explicit **Free until** overrides a bedtime window — that is the
 parent deciding to allow it — while the daily budget does not. A window is

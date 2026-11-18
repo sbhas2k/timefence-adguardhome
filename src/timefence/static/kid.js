@@ -55,7 +55,11 @@
 
   function bigLine(group) {
     if (group.status === "bedtime") {
-      return { main: t("kid.bedtime", { time: group.bedtime_until }), detail: "" };
+      var until = group.bedtime_until;
+      return {
+        main: until ? t("kid.bedtime", { time: until }) : t("kid.bedtime_any"),
+        detail: ""
+      };
     }
     var remaining = Math.max(0, Number(group.remaining_minutes) || 0);
     if (group.status === "limit_reached") {

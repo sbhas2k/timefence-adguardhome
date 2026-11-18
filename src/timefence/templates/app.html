@@ -108,12 +108,14 @@
         <div>
           <label for="alerts-ntfy-token">{{ t("alerts.token") }}</label>
           <input type="password" id="alerts-ntfy-token" placeholder="{{ t('alerts.token') }}" autocomplete="new-password">
+          <button type="button" class="btn ghost hidden mt" data-action="clear-secret" data-secret="ntfy_token" aria-label="{{ t('alerts.clear_token') }}">{{ t("alerts.clear") }}</button>
         </div>
       </div>
       <div id="alerts-webhook" class="stack hidden">
         <div>
           <label for="alerts-webhook-url">{{ t("alerts.webhook_url") }}</label>
           <input type="text" id="alerts-webhook-url" placeholder="https://example/hook" autocomplete="off" spellcheck="false">
+          <button type="button" class="btn ghost hidden mt" data-action="clear-secret" data-secret="webhook_url" aria-label="{{ t('alerts.clear_webhook') }}">{{ t("alerts.clear") }}</button>
         </div>
       </div>
       <fieldset id="alerts-events">

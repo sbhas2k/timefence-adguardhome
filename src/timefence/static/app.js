@@ -210,7 +210,11 @@
   /* One status per group, straight from the server: no clock maths here. */
   function statusFor(group) {
     if (group.status === "bedtime") {
-      return { cls: "warn", text: t("status.bedtime", { time: group.bedtime_until }) };
+      var until = group.bedtime_until;
+      return {
+        cls: "warn",
+        text: until ? t("status.bedtime", { time: until }) : t("status.bedtime_any")
+      };
     }
     if (group.status === "paused") { return { cls: "warn", text: t("status.paused") }; }
     if (group.status === "blocked_admin") { return { cls: "bad", text: t("status.forced") }; }
@@ -961,6 +965,12 @@
     });
     $("#alerts-ntfy").classList.toggle("hidden", channel !== "ntfy");
     $("#alerts-webhook").classList.toggle("hidden", channel !== "webhook");
+    $$("[data-action='clear-secret']").forEach(function (button) {
+      var configured = button.dataset.secret === "ntfy_token"
+        ? Boolean(data.ntfy.token_configured)
+        : Boolean(data.webhook.host);
+      button.classList.toggle("hidden", !configured);
+    });
     var needsToken = channel === "ntfy" && !data.ntfy.token_configured &&
       !alertHostIsLocal(data.ntfy.base_host);
     var warning = $("#alerts-warning");
@@ -1228,6 +1238,19 @@
     channelSelect.addEventListener("change", function () {
       $("#alerts-ntfy").classList.toggle("hidden", channelSelect.value !== "ntfy");
       $("#alerts-webhook").classList.toggle("hidden", channelSelect.value !== "webhook");
+    });
+    $$("[data-action='clear-secret']").forEach(function (button) {
+      button.addEventListener("click", function () {
+        var secret = button.dataset.secret;
+        var payload = {};
+        payload[secret] = "";
+        api("PUT", "/api/alerts", payload).then(function (data) {
+          var input = secret === "ntfy_token" ? $("#alerts-ntfy-token") : $("#alerts-webhook-url");
+          if (input) { input.value = ""; }
+          paintAlerts(data);
+          toast(t("common.saved"));
+        }).catch(function (error) { toast(error.message); });
+      });
     });
     var alertsTest = $("#alerts-test");
     alertsTest.addEventListener("click", function () {
