@@ -32,11 +32,17 @@ def test_user_pin_rules():
 
 
 def test_set_and_verify_roundtrip(conn):
-    credentials.set_secret(conn, "admin", "a good long password")
-    stored = credentials.get_hash(conn, "admin")
-    assert stored.startswith("$argon2id$")
-    assert credentials.verify(conn, "admin", "a good long password")
-    assert not credentials.verify(conn, "admin", "wrong")
+    stored = security.hash_secret("a good long password")
+    conn.execute(
+        "INSERT INTO users(username, role, hash, created_at, updated_at) "
+        "VALUES('admin','admin',?,0,0)",
+        (stored,),
+    )
+    conn.commit()
+    row = conn.execute("SELECT hash FROM users WHERE username='admin'").fetchone()
+    assert row["hash"].startswith("$argon2id$")
+    assert security.verify_secret(row["hash"], "a good long password")
+    assert not security.verify_secret(row["hash"], "wrong")
 
 
 def test_werkzeug_scrypt_hash_still_verifies_and_upgrades(conn):
@@ -56,14 +62,12 @@ def test_werkzeug_scrypt_hash_still_verifies_and_upgrades(conn):
         .hex()
     )
     legacy = f"scrypt:32768:8:1${salt}${digest}"
-    conn.execute("INSERT INTO credentials(role, hash, updated_at) VALUES('admin', ?, 0)", (legacy,))
-    conn.commit()
 
     assert security.verify_secret(legacy, "legacy-secret")
-    assert credentials.verify(conn, "admin", "legacy-secret")
-    # it was transparently re-hashed to argon2id
-    assert credentials.get_hash(conn, "admin").startswith("$argon2id$")
-    assert credentials.verify(conn, "admin", "legacy-secret")
+    assert not security.verify_secret(legacy, "wrong")
+    # the login path sees that the stored hash is old and re-hashes it
+    assert security.needs_rehash(legacy) is True
+    assert security.needs_rehash(security.hash_secret("legacy-secret")) is False
 
 
 def test_reset_writes_a_usable_hash(tmp_path):
@@ -128,4 +132,26 @@ def test_cli_passwd(tmp_path):
     conn = db.connect(path)
     stored = conn.execute("SELECT hash FROM users WHERE username='admin'").fetchone()[0]
     assert security.verify_secret(stored, "new-password-123")
+    conn.close()
+
+
+def test_cli_reset_refuses_to_migrate_v3(tmp_path):
+    from zoneinfo import ZoneInfo
+
+    path = tmp_path / "timefence.db"
+    conn = db.connect(path)
+    assert db.migrate(conn, ZoneInfo("UTC"), target=3) == 3
+    conn.execute(
+        "INSERT INTO groups(name, emoji, weekday_minutes, weekend_minutes, paused, deleted, "
+        "created_at, mode) VALUES('Sessions', '', 30, 30, 0, 0, 0, 'session')"
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(credentials.CredentialError, match="start TimeFence once"):
+        credentials.reset(tmp_path, "admin", "brand new password")
+
+    conn = db.connect(path)
+    assert db.current_version(conn) == 3
+    assert [row["mode"] for row in conn.execute("SELECT mode FROM groups")] == ["session"]
     conn.close()

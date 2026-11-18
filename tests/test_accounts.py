@@ -288,3 +288,116 @@ def test_login_sheds_load_when_busy(settings, fake, monkeypatch):
             thread.join(20)
 
     assert results == [401] * 4
+
+
+# --------------------------------------------------------------------------- #
+# password changes and the first-run default password
+# --------------------------------------------------------------------------- #
+
+
+def test_admin_can_change_own_password(settings, fake):
+    app = create_app(settings, adguard=fake)
+    with TestClient(app) as admin:
+        complete_setup(admin)
+        other = TestClient(app)
+
+        changed = admin.post(
+            "/api/account/password",
+            json={"current_password": ADMIN2["password"], "new_password": "a better password"},
+        )
+        assert changed.status_code == 200, changed.text
+        assert admin.get("/api/state").status_code == 200  # the caller stays signed in
+
+        assert (
+            other.post(
+                "/api/login", json={"username": "admin", "password": ADMIN2["password"]}
+            ).status_code
+            == 401
+        )
+        assert (
+            other.post(
+                "/api/login", json={"username": "admin", "password": "a better password"}
+            ).status_code
+            == 200
+        )
+        other.close()
+
+
+def test_old_settings_endpoint_cannot_leave_old_password_working(settings, fake):
+    app = create_app(settings, adguard=fake)
+    with TestClient(app) as admin:
+        complete_setup(admin)
+        other = TestClient(app)
+
+        legacy = admin.post(
+            "/api/admin/credentials",
+            json={"role": "admin", "secret": "a completely new password"},
+        )
+        assert legacy.status_code in {200, 404, 405}
+
+        still_works = other.post(
+            "/api/login", json={"username": "admin", "password": ADMIN2["password"]}
+        )
+        assert still_works.status_code == 401
+        other.close()
+
+
+def test_wrong_current_password_is_rejected(settings, fake):
+    app = create_app(settings, adguard=fake)
+    with TestClient(app) as admin:
+        complete_setup(admin)
+        response = admin.post(
+            "/api/account/password",
+            json={"current_password": "not my password", "new_password": "another password"},
+        )
+        assert response.status_code == 400
+        assert response.json()["code"] == "wrong_password"
+
+
+def _build_db(settings, users, *, setup_complete=True):
+    from timefence import db, security
+
+    conn = db.connect(settings.db_path)
+    db.migrate(conn, settings.zone)
+    for username, role, password in users:
+        conn.execute(
+            "INSERT INTO users(username, role, hash, created_at, updated_at) VALUES(?,?,?,0,0)",
+            (username, role, security.hash_secret(password)),
+        )
+    db.set_bool_setting(conn, "setup_complete", setup_complete)
+    conn.commit()
+    conn.close()
+
+
+def test_startup_reopens_setup_when_default_admin_password_is_live(settings, fake):
+    _build_db(settings, [("admin", "admin", "admin")])
+
+    app = create_app(settings, adguard=fake)
+    with TestClient(app) as client:
+        assert client.get("/api/meta").json()["setup_complete"] is False
+
+
+def test_setup_disables_other_admins_with_the_default_password(settings, fake):
+    _build_db(
+        settings,
+        [("admin", "admin", "admin"), ("dad", "admin", "dad-password-123")],
+    )
+
+    app = create_app(settings, adguard=fake)
+    with TestClient(app):
+        dad = TestClient(app)
+        sign_in(dad, "dad", "dad-password-123")
+
+        response = dad.post("/api/setup", json={"admin_password": "dad sets a good one"})
+        assert response.status_code == 200, response.text
+        assert response.json()["disabled_accounts"] == ["admin"]
+
+        other = TestClient(app)
+        assert (
+            other.post("/api/login", json={"username": "admin", "password": "admin"}).status_code
+            == 401
+        )
+        users = dad.get("/api/users").json()["users"]
+        assert [user for user in users if user["username"] == "admin"][0]["disabled"] is True
+        other.close()
+        dad.close()
