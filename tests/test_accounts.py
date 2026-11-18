@@ -118,3 +118,128 @@ def test_password_change_signs_out_other_sessions(settings, fake):
         ).status_code == 200
         assert kid.get("/api/state").status_code == 401
         kid.close()
+
+
+# --------------------------------------------------------------------------- #
+# login hardening and lockout keys
+# --------------------------------------------------------------------------- #
+
+
+def test_login_requires_json(client):
+    response = client.post("/api/login", data={"username": "admin", "password": "admin"})
+    assert response.status_code == 415
+    assert response.json()["code"] == "unsupported_media_type"
+
+
+def test_other_accounts_success_does_not_reset_lockout(settings, fake):
+    app = create_app(settings, adguard=fake)
+    with TestClient(app) as admin:
+        complete_setup(admin)
+        create_user(admin, "kid")
+        kid = TestClient(app)
+        sign_in(kid, "kid", "kid-password")
+
+        for _ in range(4):
+            assert (
+                admin.post("/api/login", json={"username": "admin", "password": "nope"}).status_code
+                == 401
+            )
+            sign_in(kid, "kid", "kid-password")  # a success for a different pair
+        assert (
+            admin.post("/api/login", json={"username": "admin", "password": "nope"}).status_code
+            == 429
+        )
+
+        locked = admin.post(
+            "/api/login", json={"username": "admin", "password": ADMIN2["password"]}
+        )
+        assert locked.status_code == 429
+        kid.close()
+
+
+def test_ip_lockout_after_20_failures_across_usernames(client):
+    for index in range(10):
+        for _ in range(2):
+            response = client.post(
+                "/api/login", json={"username": f"user{index}", "password": "nope"}
+            )
+            assert response.status_code == 401, response.text
+
+    blocked = client.post("/api/login", json={"username": "admin", "password": "admin"})
+    assert blocked.status_code == 429
+
+
+def test_unknown_user_still_hashes(client, monkeypatch):
+    from timefence import security
+
+    seen: list[str] = []
+    real = security.verify_secret
+
+    def spy(stored: str, secret: str) -> bool:
+        seen.append(stored)
+        return real(stored, secret)
+
+    monkeypatch.setattr(security, "verify_secret", spy)
+    response = client.post("/api/login", json={"username": "nobody-here", "password": "whatever"})
+    assert response.status_code == 401
+    assert len(seen) == 1
+
+
+def test_invalid_usernames_are_rate_limited(client, monkeypatch):
+    from timefence import security
+
+    calls = 0
+    real = security.verify_secret
+
+    def spy(stored: str, secret: str) -> bool:
+        nonlocal calls
+        calls += 1
+        return real(stored, secret)
+
+    monkeypatch.setattr(security, "verify_secret", spy)
+    statuses = []
+    for _ in range(20):
+        response = client.post("/api/login", json={"username": "x" * 200, "password": "nope"})
+        statuses.append(response.status_code)
+
+    assert statuses[:19] == [401] * 19
+    assert statuses[19] == 429
+    assert calls == 20
+
+    again = client.post("/api/login", json={"username": "x" * 200, "password": "nope"})
+    assert again.status_code == 429
+    assert calls == 20  # a locked address does not even run the dummy hash
+
+
+def test_limiter_does_not_keep_invalid_usernames(settings, fake):
+    app = create_app(settings, adguard=fake)
+    with TestClient(app) as client:
+        for _ in range(3):
+            client.post("/api/login", json={"username": "x" * 200, "password": "nope"})
+        keys = app.state.limiter.keys()
+        assert not [key for key in keys if key.startswith("pair:")]
+        assert [key for key in keys if key.startswith("ip:")]
+
+
+def test_forwarded_for_header_lines_are_joined(settings, fake, monkeypatch):
+    from timefence import security
+
+    seen: list[str | None] = []
+    real = security.client_ip
+
+    def spy(peer, forwarded, trusted):
+        seen.append(forwarded)
+        return real(peer, forwarded, trusted)
+
+    monkeypatch.setattr(security, "client_ip", spy)
+    app = create_app(settings, adguard=fake)
+    with TestClient(app) as client:
+        client.post(
+            "/api/login",
+            json={"username": "admin", "password": "nope"},
+            headers=[
+                ("x-forwarded-for", "6.6.6.6"),
+                ("x-forwarded-for", "203.0.113.9"),
+            ],
+        )
+    assert seen == ["6.6.6.6,203.0.113.9"]
