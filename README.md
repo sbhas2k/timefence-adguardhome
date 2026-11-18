@@ -50,8 +50,9 @@ local midnight once the budget is gone.
   password card that actually changes your own password.
 - **Shared/critical-domain guard** with a plain-language warning
   ("Blocking apps.apple.com blocks the whole App Store, not one app.").
-- **History**: the last 7 days per group, with dates that stay correct across
-  daylight-saving changes.
+- **History and export**: 7, 14 or 30 days per group — metered minutes, bonus
+  minutes and the minutes allowed that day — with a CSV download that is safe to
+  open in a spreadsheet. Dates stay correct across daylight-saving changes.
 - **Accounts that end sessions.** Disabling, deleting, demoting or changing the
   password of an account signs its existing sessions out on the next request.
   Login is JSON-only, rate limited per account+address and per address, and

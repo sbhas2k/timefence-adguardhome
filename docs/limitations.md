@@ -108,6 +108,20 @@ backwards can suppress a duplicate message and a jump forwards can skip a day;
 both are accepted for a household tool. The topic, token and webhook path are
 stored in plain text in the database, so they are in every backup.
 
+## Usage history is a record of what was used
+
+The 7/14/30-day table and the CSV show metered and bonus minutes. The "minutes
+allowed" column in the table is the group's **current** weekday/weekend setting
+applied to that date, not what the budget was at the time, so a later change to
+the minutes rewrites old rows in the table. The CSV leaves that column out on
+purpose and exports only what was used. Only groups that still exist are
+listed: a deleted group disappears from the table and the CSV (its stored rows
+stay in the database, but nothing shows them).
+
+The CSV is UTF-8 without a BOM and quotes cells with `csv`; group names have
+control characters removed and are prefixed with `'` when they could be read as
+a spreadsheet formula.
+
 ## Shutdown blocks everything on purpose
 
 Stopping TimeFence cleanly blocks every managed group, so children cannot

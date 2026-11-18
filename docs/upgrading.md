@@ -81,7 +81,9 @@ release, so pin `:0.5.0` (or a digest) if you want controlled upgrades.
 2. Restore the database you saved before the upgrade, or the automatic
    `timefence.db.pre-v5.bak`, over `/var/lib/timefence/timefence.db` and keep
    it at mode 0600 and owner `timefence`.
-3. Go back to the previous version and start it.
+3. Go back to the previous version: `git checkout v0.4.0 && sudo ./install.sh`
+   (or `docker compose up -d` with the 0.4.0 tag). 0.4.0 reads a v4 database;
+   restoring `timefence.db.pre-v5.bak` first is what makes that possible.
 
 A database from a newer schema is refused on start instead of being silently
 corrupted — that is why the copy matters. Anything that happened after the

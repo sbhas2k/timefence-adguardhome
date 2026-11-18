@@ -242,6 +242,33 @@ daemon thread, so no request, reconcile run or shutdown waits for it.
   `Title`, `Priority` and `Tags` headers. A message only ever contains a group
   name, numbers and a time — never a domain, client address or username.
 
+## Usage history and export
+
+The History tab is served by one query function, `budget.usage_range`: it reads
+the metered and bonus tables over the local dates of the range (7, 14 or 30
+days, built from a date and `timedelta`, never `86400` offsets) and fills zeros
+in Python. It is exactly two statements whatever the number of groups and days.
+Non-deleted groups only, ordered by name; each row carries the metered seconds,
+the bonus seconds, both as minutes rounded to one decimal, and the minutes the
+group is allowed on that date.
+
+`GET /api/usage?days=7|14|30` returns `{"days", "rows"}` (admin only,
+`no-store`); the range is validated as a string so anything else is a `400`
+with an i18n message rather than a framework `422`. The tab fetches it when it
+opens and when the range selector changes, and the 5 s poll never resets the
+selector. `GET /api/usage.csv?days=` writes the same rows with
+`csv.writer`: the header is `group,date,used_minutes,bonus_minutes`, the file is
+UTF-8 without a BOM, named `timefence-usage.csv`, and every group name has
+control characters removed and gets a leading `'` when it would otherwise start
+with `=`, `+`, `-`, `@` or `'`, so a spreadsheet treats it as text. The
+"minutes allowed" column is the group's *current* weekday/weekend setting
+applied to that date — it is shown in the table and deliberately left out of
+the CSV, which is a record of what was used. `/api/state.history` keeps its old
+7-day shape for compatibility.
+
+The weekly summary alert uses the same `usage_range`, so the table, the CSV and
+the message can never disagree about a number.
+
 ## Fail-safety
 
 - **Clean stop blocks every managed group.** On shutdown the loop stops, then
