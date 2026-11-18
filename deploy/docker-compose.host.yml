@@ -19,7 +19,7 @@ services:
       ADGUARD_USER: admin
       ADGUARD_PASSWORD_FILE: /run/secrets/adguard.pass
       BASE_PATH: /
-      TZ: UTC
+      TZ: UTC                  # CHANGE ME: your IANA timezone, e.g. Europe/London
       LISTEN_HOST: 127.0.0.1
       LISTEN_PORT: "8099"
       DATA_DIR: /data

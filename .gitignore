@@ -6,6 +6,9 @@
 data/
 !src/timefence/data/
 secrets/
+adguard_password.txt
+*.bak
+session-secret
 *.pem
 *.key
 

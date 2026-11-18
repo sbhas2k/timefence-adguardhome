@@ -11,7 +11,7 @@
 
 services:
   adguardhome:
-    image: adguard/adguardhome:latest
+    image: adguard/adguardhome:v0.107.80   # pin to the tag you run
     container_name: adguardhome
     network_mode: host
     volumes:
@@ -28,11 +28,11 @@ services:
       ADGUARD_USER: admin
       ADGUARD_PASSWORD_FILE: /run/secrets/adguard_password
       BASE_PATH: /
-      TZ: UTC
-      LISTEN_HOST: 0.0.0.0
+      TZ: UTC                  # CHANGE ME: your IANA timezone, e.g. Europe/London
+      LISTEN_HOST: 0.0.0.0      # bridge networking needs this; keep the port bound below
       LISTEN_PORT: "8099"
       DATA_DIR: /data
-      SECURE_COOKIES: "false"
+      SECURE_COOKIES: "true"   # set false only for plain-HTTP testing
       RECONCILE_INTERVAL: "30"
     extra_hosts:
       - "host.docker.internal:host-gateway"

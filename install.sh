@@ -75,7 +75,6 @@ fi
 say "installing/upgrading TimeFence (this may take a minute)"
 "${INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade pip
 "${INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade "${SRC_DIR}"
-"${INSTALL_DIR}/venv/bin/pip" install --quiet --upgrade "uvicorn[standard]==0.34.0"
 
 # --- 4. configuration -----------------------------------------------------
 ENV_FILE="${CONF_DIR}/timefence.env"

@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
-FROM python:3.12-slim
+# python:3.12-slim, digest pinned so a rebuild cannot pick up a different image.
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -13,22 +14,25 @@ RUN apt-get update \
  && install -d -o timefence -g timefence -m 700 /data
 
 WORKDIR /app
+COPY requirements.lock ./
+RUN pip install --require-hashes -r requirements.lock
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
 COPY deploy/docker-entrypoint.sh /usr/local/bin/timefence-entrypoint
-RUN pip install . && rm -rf /app/src && chmod 755 /usr/local/bin/timefence-entrypoint
+RUN pip install --no-deps . && rm -rf /app/src && chmod 755 /usr/local/bin/timefence-entrypoint
 
 USER timefence:timefence
 ENV DATA_DIR=/data \
     BASE_PATH=/ \
     LISTEN_HOST=127.0.0.1 \
     LISTEN_PORT=8099 \
-    SECURE_COOKIES=false \
+    SECURE_COOKIES=true \
+    # CHANGE ME: your IANA timezone, e.g. Europe/London
     TZ=UTC \
     LOG_LEVEL=INFO
 
 EXPOSE 8099
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8099/healthz', timeout=3).status==200 else 1)"
+  CMD python -c "import os,sys,urllib.request as u; b=os.environ.get('BASE_PATH','/').rstrip('/'); p=os.environ.get('LISTEN_PORT','8099'); sys.exit(0 if u.urlopen(f'http://127.0.0.1:{p}{b}/healthz', timeout=3).status==200 else 1)"
 
 ENTRYPOINT ["/usr/local/bin/timefence-entrypoint"]

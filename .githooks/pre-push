@@ -18,9 +18,9 @@ ruff_bin="ruff"
 
 if [ -x "$ruff_bin" ] || command -v "$ruff_bin" >/dev/null 2>&1; then
     echo "pre-push: ruff check"
-    "$ruff_bin" check src tests
+    "$ruff_bin" check src tests scripts
     echo "pre-push: ruff format --check"
-    "$ruff_bin" format --check src tests
+    "$ruff_bin" format --check src tests scripts
 else
     echo "pre-push: ruff not installed, skipping lint (pip install -e '.[dev]')"
 fi
