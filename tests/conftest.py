@@ -2,89 +2,22 @@
 
 from __future__ import annotations
 
-import time
-from datetime import UTC
+import contextlib
 
 import pytest
 from fastapi.testclient import TestClient
 
-from timefence.adguard import AdGuardClient
 from timefence.api import create_app
 from timefence.config import Settings
 
+from .fakes import FakeAdGuard, make_entry
 
-class FakeAdGuard(AdGuardClient):
-    """In-memory stand-in for the AdGuard Home control API."""
+__all__ = ["FakeAdGuard", "make_entry", "locked_conn"]
 
-    SERVICES = [
-        {
-            "id": "youtube",
-            "name": "YouTube",
-            "rules": ["||youtube.com^", "||youtu.be^", "||googlevideo.com^", "||ytimg.com^"],
-        },
-        {"id": "instagram", "name": "Instagram", "rules": ["||instagram.com^"]},
-        {"id": "roblox", "name": "Roblox", "rules": ["||roblox.com^"]},
-    ]
 
-    def __init__(self) -> None:  # noqa: D107 - no parent init on purpose
-        self.ids: list[str] = []
-        self.schedule: dict = {"time_zone": "Local"}
-        self.rules: list[str] = []
-        self.calls: list[tuple[str, object]] = []
-        self.entries: list[dict] = []
-        self.fail = False
-        self.url = "fake://adguard"
-        self.auth = ("admin", "admin")
-
-    # -- blocked services ------------------------------------------------
-    def blocked_services(self) -> dict:
-        return {"ids": list(self.ids), "schedule": dict(self.schedule)}
-
-    def set_blocked_services(self, ids: list[str], schedule: dict) -> None:
-        self.ids = sorted(set(ids))
-        self.schedule = dict(schedule)
-        self.calls.append(("services", list(self.ids)))
-
-    def all_services(self) -> list[dict]:
-        return self.SERVICES
-
-    # -- user rules ------------------------------------------------------
-    def user_rules(self) -> list[str]:
-        return list(self.rules)
-
-    def set_user_rules(self, rules: list[str]) -> None:
-        self.rules = list(rules)
-        self.calls.append(("rules", list(rules)))
-
-    # -- queries ---------------------------------------------------------
-    def check_host(self, name: str) -> dict:
-        blocked = False
-        if any(part in self.ids for part in self.ids):
-            for service in self.SERVICES:
-                if service["id"] not in self.ids:
-                    continue
-                for rule in service["rules"]:
-                    host = rule.removeprefix("||").removesuffix("^")
-                    if name == host or name.endswith("." + host):
-                        blocked = True
-        for rule in self.rules:
-            if not rule.startswith("||"):
-                continue
-            host = rule.removeprefix("||").removesuffix("^")
-            if name == host or name.endswith("." + host):
-                blocked = True
-        return {"reason": "FilteredBlackList" if blocked else "NotFilteredNotFound"}
-
-    def querylog(self, limit: int = 2000, search: str = "") -> list[dict]:
-        return list(self.entries)
-
-    def status(self) -> dict:
-        return {"version": "v0.107.80-fake"}
-
-    def test_connection(self) -> tuple[bool, str]:
-        if self.fail:
-            return False, "connection refused"
-        return True, "AdGuard Home v0.107.80-fake"
+def locked_conn(app):
+    """Database access for tests: a context manager that hands out a connection."""
+    return contextlib.nullcontext(app.state.conn)
 
 
 @pytest.fixture()
@@ -146,11 +79,3 @@ def ready(admin):
     csrf = response.json()["csrf"]
     client.headers.update({"X-CSRF-Token": csrf})
     return {"client": client, "csrf": csrf}
-
-
-def make_entry(host: str, client_ip: str = "192.168.1.20", ago: int = 30) -> dict:
-    ts = time.time() - ago
-    from datetime import datetime
-
-    stamp = datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H:%M:%S.000000000Z")
-    return {"time": stamp, "client": client_ip, "question": {"name": host, "type": "A"}}
