@@ -44,3 +44,11 @@ def test_hashing_is_bounded(monkeypatch):
 
     assert results == [True] * 8
     assert peak <= 2, f"{peak} hashes ran at once"
+
+
+def test_old_cookie_format_is_rejected():
+    from timefence import security
+
+    manager = security.SessionManager("a-secret")
+    token = manager.serializer.dumps({"role": "admin", "csrf": "csrf-token", "username": "admin"})
+    assert manager.read(token) is None
