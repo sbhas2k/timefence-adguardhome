@@ -4,6 +4,124 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-11-18
+
+### Breaking
+
+- **Session mode is gone.** Every group is now "allowed until the day's minutes
+  are used up". `15/30/60` buttons, start/stop, expiry billing and
+  `/api/session/*` were removed; `/api/groups` rejects `"mode": "session"` with
+  `400 mode_removed`.
+- **Schema v4.** The database is migrated on start; when the upgrade starts from
+  v3 or older, a verified copy is written next to it as
+  `timefence.db.pre-v4.bak`. The old `sessions` rows are kept read-only as
+  history.
+- **Everyone signs in again.** Cookies now carry the account id and a session
+  epoch, so all 0.3.0 cookies are invalid.
+- **`user` accounts are read-only.** They see their own and shared groups on a
+  dedicated kid screen; every mutating API call is refused with `403 read_only`.
+  `/api/admin/credentials` is gone; admins change their own password with
+  `POST /api/account/password`.
+- **Stopping TimeFence now blocks every managed group until it starts again.**
+  Use `timefence release` when you stop it on purpose.
+- **Docker defaults changed.** The image listens on `LISTEN_HOST=127.0.0.1` and
+  sets `SECURE_COOKIES=true`. Bridge networking needs
+  `-e LISTEN_HOST=0.0.0.0 -p 127.0.0.1:8099:8099` (the example compose file does
+  it); `docker run` without `LISTEN_HOST` only listens inside the container.
+  `:latest` moves with every release — pin a tag for controlled upgrades.
+- **`/healthz` is honest.** It returns `503 {"ok":false,"status":"degraded"}`
+  when the reconciler has not synced for three intervals, so container
+  supervisors see an unhealthy app. Do not wire an auto-restart to it.
+- uvicorn is installed without its `[standard]` extras (no `websockets`,
+  `uvloop`, `httptools`, `watchfiles`, `python-dotenv`, `pyyaml`, `colorama`).
+
+### Added
+
+- Dedicated read-only kid screen (phone-first, auto-refreshing) and a role-aware
+  landing page.
+- Server-side group `status` and `blocked_until`, and an admin state payload
+  with warnings (AdGuard unreachable, query log disabled/short/ignored domains,
+  `TZ` still `UTC`).
+- `timefence release` (and an uninstall step) that lifts the managed blocks.
+- Change-password card in the admin UI, backed by `POST /api/account/password`.
+- `scripts/migrate_legacy.py` writes accounts into `users`, requires `--tz`, and
+  cannot leave the old password working.
+- Atomic, verified migrations; one store lock serialising all database access
+  (requests, reconciler, shutdown); AdGuard HTTP calls made outside that lock.
+- Query-log paging, 15-second activity buckets, midnight-split accounting,
+  `MAX_CATCHUP` after downtime, and a `querylog_*` health warning set.
+- Remote VM guide (`docs/remote-vm.md`), a DDNS allow-list helper with systemd
+  timer, and `shellcheck` in CI.
+- `requirements.lock` with hashes, digest-pinned base image, SHA-pinned actions,
+  `pip-audit` and `gitleaks` CI jobs, CodeQL and Dependabot configuration.
+- `TZ` startup warning and a `CHANGE ME` placeholder in `.env.example`.
+
+### Changed
+
+- Usage is counted in 15-second blocks with real DNS activity. Light or
+  background use is charged less than in 0.3.0, so the same daily minutes can
+  last longer. Blocked answers and free-allow windows are never charged, and a
+  negative bonus can no longer erase metered time.
+- Login is JSON-only, counts failures per account+address (5) and per address
+  (20), runs a dummy hash for unknown accounts, and limits concurrent key
+  derivation. The client IP is the right-most untrusted hop of
+  `X-Forwarded-For`; uvicorn's own proxy-header parsing is disabled.
+- Disabling, deleting, demoting or renaming an account, and changing a password,
+  now revoke that account's existing cookies.
+- The admin UI guards every quick action against double submission, confirms
+  with toasts, keeps typed input and focus through polling, and takes the group
+  status from the server.
+- `/healthz` reports `{ok,status,version}`; the container health check reads
+  `LISTEN_PORT` and `BASE_PATH` and treats `503` as unhealthy.
+- History dates are computed from the local date, so DST days and
+  `blocked_until` are correct.
+- Docker compose uses a 20-second stop grace period so the shutdown block can
+  finish.
+
+### Fixed
+
+- First-run redirect loop, and the default-login hint now disappears once setup
+  is complete.
+- Change-password wrote to the retired credentials table and returned 500 for
+  `user` accounts.
+- Another account's successful sign-in no longer clears a lockout, and the
+  lockout limiter no longer grows without bound.
+- Negative bonus erased metered usage ("used" could go down); a shared
+  `# timefence:begin` marker without its `end` could delete foreign rules.
+- `timefence passwd` hung when stdin was not a terminal (Windows, containers).
+- A migration failure could leave a half-migrated database.
+- `discover.parse_time` mishandled negative UTC offsets.
+- An unexpected exception from AdGuard aborted the whole reconcile pass instead
+  of one phase.
+- The SQLite file (which holds password hashes) and the data directory now have
+  private modes (`umask 077`, `0600`, `0700`).
+
+### Security
+
+- Runtime dependencies bumped past every known advisory (starlette
+  CVE-2025-62727 and others); `pip-audit --require-hashes -r requirements.lock`
+  reports nothing. CI fails on a new advisory.
+- `Secure` cookies are the default; the login page explains plain-HTTP
+  behaviour and reports a cookie the browser refused to store.
+- Read-only accounts are enforced on the server, and the user state payload no
+  longer includes services, domains or history.
+- The image runs from a hash-locked requirements file on a digest-pinned base,
+  actions are pinned by commit SHA, and `gitleaks` scans the history.
+- `.gitignore` covers `adguard_password.txt`, `*.bak` and `session-secret`.
+
+## [0.3.0] - 2026-11-17
+
+### Added
+
+- Per-account budgets: a group can be owned by a `user` account, so each child
+  gets their own budget.
+- Decrease and custom bonus minutes (`−15`, any amount), plus `Reset today`.
+
+### Changed
+
+- Docker: host-networking recipes, and the entrypoint honours `LISTEN_HOST`.
+- The SQLite file is forced to mode 0600 (it stores password hashes).
+
 ## [0.2.0] - 2026-11-17
 
 ### Changed
