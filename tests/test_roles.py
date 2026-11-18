@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
@@ -216,3 +217,45 @@ def test_landing_respects_base_path(tmp_path, fake):
         assert login.status_code == 200, login.text
         before_setup = client.get("/timer/", follow_redirects=False)
         assert before_setup.headers["location"].endswith("/timer/setup")
+
+
+def test_static_js_has_no_removed_endpoints():
+    from timefence import api
+
+    static = Path(api.__file__).parent / "static"
+    banned = ("/api/session/", "/api/admin/credentials")
+    hits: list[tuple[str, str]] = []
+    for path in sorted(static.glob("*.js")):
+        text = path.read_text(encoding="utf-8")
+        for token in banned:
+            if token in text:
+                hits.append((path.name, token))
+    assert hits == []
+
+
+def test_app_html_has_no_session_or_legacy_credentials_ui():
+    from timefence import api
+
+    templates = Path(api.__file__).parent / "templates"
+    html = (templates / "app.html").read_text(encoding="utf-8")
+    banned = ('id="pin-form"', 'id="password-form"', "sessions-table", "history.sessions_today")
+    for token in banned:
+        assert token not in html, token
+
+
+def test_admin_state_warns_about_converted_session_groups(settings, fake):
+    import time as clock
+
+    from .conftest import locked_conn
+
+    app = create_app(settings, adguard=fake)
+    with TestClient(app) as client:
+        complete_setup(client)
+        with locked_conn(client.app) as conn:
+            conn.execute(
+                "INSERT INTO events(ts, kind, detail) VALUES(?, 'migration', ?)",
+                (int(clock.time()), '{"to": 4, "converted_groups": 2}'),
+            )
+            conn.commit()
+        warnings = client.get("/api/state").json()["warnings"]
+        assert "session_groups_converted" in warnings
