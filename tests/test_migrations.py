@@ -72,9 +72,9 @@ def test_v3_session_groups_become_auto_with_usage_backfilled(tmp_path):
     )
     conn.commit()
 
-    assert db.migrate(conn, TZ) == 4
+    assert db.migrate(conn, TZ) == 5
 
-    assert db.current_version(conn) == 4
+    assert db.current_version(conn) == 5
     assert {row[0] for row in conn.execute("SELECT DISTINCT mode FROM groups")} == {"auto"}
     assert usage(conn, session_group, d1) == 900
     assert usage(conn, session_group, d2) == 120
@@ -154,7 +154,8 @@ def test_backup_is_written_before_v4(tmp_path):
     backup.write_bytes(b"corrupt, not a database")
     temporary.write_bytes(b"stale leftovers")
 
-    db.migrate(conn, TZ)
+    # the 0.3 -> 0.4 upgrade is the one that names its copy after v4
+    db.migrate(conn, TZ, target=4)
 
     assert backup.exists()
     assert not temporary.exists()
@@ -178,7 +179,7 @@ def test_migration_aborts_when_backup_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(db.os, "replace", boom)
 
     with pytest.raises(RuntimeError) as excinfo:
-        db.migrate(conn, TZ)
+        db.migrate(conn, TZ, target=4)
 
     assert "pre-v4.bak" in str(excinfo.value)
     assert "TIMEFENCE_SKIP_MIGRATION_BACKUP=1" in str(excinfo.value)
@@ -212,7 +213,7 @@ def test_failed_v4_leaves_v3_intact(tmp_path, monkeypatch):
     assert conn.execute("SELECT COUNT(*) FROM usage_seconds").fetchone()[0] == 0
     monkeypatch.undo()
 
-    assert db.migrate(conn, TZ) == 4
+    assert db.migrate(conn, TZ) == 5
     assert usage(conn, group, "2026-11-10") == 300
     conn.close()
 
@@ -236,30 +237,42 @@ def test_failed_string_migration_is_atomic(tmp_path, monkeypatch):
     conn.close()
 
 
-def test_fresh_db_migrates_to_v4_without_backup(tmp_path):
+def test_fresh_db_writes_no_backup(tmp_path):
     path = tmp_path / "fresh.db"
     conn = db.connect(path)
 
-    assert db.migrate(conn, TZ) == 4
+    assert db.migrate(conn, TZ) == 5
     assert not path.with_name(path.name + ".pre-v4.bak").exists()
+    assert not path.with_name(path.name + ".pre-v5.bak").exists()
     conn.close()
 
 
 def test_newer_db_is_refused(tmp_path):
     conn = db.connect(tmp_path / "t.db")
-    conn.execute("PRAGMA user_version=5")
+    conn.execute("PRAGMA user_version=6")
     conn.commit()
 
     with pytest.raises(RuntimeError, match="newer than this build"):
         db.migrate(conn, TZ)
-    assert db.current_version(conn) == 5
+    assert db.current_version(conn) == 6
     conn.close()
 
 
 def test_migrate_is_idempotent(tmp_path):
-    conn = db.connect(tmp_path / "t.db")
-    assert db.migrate(conn, TZ) == 4
-    assert db.migrate(conn, TZ) == 4
+    path = tmp_path / "t.db"
+    conn = build_v4_db(path)
+    normal_group(conn)
+    conn.commit()
+
+    assert db.migrate(conn, TZ) == 5
+    backup = path.with_name(path.name + ".pre-v5.bak")
+    assert backup.exists()
+    stamp = backup.stat().st_mtime_ns
+
+    assert db.migrate(conn, TZ) == 5
+    # a second call applies nothing, so it must not rewrite the copy
+    assert backup.stat().st_mtime_ns == stamp
+    assert not path.with_name(path.name + ".pre-v4.bak").exists()
     conn.close()
 
 
@@ -276,4 +289,158 @@ def test_migrate_refuses_data_migration_when_not_allowed(tmp_path):
     assert "start TimeFence once" in str(excinfo.value)
     assert db.current_version(conn) == 3
     assert {row[0] for row in conn.execute("SELECT mode FROM groups")} == {"session"}
+    conn.close()
+
+
+def test_passwd_works_on_v4_db(tmp_path):
+    """A pure-DDL v5 step still lets the CLI open and upgrade an older database."""
+    path = tmp_path / "t.db"
+    conn = build_v4_db(path)
+    normal_group(conn)
+    conn.commit()
+
+    assert db.migrate(conn, TZ, allow_data_migration=False) == 5
+    assert db.current_version(conn) == 5
+    assert path.with_name(path.name + ".pre-v5.bak").exists()
+    conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# schema v5: bedtime windows and alert de-duplication
+# --------------------------------------------------------------------------- #
+
+
+def build_v4_db(path) -> sqlite3.Connection:
+    conn = db.connect(path)
+    assert db.migrate(conn, TZ, target=4) == 4
+    return conn
+
+
+def normal_group(conn, name="YouTube") -> int:
+    cur = conn.execute(
+        "INSERT INTO groups(name, emoji, weekday_minutes, weekend_minutes, paused, deleted, "
+        "created_at) VALUES(?,?,?,?,0,0,0)",
+        (name, "", 60, 60),
+    )
+    return int(cur.lastrowid)
+
+
+def test_v5_creates_the_window_and_alert_tables(tmp_path):
+    conn = build_v4_db(tmp_path / "t.db")
+
+    assert db.migrate(conn, TZ) == 5
+    assert db.current_version(conn) == 5
+
+    window_columns = {row[1] for row in conn.execute("PRAGMA table_info(group_windows)")}
+    assert window_columns == {"id", "group_id", "start_min", "end_min", "days"}
+    alert_columns = {row[1] for row in conn.execute("PRAGMA table_info(alerts_sent)")}
+    assert alert_columns == {"key", "sent_at"}
+
+    # a window must reference a real group and use a known days value
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO group_windows(group_id, start_min, end_min, days) VALUES(?,?,?,?)",
+            (12345, 1260, 420, "all"),
+        )
+    conn.rollback()
+    group = normal_group(conn)
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO group_windows(group_id, start_min, end_min, days) VALUES(?,?,?,?)",
+            (group, 1260, 420, "daily"),
+        )
+    conn.rollback()
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO group_windows(group_id, start_min, end_min, days) VALUES(?,?,?,?)",
+            (group, 1260, 1260, "all"),
+        )
+    conn.rollback()
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO group_windows(group_id, start_min, end_min, days) VALUES(?,?,?,?)",
+            (group, 1440, 420, "all"),
+        )
+    conn.rollback()
+    conn.close()
+
+
+def test_v5_keeps_existing_rows(tmp_path):
+    conn = build_v4_db(tmp_path / "t.db")
+    group = normal_group(conn, "Games")
+    conn.execute(
+        "INSERT INTO usage_seconds(day, group_id, seconds) VALUES('2026-11-10', ?, 600)", (group,)
+    )
+    conn.execute(
+        "INSERT INTO users(username, role, hash, created_at, updated_at) "
+        "VALUES('admin','admin','x',0,0)"
+    )
+    conn.commit()
+
+    assert db.migrate(conn, TZ) == 5
+
+    assert conn.execute("SELECT name FROM groups").fetchone()[0] == "Games"
+    assert usage(conn, group, "2026-11-10") == 600
+    assert conn.execute("SELECT username FROM users").fetchone()[0] == "admin"
+    assert conn.execute("SELECT COUNT(*) FROM group_windows").fetchone()[0] == 0
+    conn.close()
+
+
+def test_v4_to_v5_writes_pre_v5_backup(tmp_path):
+    path = tmp_path / "t.db"
+    conn = build_v4_db(path)
+    normal_group(conn)
+    conn.commit()
+    backup = path.with_name(path.name + ".pre-v5.bak")
+    backup.write_bytes(b"corrupt, not a database")
+
+    db.migrate(conn, TZ)
+
+    with sqlite3.connect(backup) as check:
+        assert int(check.execute("PRAGMA user_version").fetchone()[0]) == 4
+        assert check.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert check.execute("SELECT name FROM groups").fetchone()[0] == "YouTube"
+    if os.name != "nt":
+        assert backup.stat().st_mode & 0o777 == 0o600
+    conn.close()
+
+
+def test_migration_aborts_when_the_v5_backup_fails(tmp_path, monkeypatch):
+    path = tmp_path / "t.db"
+    conn = build_v4_db(path)
+    normal_group(conn)
+    conn.commit()
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(db.os, "replace", boom)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        db.migrate(conn, TZ)
+
+    assert "pre-v5.bak" in str(excinfo.value)
+    assert "TIMEFENCE_SKIP_MIGRATION_BACKUP=1" in str(excinfo.value)
+    assert db.current_version(conn) == 4
+    assert not path.with_name(path.name + ".pre-v5.bak.tmp").exists()
+    assert not path.with_name(path.name + ".pre-v5.bak").exists()
+    conn.close()
+
+
+def test_failed_v5_leaves_v4_intact(tmp_path, monkeypatch):
+    conn = build_v4_db(tmp_path / "t.db")
+    normal_group(conn)
+    conn.commit()
+    monkeypatch.setitem(
+        db.MIGRATIONS, 5, "CREATE TABLE group_windows(id INTEGER);\nSELECT * FROM no_such_table;"
+    )
+
+    with pytest.raises(sqlite3.Error):
+        db.migrate(conn, TZ)
+
+    assert db.current_version(conn) == 4
+    assert (
+        conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='group_windows'").fetchone()[0]
+        == 0
+    )
     conn.close()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 from fastapi.testclient import TestClient
 
 from timefence.api import create_app
@@ -253,6 +255,78 @@ def test_domains_are_normalised_and_unique(ready, fake):
     )
     assert second.status_code == 400
     assert "already used" in second.json()["error"]
+
+
+def test_group_windows_round_trip_and_validation(ready, fake):
+    client = ready["client"]
+    windows = [{"start": "21:00", "end": "07:00", "days": "all"}]
+
+    group = make_group(client, windows=windows)
+    assert group["windows"] == windows
+    assert client.get("/api/state").json()["groups"][0]["windows"] == windows
+
+    # an update that omits the key keeps the windows, an empty list clears them
+    kept = client.put(f"/api/groups/{group['id']}", json={"name": "Games", "services": ["roblox"]})
+    assert kept.status_code == 200, kept.text
+    assert kept.json()["group"]["windows"] == windows
+    cleared = client.put(
+        f"/api/groups/{group['id']}",
+        json={"name": "Games", "services": ["roblox"], "windows": []},
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["group"]["windows"] == []
+
+    def reject(payload):
+        response = client.post(
+            "/api/groups",
+            json={"name": "Other", "weekday_minutes": 30, "services": ["roblox"], **payload},
+        )
+        assert response.status_code == 400, response.text
+        assert response.json()["code"] == "invalid_windows"
+
+    reject({"windows": [{"start": "21:00", "end": "21:00", "days": "all"}]})
+    reject({"windows": [{"start": "9:00", "end": "10:00", "days": "all"}]})
+    reject({"windows": [{"start": "09:00", "end": "10:00", "days": "daily"}]})
+    reject(
+        {
+            "windows": [
+                {"start": "06:00", "end": "07:00", "days": "all"},
+                {"start": "12:00", "end": "13:00", "days": "all"},
+                {"start": "15:00", "end": "16:00", "days": "all"},
+                {"start": "18:00", "end": "19:00", "days": "all"},
+                {"start": "21:00", "end": "22:00", "days": "all"},
+            ]
+        }
+    )
+
+
+def test_status_and_permitted_agree(ready, fake):
+    client = ready["client"]
+    now = datetime.now(UTC)
+    start = (now - timedelta(minutes=5)).strftime("%H:%M")
+    end = (now + timedelta(minutes=55)).strftime("%H:%M")
+    group = make_group(client, windows=[{"start": start, "end": end, "days": "all"}])
+
+    state = client.get("/api/state").json()["groups"][0]
+    listed = client.get("/api/groups").json()["groups"][0]
+    assert state["status"] == "bedtime"
+    assert state["permitted"] is False
+    assert state["permitted"] == (state["status"] in {"allowed", "free"})
+    assert state["bedtime_active"] is True
+    assert state["bedtime_until"] == end
+    assert (listed["status"], listed["permitted"]) == (state["status"], state["permitted"])
+
+    created = client.post(
+        "/api/users", json={"username": "kid", "password": "kid-password", "role": "user"}
+    )
+    assert created.status_code == 200, created.text
+    login = client.post("/api/login", json={"username": "kid", "password": "kid-password"})
+    assert login.status_code == 200, login.text
+    kid_total = {"X-CSRF-Token": login.json()["csrf"]}
+    kid_state = client.get("/api/state", headers=kid_total).json()["groups"][0]
+    assert (kid_state["status"], kid_state["permitted"]) == (state["status"], state["permitted"])
+    assert kid_state["bedtime_until"] == end
+    assert group["windows"] == [{"start": start, "end": end, "days": "all"}]
 
 
 def test_critical_domain_needs_confirmation(ready):

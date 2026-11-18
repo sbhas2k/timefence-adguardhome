@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,8 @@ GROUP_KEYS = {
     "status",
     "blocked_until",
     "free_until",
+    "bedtime_active",
+    "bedtime_until",
 }
 
 
@@ -120,6 +123,69 @@ def test_user_state_is_reduced(settings, fake):
 
         listed = client.get("/api/groups").json()["groups"]
         assert set(listed[0]) == GROUP_KEYS
+
+
+def test_kid_payload_has_only_the_bedtime_state(settings, fake):
+    client = TestClient(create_app(settings, adguard=fake))
+    with client:
+        complete_setup(client)
+        create_kid(client)
+        now = datetime.now(UTC)
+        start = (now - timedelta(minutes=5)).strftime("%H:%M")
+        end = (now + timedelta(minutes=55)).strftime("%H:%M")
+        created = client.post(
+            "/api/groups",
+            json={
+                "name": "Games",
+                "weekday_minutes": 30,
+                "services": ["roblox"],
+                "windows": [{"start": start, "end": end, "days": "all"}],
+            },
+        )
+        assert created.status_code == 200, created.text
+
+        sign_in(client, "kid", "kid-password")
+        group = client.get("/api/state").json()["groups"][0]
+        assert set(group) == GROUP_KEYS
+        assert group["bedtime_active"] is True
+        assert group["bedtime_until"] == end  # a local HH:MM, never an epoch
+        assert group["status"] == "bedtime"
+
+        # the window itself is admin-only, in both the state and the group list
+        for payload in (group, client.get("/api/groups").json()["groups"][0]):
+            for hidden in ("windows", "start_min", "end_min", "days"):
+                assert hidden not in payload
+
+
+def test_user_cannot_change_group_windows(settings, fake):
+    client = TestClient(create_app(settings, adguard=fake))
+    with client:
+        complete_setup(client)
+        create_kid(client)
+        created = client.post(
+            "/api/groups",
+            json={
+                "name": "Games",
+                "weekday_minutes": 30,
+                "services": ["roblox"],
+                "windows": [{"start": "21:00", "end": "07:00", "days": "all"}],
+            },
+        )
+        assert created.status_code == 200, created.text
+        group_id = created.json()["group"]["id"]
+
+        csrf = sign_in(client, "kid", "kid-password")
+        response = client.put(
+            f"/api/groups/{group_id}",
+            json={"name": "Games", "windows": []},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert response.status_code == 403
+        assert response.json()["code"] == "read_only"
+
+        sign_in(client, "admin", ADMIN2["password"])
+        windows = client.get("/api/state").json()["groups"][0]["windows"]
+        assert len(windows) == 1
 
 
 def test_user_sees_only_own_and_shared_groups(settings, fake):
