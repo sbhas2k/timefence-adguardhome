@@ -27,12 +27,16 @@ def _env(**over):
     return env
 
 
-def test_defaults_are_documented_values():
-    settings = Settings.from_env(_env())
+def test_defaults_are_documented_values(tmp_path):
+    settings = Settings.from_env(
+        _env(),
+        timezone_file=tmp_path / "no-timezone",
+        localtime_file=tmp_path / "no-localtime",
+    )
     assert settings.listen_host == "127.0.0.1"
     assert settings.listen_port == 8099
     assert settings.base_path == "/"
-    assert settings.tz == "UTC"
+    assert (settings.tz, settings.tz_source) == ("UTC", "default")
     assert settings.reconcile_interval == 30
     assert settings.secure_cookies is True
 

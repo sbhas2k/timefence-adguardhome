@@ -133,11 +133,12 @@ def test_admin_state_reports_sync_and_warnings(settings, fake):
         sign_in_as_admin(client)
         state = client.get("/api/state").json()
         assert isinstance(state["last_sync"], int)
-        assert state["warnings"] == ["tz_utc"]  # the fixture runs with TZ=UTC
+        # the fixture sets TZ explicitly, so there is no timezone warning
+        assert state["warnings"] == []
 
         app.state.reconciler.warnings.add("rules_section_damaged")
         state = client.get("/api/state").json()
-        assert state["warnings"] == ["rules_section_damaged", "tz_utc"]
+        assert state["warnings"] == ["rules_section_damaged"]
 
 
 def test_restart_restores_true_state_after_shutdown_block(settings, fake):
@@ -175,10 +176,11 @@ def test_create_app_sets_private_umask(settings, fake, monkeypatch):
         app.state.store.close()
 
 
-def test_tz_utc_warning_in_admin_state(settings, fake):
+def test_an_explicit_utc_timezone_does_not_warn(settings, fake):
     assert settings.tz == "UTC"
+    assert settings.tz_source == "env"
     app = create_app(settings, adguard=fake)
     with TestClient(app) as client:
         sign_in_as_admin(client)
         warnings = client.get("/api/state").json()["warnings"]
-        assert "tz_utc" in warnings
+        assert "tz_utc" not in warnings
