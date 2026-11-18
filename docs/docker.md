@@ -94,8 +94,9 @@ upstreams, cache settings) lives in those two directories, so it comes along.
   `timefence release` removes the managed rules section and the services
   TimeFence took over, and keeps everything else. It prints what it removed.
 - **Upgrade** with `docker compose pull && docker compose up -d`; the schema
-  upgrade writes `timefence.db.pre-v4.bak` next to the database once (0.3 → 0.4).
-  See [upgrading.md](upgrading.md).
+  upgrade writes one verified copy named `timefence.db.pre-v<schema>.bak` next
+  to the database before it changes anything (`pre-v5.bak` for 0.4 → 0.5, and a
+  fresh install writes none). See [upgrading.md](upgrading.md).
 - **Remove**: `docker compose rm -sf timefence`, then delete the volume.
 
 ## Gotchas

@@ -29,6 +29,11 @@ local midnight once the budget is gone.
   It cannot change anything, and the server enforces that on every route.
 - **Per-account budgets.** A group can be owned by a user, so each child has
   their own budget. Both roles use username + password (no PIN).
+- **Bedtime windows.** Give a group up to four daily no-go windows ("21:00 –
+  07:00", weekday or weekend), including ones that cross midnight. A group in a
+  window is blocked even if minutes are left, and no minutes are used up; the
+  kid screen shows a calm "Bedtime until 07:00" instead of a countdown. An
+  admin's **Allow freely until** still overrides a window.
 - **Adjust in both directions.** `+15`, `−15` or any custom amount on the Today
   card, plus `Block now`, `Allow freely until HH:MM`, pause and `Reset today`.
   Every action is applied once (double taps are ignored while in flight) and
@@ -126,13 +131,16 @@ Admin → **Groups** → **New group**:
 
 1. Name + emoji (e.g. `Games` 🎮).
 2. Weekday minutes, and weekend minutes if they differ.
-3. Pick AdGuard **services** with the searchable picker (these are the official
+3. Optionally add **bedtime windows**: a start and end time, and whether they
+   apply every day, on weekdays or at weekends. The day is the day the window
+   starts on, and a window may cross midnight.
+4. Pick AdGuard **services** with the searchable picker (these are the official
    AdGuard "blocked services" ids), and/or paste **domains**, one per line.
    Pasted URLs are reduced to their hostname; each becomes `||domain^`, which
    also covers subdomains. A domain or service can belong to only one group.
-4. Optionally assign an **owner** (a user account) so the group shows up on that
+5. Optionally assign an **owner** (a user account) so the group shows up on that
    child's screen.
-5. If a domain is shared/critical (App Store, iCloud, Google, Akamai, ...),
+6. If a domain is shared/critical (App Store, iCloud, Google, Akamai, ...),
    TimeFence asks for explicit confirmation and explains what else breaks.
 
 Changes are applied immediately; no restart is needed.
@@ -241,7 +249,7 @@ groups.
 ## Roadmap
 
 - Per-device budgets and a 7-day usage export
-- Notifications (e.g. "5 minutes left") and bedtime windows
+- Notifications (e.g. "5 minutes left")
 - YouTube restricted mode as an alternative to blocking
 - Pi-hole support
 - Multiple AdGuard instances

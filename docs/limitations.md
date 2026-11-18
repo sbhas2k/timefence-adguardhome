@@ -10,6 +10,23 @@ One set of budgets applies per group, and a group is network-wide. There is no
 per-device accounting. Workaround: give each child their own group owned by
 their account (e.g. "Games – Anna"); that is per-group, not per-person-per-device.
 
+## Bedtime windows block network-wide
+
+A bedtime window is enforced with the same AdGuard switches as a budget block:
+the group's domains become rules and its AdGuard services go on the
+blocked-services list. AdGuard's service list is global, so a window on a group
+that owns a service such as YouTube takes that service away from **every device
+in the house**, parents' included, for the window. Per-device identity and
+per-device budgets are deferred (see above); use separate custom domains per
+group if you need finer control.
+
+A window is applied like any other block: the reconciler re-evaluates on its
+next pass (`RECONCILE_INTERVAL`, 30 s by default), so a window starts and ends
+within one interval, and DNS caching can add a little more. Everything uses the
+local wall clock in `TZ`; on the night a clock falls back, a window whose end
+time lies inside the repeated hour can close and open again during it. That is
+the wall clock, not a missed block.
+
 ## Metering is approximate
 
 TimeFence charges 15-second buckets of real DNS activity from AdGuard's query

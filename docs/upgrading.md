@@ -1,5 +1,89 @@
 # Upgrading
 
+## 0.4 → 0.5
+
+0.5.0 adds bedtime windows and moves the database to schema v5. Nothing has to
+be reconfigured and existing sign-ins keep working.
+
+### What changes for you
+
+- **Bedtime windows.** A group can carry up to four daily no-go windows (start,
+  end, and every day / weekdays / weekends), including ones that cross midnight.
+  A group in a window is blocked even if minutes are left, and no minutes are
+  used up. The admin's **Allow freely until** still overrides a window. See
+  [how it works](how-it-works.md#bedtime-windows).
+- **A service in a bedtime group is blocked house-wide.** AdGuard's blocked
+  services are global; a window on a group that owns YouTube takes YouTube away
+  from every device for the window. See [limitations](limitations.md).
+- **The default-password check runs once per schema version.** If an admin
+  account still uses the default password `admin`, first-run setup is required
+  again after the upgrade. Change that password before upgrading if you would
+  rather not see it.
+- **Sessions stay signed in**; no cookie changes in this release.
+
+### Backup first
+
+The upgrade writes its own verified backup once, before the first schema change
+it makes: `timefence.db.pre-v5.bak` next to the database (a database older than
+0.4 is upgraded straight to v5 and gets the same single, verified copy named
+after the schema it reaches). A fresh install writes no copy. The migration
+verifies the copy before touching anything and stops if it cannot write it. Take
+your own copy as well:
+
+```bash
+sudo systemctl stop timefence
+sudo -u timefence python3 - <<'PY'
+import sqlite3
+src = sqlite3.connect("/var/lib/timefence/timefence.db")
+dst = sqlite3.connect("/root/timefence-pre-0.5.db")
+src.backup(dst)
+dst.close()
+PY
+sudo systemctl start timefence     # or continue with the upgrade below
+```
+
+`TIMEFENCE_SKIP_MIGRATION_BACKUP=1` skips the automatic copy (not recommended).
+The copies contain the database, so they contain password hashes: keep them at
+mode 0600 like the database.
+
+### Script install
+
+```bash
+cd timefence-adguardhome
+git fetch --tags && git checkout v0.5.0
+sudo ./install.sh                              # idempotent, keeps config and data
+sudo journalctl -u timefence -n 50 --no-pager
+```
+
+Schema changes are applied by the built-in migration on start
+(`PRAGMA user_version`); a failure leaves the previous schema intact. The v5
+step is plain DDL, so `timefence passwd` can also open and upgrade a v4
+database without starting the server.
+
+### Docker
+
+```bash
+docker compose pull timefence
+docker compose up -d timefence
+docker compose logs -f timefence
+```
+
+The image entry point is unchanged in this release; `:latest` moves with the
+release, so pin `:0.5.0` (or a digest) if you want controlled upgrades.
+
+### Rollback
+
+1. Stop the new version (`sudo systemctl stop timefence` or
+   `docker compose stop timefence`).
+2. Restore the database you saved before the upgrade, or the automatic
+   `timefence.db.pre-v5.bak`, over `/var/lib/timefence/timefence.db` and keep
+   it at mode 0600 and owner `timefence`.
+3. Go back to the previous version and start it.
+
+A database from a newer schema is refused on start instead of being silently
+corrupted — that is why the copy matters. Anything that happened after the
+upgrade is lost by the rollback.
+
 ## 0.3 → 0.4
 
 0.4.0 is a breaking release: session mode is removed, the database moves to

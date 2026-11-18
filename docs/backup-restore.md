@@ -11,6 +11,11 @@ Everything TimeFence knows is in one SQLite file plus two small files.
 The data directory is mode 0700, the database and secret 0600. Keep backups at
 the same mode (they contain password hashes).
 
+Each schema upgrade first writes one verified copy next to the database, named
+`timefence.db.pre-v<schema>.bak` (for example `timefence.db.pre-v5.bak`). Those
+files are full copies of the database: treat them like the database itself, and
+delete them once you are happy with the upgrade.
+
 ## Backup
 
 With SQLite's online backup API (safe while running):

@@ -13,6 +13,11 @@ that intent.
   source of "used today".
 - **bonus** — extra seconds granted per group per local day (admin).
 - **free_allow** — a group is allowed without spending budget until a timestamp.
+- **group_windows** — 0..4 bedtime windows per group: start and end as minutes
+  after local midnight, and the days they apply to (`all`, `weekday`,
+  `weekend`).
+- **alerts_sent** — one row per notification already sent, so a restart does not
+  resend it. Reserved by schema v5; nothing writes it yet.
 - **users** — username, role (`admin`/`user`), Argon2id hash, `disabled`,
   `session_epoch`. The epoch is bumped whenever existing cookies must stop
   working.
@@ -21,7 +26,8 @@ that intent.
   nothing writes or reads it for budgets.
 
 The SQLite file is `${DATA_DIR}/timefence.db`, created and migrated atomically on
-start (`PRAGMA user_version`, schema v4). The file is mode 0600 and the data
+start (`PRAGMA user_version`, schema v5). An upgrade of an existing database
+first writes one verified copy named `<database>.pre-v<schema>.bak` next to it. The file is mode 0600 and the data
 directory 0700; the process sets `umask 077` before creating anything.
 
 ## Budget arithmetic
@@ -41,15 +47,39 @@ is computed from a date, not from `now + 86400`, so daylight-saving days (23 or
 A recorded usage value never goes down: a negative bonus can lower the cap for
 *future* charges but cannot erase time that was already metered.
 
-Each group also reports a server-side `status` with a single precedence:
+Each group also reports a server-side `status` with a single precedence. The
+`permitted` flag is derived from the same predicate, so it is always
+`status in {allowed, free}`:
 
 | status | meaning | `blocked_until` |
 |---|---|---|
 | `paused` | an admin paused the group | – |
-| `free` | free-allow window open | – |
+| `free` | an admin "Free until" window is open; it overrides everything | – |
 | `blocked_admin` | "Block now" is active | the force-block end |
+| `bedtime` | a bedtime window is open | the end of the window |
 | `limit_reached` | no budget left today | next local midnight |
 | `allowed` | budget left | – |
+
+## Bedtime windows
+
+A group can carry up to four bedtime windows: a start time, an end time and the
+days it applies to (`all`, `weekday` = Monday to Friday, `weekend` = Saturday
+and Sunday). While a window is open the group is blocked even if it still has
+minutes, and no usage is charged (the same as `Block now`). Windows may cross
+midnight (`21:00` – `07:00`), and overlapping windows are a union.
+
+The day filter belongs to the day the window **starts** on: a `weekday`
+21:00 – 07:00 window therefore covers Saturday morning, because it started on
+Friday night. Everything is evaluated on the local wall clock in `TZ`, one
+minute at a time, so the days a clock jumps forward or falls back are handled
+without guessing a skipped or repeated local time. The end of an open window is
+reported as a local time (`bedtime_until`, for example `07:00`), which the kid
+screen prints verbatim.
+
+The admin's explicit **Free until** overrides a bedtime window — that is the
+parent deciding to allow it — while the daily budget does not. A window is
+enforced by the normal reconciler pass, so it starts and ends within one
+`RECONCILE_INTERVAL`.
 
 ## Metering
 
@@ -64,7 +94,8 @@ buckets**:
   `FilteredBlockedService`, `FilteredSafeBrowsing`, `FilteredParental` and
   `FilteredInvalid` are ignored. SafeSearch rewrites and `Rewrite*` answers are
   answered queries and do count;
-- free-allow windows and paused groups are not metered;
+- free-allow windows, paused groups and groups inside a bedtime window are not
+  metered;
 - a bucket is charged once per group: the reconciler remembers the last charged
   bucket in memory, so two ticks inside one bucket cannot double-charge it (a
   restart can cost at most one bucket);
@@ -132,7 +163,8 @@ Two independent things are managed:
    kept verbatim. An unbalanced marker is dropped on its own and never deletes
    the lines around it; the admin banner then says the section is damaged.
 
-A group is *permitted* when it is not paused and either a free-allow window is
+A group is *permitted* when its status is `allowed` or `free`: not paused, not
+force-blocked, not inside a bedtime window, and either a free-allow window is
 open or its remaining budget is positive.
 
 ## Reconciler
