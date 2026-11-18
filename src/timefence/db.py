@@ -7,10 +7,12 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 log = logging.getLogger("timefence.db")
@@ -135,6 +137,147 @@ ALTER TABLE groups ADD COLUMN owner_id INTEGER REFERENCES users(id);
 
 class DataMigrationRequired(RuntimeError):
     """A pending migration rewrites data and the caller may not run it."""
+
+
+ACCESS_ERROR = "database access without the store lock"
+
+
+class StoreLock:
+    """A re-entrant lock that remembers which thread is holding it."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._owner: int | None = None
+        self._depth = 0
+
+    def acquire(self) -> bool:
+        self._lock.acquire()
+        self._owner = threading.get_ident()
+        self._depth += 1
+        return True
+
+    def release(self) -> None:
+        self._depth -= 1
+        if self._depth <= 0:
+            self._depth = 0
+            self._owner = None
+        self._lock.release()
+
+    def __enter__(self) -> StoreLock:
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc_info: object) -> bool:
+        self.release()
+        return False
+
+    def held_by_current_thread(self) -> bool:
+        return self._owner == threading.get_ident()
+
+
+class GuardedCursor(sqlite3.Cursor):
+    """A cursor that refuses to run or iterated without the store lock."""
+
+    def _check(self) -> None:
+        lock = getattr(self.connection, "tf_lock", None)
+        if lock is not None and not lock.held_by_current_thread():
+            raise RuntimeError(ACCESS_ERROR)
+
+    def execute(self, sql: str, parameters: Any = (), /) -> GuardedCursor:
+        self._check()
+        return super().execute(sql, parameters)
+
+    def executemany(self, sql: str, parameters: Any, /) -> GuardedCursor:
+        self._check()
+        return super().executemany(sql, parameters)
+
+    def executescript(self, sql: str, /) -> GuardedCursor:
+        self._check()
+        return super().executescript(sql)
+
+    def fetchone(self) -> Any:
+        self._check()
+        return super().fetchone()
+
+    def fetchmany(self, size: int | None = None) -> list[Any]:
+        self._check()
+        return super().fetchmany(size) if size is not None else super().fetchmany()
+
+    def fetchall(self) -> list[Any]:
+        self._check()
+        return super().fetchall()
+
+    def __next__(self) -> Any:
+        self._check()
+        return super().__next__()
+
+
+class GuardedConnection(sqlite3.Connection):
+    """SQLite connection that only works while its store lock is held."""
+
+    tf_lock: StoreLock | None = None
+
+    def _check(self) -> None:
+        if self.tf_lock is not None and not self.tf_lock.held_by_current_thread():
+            raise RuntimeError(ACCESS_ERROR)
+
+    def cursor(self, factory: Any = GuardedCursor) -> GuardedCursor:
+        self._check()
+        return super().cursor(factory)
+
+    def execute(self, sql: str, parameters: Any = (), /) -> GuardedCursor:
+        return self.cursor().execute(sql, parameters)
+
+    def executemany(self, sql: str, parameters: Any, /) -> GuardedCursor:
+        return self.cursor().executemany(sql, parameters)
+
+    def executescript(self, sql: str, /) -> GuardedCursor:
+        self._check()
+        return super().executescript(sql)
+
+    def commit(self) -> None:
+        self._check()
+        super().commit()
+
+    def rollback(self) -> None:
+        self._check()
+        super().rollback()
+
+    def backup(self, target: Any, **kwargs: Any) -> None:
+        self._check()
+        super().backup(target, **kwargs)
+
+    def __enter__(self) -> GuardedConnection:
+        self._check()
+        return super().__enter__()
+
+    def __exit__(self, *exc_info: object) -> bool:
+        self._check()
+        return bool(super().__exit__(*exc_info))
+
+
+class Store:
+    """One connection behind one lock: every database access goes through it."""
+
+    def __init__(self, path: Path | str) -> None:
+        self.lock = StoreLock()
+        self.conn = connect(path, lock=self.lock)
+
+    def __enter__(self) -> GuardedConnection:
+        self.lock.acquire()
+        return self.conn
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+        try:
+            if exc_type is not None and self.conn.in_transaction:
+                self.conn.rollback()
+        finally:
+            self.lock.release()
+        return False
+
+    def close(self) -> None:
+        with self as conn:
+            conn.close()
 
 
 def _default_zone() -> ZoneInfo:
@@ -281,10 +424,10 @@ def _apply_callable(
         raise
 
 
-def connect(path: Path | str) -> sqlite3.Connection:
+def connect(path: Path | str, lock: StoreLock | None = None) -> GuardedConnection:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=15, check_same_thread=False)
+    conn = sqlite3.connect(path, timeout=15, check_same_thread=False, factory=GuardedConnection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -292,6 +435,7 @@ def connect(path: Path | str) -> sqlite3.Connection:
         path.chmod(0o600)
     except OSError:
         pass
+    conn.tf_lock = lock
     return conn
 
 

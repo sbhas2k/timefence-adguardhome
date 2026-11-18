@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -70,16 +69,17 @@ def create_app(
 
     base = "" if settings.base_path == "/" else settings.base_path
 
-    conn = db.connect(settings.db_path)
-    db.migrate(conn)
+    store = db.Store(settings.db_path)
+    with store as conn:
+        db.migrate(conn, settings.zone)
+        setup_done = db.get_bool_setting(conn, "setup_complete", False)
 
-    lock = threading.RLock()
     session_manager = security.SessionManager(security.load_or_create_secret(settings.data_dir))
     limiter = security.LoginRateLimiter()
     agh = adguard or AdGuardClient(
         settings.adguard_url, settings.adguard_user, settings.adguard_password
     )
-    reconciler = Reconciler(conn, agh, settings.zone)
+    reconciler = Reconciler(store, agh, settings.zone)
 
     psl = PublicSuffixList()
     noise = SuffixList.from_file(DATA / "noise_domains.txt")
@@ -95,36 +95,48 @@ def create_app(
 
     # ---------------------------------------------------------------- setup
     def seed_users() -> None:
-        with lock:
-            now = int(time.time())
+        with store as conn:
             count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-            if count == 0:
-                conn.execute(
-                    "INSERT INTO users(username, role, hash, created_at, updated_at) "
-                    "VALUES('admin', 'admin', ?, ?, ?)",
-                    (security.hash_secret(credentials.DEFAULT_ADMIN_PASSWORD), now, now),
-                )
-                db.set_bool_setting(conn, "setup_complete", False)
-                conn.commit()
+        if count:
+            return
+        # hashing is slow, so it happens outside the store lock
+        hashed = security.hash_secret(credentials.DEFAULT_ADMIN_PASSWORD)
+        now = int(time.time())
+        with store as conn:
+            conn.execute(
+                "INSERT INTO users(username, role, hash, created_at, updated_at) "
+                "VALUES('admin', 'admin', ?, ?, ?)",
+                (hashed, now, now),
+            )
+            db.set_bool_setting(conn, "setup_complete", False)
+            conn.commit()
+
+    def read_setup_flag() -> bool:
+        with store as conn:
+            return db.get_bool_setting(conn, "setup_complete", False)
 
     def users_count(role: str | None = None) -> int:
-        if role:
-            return conn.execute(
-                "SELECT COUNT(*) FROM users WHERE role=? AND disabled=0", (role,)
-            ).fetchone()[0]
-        return conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        with store as conn:
+            if role:
+                return conn.execute(
+                    "SELECT COUNT(*) FROM users WHERE role=? AND disabled=0", (role,)
+                ).fetchone()[0]
+            return conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
 
     def user_row(user_id: int):
-        return conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        with store as conn:
+            return conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
 
     def setup_complete() -> bool:
-        return db.get_bool_setting(conn, "setup_complete", False)
+        return bool(app.state.setup_done)
 
     def verify(role: str, secret: str) -> bool:
-        return credentials.verify(conn, role, secret)
+        with store as conn:
+            return credentials.verify(conn, role, secret)
 
     def set_credential(role: str, secret: str) -> None:
-        credentials.set_secret(conn, role, secret)
+        with store as conn:
+            credentials.set_secret(conn, role, secret)
 
     def current_session(request: Request) -> security.SessionData | None:
         return getattr(request.state, "session", None)
@@ -132,14 +144,16 @@ def create_app(
     def session_user(sess: security.SessionData | None):
         if not sess or not sess.username:
             return None
-        return conn.execute(
-            "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (sess.username,)
-        ).fetchone()
+        with store as conn:
+            return conn.execute(
+                "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (sess.username,)
+            ).fetchone()
 
     def user_names() -> dict[int, str]:
-        return {
-            row["id"]: row["username"] for row in conn.execute("SELECT id, username FROM users")
-        }
+        with store as conn:
+            return {
+                row["id"]: row["username"] for row in conn.execute("SELECT id, username FROM users")
+            }
 
     def visible_group_ids(sess: security.SessionData) -> set[int] | None:
         """Admins see everything; a user sees their own groups plus shared ones."""
@@ -148,11 +162,12 @@ def create_app(
         row = session_user(sess)
         if not row:
             return set()
-        return {
-            group.id
-            for group in budget.list_groups(conn)
-            if group.owner_id is None or group.owner_id == row["id"]
-        }
+        with store as conn:
+            return {
+                group.id
+                for group in budget.list_groups(conn)
+                if group.owner_id is None or group.owner_id == row["id"]
+            }
 
     def can_see(sess: security.SessionData, group_id: int) -> bool:
         ids = visible_group_ids(sess)
@@ -205,17 +220,20 @@ def create_app(
 
     # -------------------------------------------------------------- context
     def group_payload(group: budget.Group, now: int) -> dict:
-        payload = budget.group_state(conn, group, settings.zone, now)
+        with store as conn:
+            payload = budget.group_state(conn, group, settings.zone, now)
         payload["owner"] = user_names().get(group.owner_id) if group.owner_id else None
         return payload
 
     def state_payload(role: str, now: int | None = None, group_ids: set[int] | None = None) -> dict:
         now = now or int(time.time())
-        groups = [
-            group_payload(g, now)
-            for g in budget.list_groups(conn)
-            if group_ids is None or g.id in group_ids
-        ]
+        with store as conn:
+            groups = [
+                group_payload(g, now)
+                for g in budget.list_groups(conn)
+                if group_ids is None or g.id in group_ids
+            ]
+            history = budget.history(conn, settings.zone, days=7, now=now, group_ids=group_ids)
         payload: dict[str, Any] = {
             "app": {
                 "name": i18n.t("app.title"),
@@ -227,7 +245,7 @@ def create_app(
                 "now": now,
             },
             "groups": groups,
-            "history": budget.history(conn, settings.zone, days=7, now=now, group_ids=group_ids),
+            "history": history,
             "adguard_error": reconciler.last_error,
         }
         return payload
@@ -252,7 +270,8 @@ def create_app(
     def managed_domains(exclude_group: int | None = None) -> set[str]:
         """Domains that are already covered, directly or through a service."""
         out: set[str] = set()
-        groups = [g for g in budget.list_groups(conn) if g.id != exclude_group]
+        with store as conn:
+            groups = [g for g in budget.list_groups(conn) if g.id != exclude_group]
         for group in groups:
             out.update(group.domains)
         if not any(g.services for g in groups):
@@ -289,8 +308,8 @@ def create_app(
         else:
             log.error("AdGuard Home connection FAILED: %s", detail)
         log.info("configuration: %s", settings.redacted())
-        with lock:
-            reconciler.run("startup")
+        app.state.setup_done = read_setup_flag()
+        reconciler.run("startup")
         stop = asyncio.Event()
 
         async def loop() -> None:
@@ -312,7 +331,7 @@ def create_app(
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
-            conn.close()
+            store.close()
 
     app = FastAPI(
         title=APP_TITLE,
@@ -323,7 +342,9 @@ def create_app(
         openapi_url=None,
     )
     app.state.settings = settings
-    app.state.conn = conn
+    app.state.store = store
+    app.state.conn = store.conn
+    app.state.setup_done = setup_done
     app.state.adguard = agh
     app.state.reconciler = reconciler
 
@@ -403,15 +424,18 @@ def create_app(
         password = str(data.get("password", ""))
         if not username or not password:
             return json_error(400, i18n.t("login.missing"), "bad_request")
-        row = conn.execute(
-            "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (username,)
-        ).fetchone()
+        with store as conn:
+            row = conn.execute(
+                "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (username,)
+            ).fetchone()
+        # hashing is slow: never while holding the store lock
         ok = bool(row) and not row["disabled"] and security.verify_secret(row["hash"], password)
         if ok and row["role"] != "admin" and not setup_complete():
             return json_error(403, i18n.t("error.setup_required"), "setup_required")
         if not ok:
             limiter.record_failure(ip)
-            budget.log_event(conn, "login_failed", {"username": username[:40], "ip": ip})
+            with store as conn:
+                budget.log_event(conn, "login_failed", {"username": username[:40], "ip": ip})
             remaining = limiter.locked_for(ip)
             if remaining:
                 return json_error(
@@ -419,17 +443,19 @@ def create_app(
                 )
             return json_error(401, i18n.t("login.wrong"), "bad_credentials")
         limiter.reset(ip)
-        if security.needs_rehash(row["hash"]):
-            conn.execute(
-                "UPDATE users SET hash=?, updated_at=? WHERE id=?",
-                (security.hash_secret(password), int(time.time()), row["id"]),
+        new_hash = security.hash_secret(password) if security.needs_rehash(row["hash"]) else None
+        with store as conn:
+            if new_hash:
+                conn.execute(
+                    "UPDATE users SET hash=?, updated_at=? WHERE id=?",
+                    (new_hash, int(time.time()), row["id"]),
+                )
+            conn.execute("UPDATE users SET last_login=? WHERE id=?", (int(time.time()), row["id"]))
+            conn.commit()
+            budget.log_event(
+                conn, "login", {"username": row["username"], "role": row["role"], "ip": ip}
             )
-        conn.execute("UPDATE users SET last_login=? WHERE id=?", (int(time.time()), row["id"]))
-        conn.commit()
         token, csrf = session_manager.issue(row["role"], row["username"])
-        budget.log_event(
-            conn, "login", {"username": row["username"], "role": row["role"], "ip": ip}
-        )
         response = JSONResponse(
             {
                 "ok": True,
@@ -466,20 +492,22 @@ def create_app(
         problem = validate_password(admin_password)
         if problem:
             return json_error(400, problem, "invalid")
-        with lock:
+        hashed = security.hash_secret(admin_password)
+        now = int(time.time())
+        with store as conn:
             conn.execute(
                 "UPDATE users SET hash=?, updated_at=? "
                 "WHERE role='admin' AND username=? COLLATE NOCASE",
-                (security.hash_secret(admin_password), int(time.time()), sess.username or "admin"),
+                (hashed, now, sess.username or "admin"),
             )
             if conn.total_changes == 0:
                 conn.execute(
-                    "UPDATE users SET hash=?, updated_at=? WHERE role='admin'",
-                    (security.hash_secret(admin_password), int(time.time())),
+                    "UPDATE users SET hash=?, updated_at=? WHERE role='admin'", (hashed, now)
                 )
             conn.commit()
             db.set_bool_setting(conn, "setup_complete", True)
             budget.log_event(conn, "setup_completed", {"username": sess.username})
+        app.state.setup_done = True
         log.info("first-run setup completed")
         return JSONResponse({"ok": True})
 
@@ -517,13 +545,13 @@ def create_app(
         sess = require("user", request)
         now = int(time.time())
         ids = visible_group_ids(sess)
-        return {
-            "groups": [
+        with store as conn:
+            groups = [
                 group_payload(g, now)
                 for g in budget.list_groups(conn)
                 if ids is None or g.id in ids
             ]
-        }
+        return {"groups": groups}
 
     def group_from_payload(data: dict, existing: budget.Group | None = None) -> dict:
         def int_or(value: Any, fallback: int) -> int:
@@ -548,11 +576,10 @@ def create_app(
                 owner_id = int(owner_raw)
             except (TypeError, ValueError):
                 owner_id = None
-        if (
-            owner_id is not None
-            and not conn.execute("SELECT 1 FROM users WHERE id=?", (owner_id,)).fetchone()
-        ):
-            raise ValueError("owner not found")
+        if owner_id is not None:
+            with store as conn:
+                if not conn.execute("SELECT 1 FROM users WHERE id=?", (owner_id,)).fetchone():
+                    raise ValueError("owner not found")
         return {
             "name": str(data.get("name", existing.name if existing else "")).strip(),
             "emoji": str(data.get("emoji", existing.emoji if existing else "")).strip(),
@@ -582,14 +609,14 @@ def create_app(
                 "critical_domains",
                 critical=hits,
             )
-        with lock:
-            fields.pop("set_owner", None)
+        fields.pop("set_owner", None)
+        with store as conn:
             try:
                 group = budget.create_group(conn, **fields)
             except budget.ValidationError as exc:
                 return json_error(400, str(exc), "invalid")
             budget.log_event(conn, "group_create", {"group": group.name, "actor": sess.role})
-            reconciler.run("group_create")
+        reconciler.run("group_create")
         return {"ok": True, "group": group_payload(group, int(time.time()))}
 
     @app.put(f"{base}/api/groups/{{group_id}}")
@@ -598,7 +625,7 @@ def create_app(
         data = await read_json(request)
         if sets_removed_mode(data):
             return json_error(400, i18n.t("error.mode_removed"), "mode_removed")
-        with lock:
+        with store as conn:
             existing = budget.get_group(conn, group_id)
             if not existing or existing.deleted:
                 return json_error(404, i18n.t("error.not_found"), "not_found")
@@ -613,19 +640,19 @@ def create_app(
             except budget.ValidationError as exc:
                 return json_error(400, str(exc), "invalid")
             budget.log_event(conn, "group_update", {"group": group.name, "actor": sess.role})
-            reconciler.run("group_update")
+        reconciler.run("group_update")
         return {"ok": True, "group": group_payload(group, int(time.time()))}
 
     @app.delete(f"{base}/api/groups/{{group_id}}")
     def api_group_delete(group_id: int, request: Request):
         sess = require("admin", request)
-        with lock:
+        with store as conn:
             group = budget.get_group(conn, group_id)
             if not group or group.deleted:
                 return json_error(404, i18n.t("error.not_found"), "not_found")
             name = budget.delete_group(conn, group_id)
             budget.log_event(conn, "group_delete", {"group": name, "actor": sess.role})
-            reconciler.run("group_delete")
+        reconciler.run("group_delete")
         return {"ok": True, "deleted": name}
 
     @app.post(f"{base}/api/groups/{{group_id}}/pause")
@@ -633,7 +660,7 @@ def create_app(
         sess = require("admin", request)
         data = await read_json(request)
         paused = bool(data.get("paused", True))
-        with lock:
+        with store as conn:
             try:
                 group = budget.update_group(conn, group_id, paused=paused)
             except budget.ValidationError as exc:
@@ -641,7 +668,7 @@ def create_app(
             budget.log_event(
                 conn, "group_pause", {"group": group.name, "paused": paused, "actor": sess.role}
             )
-            reconciler.run("group_pause")
+        reconciler.run("group_pause")
         return {"ok": True, "group": group_payload(group, int(time.time()))}
 
     @app.post(f"{base}/api/groups/{{group_id}}/bonus")
@@ -652,7 +679,7 @@ def create_app(
             minutes = int(data.get("minutes", 15))
         except (TypeError, ValueError):
             return json_error(400, "minutes is required", "bad_request")
-        with lock:
+        with store as conn:
             group = budget.get_group(conn, group_id)
             if not group or group.deleted:
                 return json_error(404, i18n.t("error.not_found"), "not_found")
@@ -663,14 +690,14 @@ def create_app(
             budget.log_event(
                 conn, "admin_bonus", {"group": group.name, "minutes": minutes, "actor": sess.role}
             )
-            reconciler.run("admin_bonus")
+        reconciler.run("admin_bonus")
         return {"ok": True, "group": group_payload(group, int(time.time()))}
 
     @app.post(f"{base}/api/groups/{{group_id}}/free")
     async def api_group_free(group_id: int, request: Request):
         sess = require("admin", request)
         data = await read_json(request)
-        with lock:
+        with store as conn:
             group = budget.get_group(conn, group_id)
             if not group or group.deleted:
                 return json_error(404, i18n.t("error.not_found"), "not_found")
@@ -686,25 +713,25 @@ def create_app(
                 "admin_free",
                 {"group": group.name, "until": until, "actor": sess.role},
             )
-            reconciler.run("admin_free")
+        reconciler.run("admin_free")
         return {"ok": True, "until": until, "group": group_payload(group, int(time.time()))}
 
     @app.post(f"{base}/api/groups/{{group_id}}/free/clear")
     def api_group_free_clear(group_id: int, request: Request):
         sess = require("admin", request)
-        with lock:
+        with store as conn:
             group = budget.get_group(conn, group_id)
             if not group or group.deleted:
                 return json_error(404, i18n.t("error.not_found"), "not_found")
             budget.clear_free(conn, group_id)
             budget.log_event(conn, "admin_free_clear", {"group": group.name, "actor": sess.role})
-            reconciler.run("admin_free_clear")
+        reconciler.run("admin_free_clear")
         return {"ok": True, "group": group_payload(group, int(time.time()))}
 
     @app.post(f"{base}/api/groups/{{group_id}}/block")
     def api_group_block(group_id: int, request: Request):
         sess = require("admin", request)
-        with lock:
+        with store as conn:
             group = budget.get_group(conn, group_id)
             if not group or group.deleted:
                 return json_error(404, i18n.t("error.not_found"), "not_found")
@@ -713,7 +740,7 @@ def create_app(
                 conn, group_id, budget.local_midnight(int(time.time()), settings.zone) + 86400
             )
             budget.log_event(conn, "admin_block", {"group": group.name, "actor": sess.role})
-            reconciler.run("admin_block")
+        reconciler.run("admin_block")
         return {
             "ok": True,
             "group": group_payload(group, int(time.time())),
@@ -723,7 +750,8 @@ def create_app(
     @app.get(f"{base}/api/groups/{{group_id}}/test")
     def api_group_test(group_id: int, request: Request):
         require("admin", request)
-        group = budget.get_group(conn, group_id)
+        with store as conn:
+            group = budget.get_group(conn, group_id)
         if not group or group.deleted:
             return json_error(404, i18n.t("error.not_found"), "not_found")
         hostnames = list(group.domains)
@@ -767,7 +795,8 @@ def create_app(
             services_map()
         except AdGuardError as exc:
             return json_error(502, i18n.t("error.adguard", detail=str(exc)), "adguard")
-        used = {s: g.name for g in budget.list_groups(conn) for s in g.services}
+        with store as conn:
+            used = {s: g.name for g in budget.list_groups(conn) for s in g.services}
         out = [
             {
                 "id": s["id"],
@@ -837,7 +866,7 @@ def create_app(
             return json_error(
                 409, i18n.t("groups.critical_title"), "critical_domains", critical=hits
             )
-        with lock:
+        with store as conn:
             group = budget.get_group(conn, group_id)
             if not group or group.deleted:
                 return json_error(404, i18n.t("error.not_found"), "not_found")
@@ -851,7 +880,7 @@ def create_app(
                 "discover_add",
                 {"group": group.name, "domains": domains, "actor": sess.role},
             )
-            reconciler.run("discover_add")
+        reconciler.run("discover_add")
         return {"ok": True, "group": group_payload(group, int(time.time())), "added": domains}
 
     # -------------------------------------------------------------- admin-ish
@@ -869,8 +898,16 @@ def create_app(
             return json_error(400, "bad role", "bad_role")
         if problem:
             return json_error(400, problem, "invalid")
-        with lock:
-            set_credential(role, secret)
+        # hashing happens outside the store lock; the write is one statement
+        hashed = security.hash_secret(secret)
+        with store as conn:
+            conn.execute(
+                "INSERT INTO credentials(role, hash, updated_at) VALUES(?,?,?) "
+                "ON CONFLICT(role) DO UPDATE SET hash=excluded.hash, "
+                "updated_at=excluded.updated_at",
+                (role, hashed, int(time.time())),
+            )
+            conn.commit()
             budget.log_event(conn, "credentials_changed", {"role": role, "actor": sess.role})
         return {"ok": True}
 
@@ -888,7 +925,8 @@ def create_app(
     @app.get(f"{base}/api/users")
     def api_users(request: Request):
         require("admin", request)
-        rows = conn.execute("SELECT * FROM users ORDER BY role DESC, username").fetchall()
+        with store as conn:
+            rows = conn.execute("SELECT * FROM users ORDER BY role DESC, username").fetchall()
         return {"users": [public_user(r) for r in rows]}
 
     @app.post(f"{base}/api/users")
@@ -901,16 +939,18 @@ def create_app(
         problem = credentials.validate_username(username) or credentials.validate(role, password)
         if problem:
             return json_error(400, problem, "invalid")
-        with lock:
+        with store as conn:
             exists = conn.execute(
                 "SELECT 1 FROM users WHERE username=? COLLATE NOCASE", (username,)
             ).fetchone()
-            if exists:
-                return json_error(409, i18n.t("users.exists"), "exists")
-            now = int(time.time())
+        if exists:
+            return json_error(409, i18n.t("users.exists"), "exists")
+        hashed = security.hash_secret(password)
+        now = int(time.time())
+        with store as conn:
             cur = conn.execute(
                 "INSERT INTO users(username, role, hash, created_at, updated_at) VALUES(?,?,?,?,?)",
-                (username, role, security.hash_secret(password), now, now),
+                (username, role, hashed, now, now),
             )
             conn.commit()
             budget.log_event(
@@ -924,16 +964,17 @@ def create_app(
         sess = require("admin", request)
         data = await read_json(request)
         password = str(data.get("password", ""))
-        with lock:
-            row = user_row(user_id)
-            if not row:
-                return json_error(404, i18n.t("error.not_found"), "not_found")
-            problem = credentials.validate(row["role"], password)
-            if problem:
-                return json_error(400, problem, "invalid")
+        row = user_row(user_id)
+        if not row:
+            return json_error(404, i18n.t("error.not_found"), "not_found")
+        problem = credentials.validate(row["role"], password)
+        if problem:
+            return json_error(400, problem, "invalid")
+        hashed = security.hash_secret(password)
+        with store as conn:
             conn.execute(
                 "UPDATE users SET hash=?, updated_at=? WHERE id=?",
-                (security.hash_secret(password), int(time.time()), user_id),
+                (hashed, int(time.time()), user_id),
             )
             conn.commit()
             budget.log_event(
@@ -948,7 +989,7 @@ def create_app(
         role = str(data.get("role", "")).strip().lower()
         if role not in ("admin", "user"):
             return json_error(400, i18n.t("users.bad_role"), "invalid")
-        with lock:
+        with store as conn:
             row = user_row(user_id)
             if not row:
                 return json_error(404, i18n.t("error.not_found"), "not_found")
@@ -971,7 +1012,7 @@ def create_app(
         sess = require("admin", request)
         data = await read_json(request)
         disabled = bool(data.get("disabled", True))
-        with lock:
+        with store as conn:
             row = user_row(user_id)
             if not row:
                 return json_error(404, i18n.t("error.not_found"), "not_found")
@@ -992,7 +1033,7 @@ def create_app(
     @app.delete(f"{base}/api/users/{{user_id}}")
     def api_user_delete(user_id: int, request: Request):
         sess = require("admin", request)
-        with lock:
+        with store as conn:
             row = user_row(user_id)
             if not row:
                 return json_error(404, i18n.t("error.not_found"), "not_found")
@@ -1010,33 +1051,31 @@ def create_app(
     @app.post(f"{base}/api/groups/{{group_id}}/reset")
     def api_group_reset(group_id: int, request: Request):
         sess = require("admin", request)
-        with lock:
+        with store as conn:
             group = budget.get_group(conn, group_id)
             if not group or group.deleted:
                 return json_error(404, i18n.t("error.not_found"), "not_found")
             budget.reset_today(conn, group_id, settings.zone)
             budget.clear_force_block(conn, group_id)
             budget.log_event(conn, "admin_reset", {"group": group.name, "actor": sess.username})
-            reconciler.run("admin_reset")
-        return {
-            "ok": True,
-            "group": group_payload(budget.get_group(conn, group_id), int(time.time())),
-        }
+        reconciler.run("admin_reset")
+        with store as conn:
+            group = budget.get_group(conn, group_id)
+        return {"ok": True, "group": group_payload(group, int(time.time()))}
 
     @app.post(f"{base}/api/groups/{{group_id}}/force/clear")
     def api_group_force_clear(group_id: int, request: Request):
         sess = require("admin", request)
-        with lock:
+        with store as conn:
             group = budget.get_group(conn, group_id)
             if not group or group.deleted:
                 return json_error(404, i18n.t("error.not_found"), "not_found")
             budget.clear_force_block(conn, group_id)
             budget.log_event(conn, "admin_unblock", {"group": group.name, "actor": sess.username})
-            reconciler.run("admin_unblock")
-        return {
-            "ok": True,
-            "group": group_payload(budget.get_group(conn, group_id), int(time.time())),
-        }
+        reconciler.run("admin_unblock")
+        with store as conn:
+            group = budget.get_group(conn, group_id)
+        return {"ok": True, "group": group_payload(group, int(time.time()))}
 
     @app.post(f"{base}/api/adguard/test")
     def api_adguard_test(request: Request):

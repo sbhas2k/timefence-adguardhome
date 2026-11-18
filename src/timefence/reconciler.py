@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 import time
 from zoneinfo import ZoneInfo
 
@@ -79,12 +80,13 @@ def desired_domains(conn: sqlite3.Connection, tz: ZoneInfo, now: int | None = No
 
 
 class Reconciler:
-    def __init__(self, conn: sqlite3.Connection, adguard: AdGuardClient, tz: ZoneInfo) -> None:
-        self.conn = conn
+    def __init__(self, store: db.Store, adguard: AdGuardClient, tz: ZoneInfo) -> None:
+        self.store = store
         self.adguard = adguard
         self.tz = tz
         self.last_error: str | None = None
         self.last_result: dict = {}
+        self._run_lock = threading.Lock()
         self._service_domains: dict[str, set[str]] = {}
         self._service_domains_ts = 0.0
 
@@ -127,72 +129,86 @@ class Reconciler:
         resolved during the window, the group is considered "in use" for those
         seconds. On startup we only reset the cursor (never back-fill).
         """
-        last = int(db.get_setting(self.conn, "meter_last_ts", "0") or 0)
-        if reason == "startup" or last <= 0 or now - last < 5 or now - last > 300:
-            db.set_setting(self.conn, "meter_last_ts", str(now))
-            return 0
-        window = now - last
-        try:
-            entries = self.adguard.querylog(limit=2000)
-        except AdGuardError as exc:
-            log.error("metering skipped: %s", exc)
-            db.set_setting(self.conn, "meter_last_ts", str(now))
-            return 0
+        with self.store as conn:
+            last = int(db.get_setting(conn, "meter_last_ts", "0") or 0)
+            if reason == "startup" or last <= 0 or now - last < 5 or now - last > 300:
+                db.set_setting(conn, "meter_last_ts", str(now))
+                return 0
+            window = now - last
+            try:
+                entries = self.adguard.querylog(limit=2000)
+            except AdGuardError as exc:
+                log.error("metering skipped: %s", exc)
+                db.set_setting(conn, "meter_last_ts", str(now))
+                return 0
 
-        stamped = []
-        for entry in entries:
-            ts = parse_time(entry.get("time", ""))
-            if ts is None or not (last < ts <= now):
-                continue
-            client = entry.get("client") or ""
-            if client in ("127.0.0.1", "::1"):
-                continue
-            name = (entry.get("question") or {}).get("name") or ""
-            stamped.append(name)
-        charged = 0
-        if stamped:
-            day = budget.day_str(now, self.tz)
-            for group in budget.list_groups(self.conn):
-                if not budget.is_permitted(self.conn, group, self.tz, now):
+            stamped = []
+            for entry in entries:
+                ts = parse_time(entry.get("time", ""))
+                if ts is None or not (last < ts <= now):
                     continue
-                suffixes = self.matcher(group)
-                if suffixes and any(self.host_matches(name, suffixes) for name in stamped):
-                    cap = budget.budget_seconds(self.conn, group, self.tz, now)
-                    budget.add_metered_seconds(self.conn, group.id, day, window, cap_seconds=cap)
-                    charged += 1
-        db.set_setting(self.conn, "meter_last_ts", str(now))
-        return charged
+                client = entry.get("client") or ""
+                if client in ("127.0.0.1", "::1"):
+                    continue
+                name = (entry.get("question") or {}).get("name") or ""
+                stamped.append(name)
+            charged = 0
+            if stamped:
+                day = budget.day_str(now, self.tz)
+                for group in budget.list_groups(conn):
+                    if not budget.is_permitted(conn, group, self.tz, now):
+                        continue
+                    suffixes = self.matcher(group)
+                    if suffixes and any(self.host_matches(name, suffixes) for name in stamped):
+                        cap = budget.budget_seconds(conn, group, self.tz, now)
+                        budget.add_metered_seconds(conn, group.id, day, window, cap_seconds=cap)
+                        charged += 1
+            db.set_setting(conn, "meter_last_ts", str(now))
+            return charged
 
     # -- individual halves, both idempotent ------------------------------
     def sync_services(self, now: int | None = None) -> list[str]:
         now = now or int(time.time())
-        # Only services TimeFence itself took over are ever removed from the
-        # AdGuard list; everything else the operator configured stays as-is.
-        owned = budget.owned_services(self.conn)
-        current = self.adguard.blocked_services()
-        current_ids = list(current["ids"])
-        wanted = {i for i in current_ids if i not in owned} | desired_services(
-            self.conn, self.tz, now
-        )
-        if set(current_ids) == wanted:
-            return []
-        self.adguard.set_blocked_services(sorted(wanted), current["schedule"])
+        with self.store as conn:
+            # Only services TimeFence itself took over are ever removed from the
+            # AdGuard list; everything else the operator configured stays as-is.
+            owned = budget.owned_services(conn)
+            current = self.adguard.blocked_services()
+            current_ids = list(current["ids"])
+            wanted = {i for i in current_ids if i not in owned} | desired_services(
+                conn, self.tz, now
+            )
+            if set(current_ids) == wanted:
+                return []
+            self.adguard.set_blocked_services(sorted(wanted), current["schedule"])
         log.info("blocked services: %s -> %s", sorted(current_ids), sorted(wanted))
         return sorted(wanted ^ set(current_ids))
 
     def sync_domains(self, now: int | None = None) -> bool:
         now = now or int(time.time())
-        current = self.adguard.user_rules()
-        desired = desired_domains(self.conn, self.tz, now)
-        updated = build_rules(current, desired)
-        if updated == current:
-            return False
-        self.adguard.set_user_rules(updated)
+        with self.store as conn:
+            current = self.adguard.user_rules()
+            desired = desired_domains(conn, self.tz, now)
+            updated = build_rules(current, desired)
+            if updated == current:
+                return False
+            self.adguard.set_user_rules(updated)
         log.info("user rules updated: %d managed domain(s) blocked", len(desired))
         return True
 
     # -- full pass -------------------------------------------------------
     def run(self, reason: str = "loop", now: int | None = None) -> dict:
+        """Run every phase once.
+
+        Lock order is reconcile lock, then store lock; taking the store lock
+        first and calling into this method would deadlock, so it is refused.
+        """
+        if self.store.lock.held_by_current_thread():
+            raise RuntimeError("reconciler.run() called while holding the store lock")
+        with self._run_lock:
+            return self._run(reason, now)
+
+    def _run(self, reason: str = "loop", now: int | None = None) -> dict:
         now = now or int(time.time())
         result: dict = {"reason": reason, "changed": [], "errors": []}
         charged = self.meter(now, reason)
