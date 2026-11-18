@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -110,24 +111,30 @@ class SuffixList:
 # --------------------------------------------------------------------------- #
 
 
+PARSE_TIME_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|z|[+-]\d{2}:?\d{2})?$"
+)
+
+
 def parse_time(value: str) -> int | None:
-    """AdGuard sends RFC3339 with nanoseconds: 2026-11-12T16:37:48.889389948Z."""
+    """AdGuard sends RFC3339 with nanoseconds and either sign of offset."""
     if not value:
         return None
-    text = value.strip().replace("Z", "+00:00")
-    if "." in text:
-        head, tail = text.split(".", 1)
-        frac, _, rest = tail.partition("+")
-        text = f"{head}.{frac[:6]}+{rest}" if rest else f"{head}.{frac[:6]}"
-        if text.endswith("+"):
-            text = text[:-1]
+    match = PARSE_TIME_RE.match(value.strip())
+    if not match:
+        return None
+    head, fraction, offset = match.groups()
+    if fraction:
+        head = f"{head}.{fraction[:6]}"
+    if offset is None or offset in ("Z", "z"):
+        offset = "+00:00"
+    elif ":" not in offset:
+        offset = f"{offset[:3]}:{offset[3:]}"
     try:
-        dt = datetime.fromisoformat(text)
+        parsed = datetime.fromisoformat(f"{head}{offset}")
     except ValueError:
         return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return int(dt.timestamp())
+    return int(parsed.timestamp())
 
 
 def aggregate(

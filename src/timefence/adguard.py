@@ -12,6 +12,8 @@ from typing import Any
 
 import requests
 
+from .discover import parse_time
+
 log = logging.getLogger("timefence.adguard")
 
 BLOCKED_REASONS = {
@@ -118,9 +120,39 @@ class AdGuardClient:
     def is_blocked(self, name: str) -> bool:
         return self.check_host(name).get("reason") in BLOCKED_REASONS
 
-    def querylog(self, limit: int = 2000, search: str = "") -> list[dict]:
+    # -- query log -------------------------------------------------------
+    def querylog_page(self, limit: int = 500, older_than: str | None = None) -> dict:
+        """One page, newest first; `older_than` is an AdGuard timestamp string."""
         params: dict[str, Any] = {"limit": limit}
-        if search:
-            params["search"] = search
-        data = self._request_json("GET", "/control/querylog", params=params) or {}
-        return list(data.get("data") or [])
+        if older_than:
+            params["older_than"] = older_than
+        return self._request_json("GET", "/control/querylog", params=params) or {}
+
+    def querylog_since(
+        self, since_ts: int, page_size: int = 500, max_pages: int = 20
+    ) -> tuple[list[dict], bool]:
+        """Every entry newer than `since_ts`, plus whether the log ran out of pages."""
+        entries: list[dict] = []
+        older_than: str | None = None
+        for _ in range(max_pages):
+            page = self.querylog_page(limit=page_size, older_than=older_than)
+            data = list(page.get("data") or [])
+            if not data:
+                return entries, False
+            entries.extend(data)
+            oldest = page.get("oldest")
+            oldest_ts = parse_time(oldest) if isinstance(oldest, str) else None
+            if oldest_ts is None or oldest_ts <= since_ts or oldest == older_than:
+                return entries, False
+            older_than = oldest
+        return entries, True
+
+    def querylog_config(self) -> dict | None:
+        """The query-log settings, or None when AdGuard does not offer them."""
+        try:
+            data = self._request_json("GET", "/control/querylog/config")
+        except AdGuardError as exc:
+            if "HTTP 404" in str(exc):
+                return None
+            raise
+        return data if isinstance(data, dict) else None

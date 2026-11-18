@@ -10,6 +10,7 @@ import pytest
 
 from timefence import budget, db
 from timefence.reconciler import (
+    BUCKET,
     SECTION_BEGIN,
     SECTION_END,
     Reconciler,
@@ -256,7 +257,7 @@ def test_metering_charges_time_only_when_the_group_was_queried(store, fake):
     assert charged == 1
     day = budget.day_str(now + 60, TZ)
     with store as conn:
-        assert budget.metered_seconds(conn, youtube.id, day) == 30
+        assert budget.metered_seconds(conn, youtube.id, day) == BUCKET
         assert budget.metered_seconds(conn, roblox.id, day) == 0
 
 

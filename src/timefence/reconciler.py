@@ -23,6 +23,20 @@ SECTION_BEGIN = "# timefence:begin"
 SECTION_END = "# timefence:end"
 LEGACY_MARKERS = ("budget-app",)  # migrated silently on the first run
 
+BUCKET = 15  # seconds of real DNS activity charged per busy bucket
+MAX_CATCHUP = 1800  # never charge more than this much missed time after downtime
+QUERYLOG_HEALTH_INTERVAL = 600  # seconds between query-log settings checks
+QUERYLOG_RETENTION_MIN_MS = 3_600_000  # an hour of retention is the minimum
+# Answers that were blocked, not usage. SafeSearch rewrites and Rewrite* are
+# answered queries and do count.
+BLOCKED_USAGE_REASONS = {
+    "FilteredBlackList",
+    "FilteredBlockedService",
+    "FilteredSafeBrowsing",
+    "FilteredParental",
+    "FilteredInvalid",
+}
+
 
 def strip_section(
     rules: list[str],
@@ -119,6 +133,8 @@ class Reconciler:
         self._run_lock = threading.Lock()
         self._service_domains: dict[str, set[str]] = {}
         self._service_domains_ts = 0.0
+        self._last_bucket: dict[int, int] = {}
+        self._querylog_checked = 0
 
     # -- usage metering (auto mode) --------------------------------------
     def service_domains(self) -> dict[str, set[str]]:
@@ -153,53 +169,139 @@ class Reconciler:
         return any(host == suffix or host.endswith("." + suffix) for suffix in suffixes)
 
     def meter(self, now: int, reason: str = "loop") -> int:
-        """Charge elapsed time to auto-mode groups that had DNS activity.
+        """Charge activity buckets to the groups that used their domains.
 
-        The query log is the only signal available: if a group's domains were
-        resolved during the window, the group is considered "in use" for those
-        seconds. On startup we only reset the cursor (never back-fill).
+        The query log is the only signal available. Each 15-second bucket with
+        at least one real (not blocked, not free-allow) lookup is charged once.
         """
+        self.check_querylog(now)
         with self.store as conn:
-            last = int(db.get_setting(conn, "meter_last_ts", "0") or 0)
-            if reason == "startup" or last <= 0 or now - last < 5 or now - last > 300:
+            cursor = int(db.get_setting(conn, "meter_last_ts", "0") or 0)
+            if cursor <= 0:
                 db.set_setting(conn, "meter_last_ts", str(now))
                 return 0
-        window = now - last
-        # AdGuard calls happen outside the store lock
+        start = max(cursor, now - MAX_CATCHUP)
+        if now <= start:
+            return 0
         try:
-            entries = self.adguard.querylog(limit=2000)
+            entries, truncated = self.adguard.querylog_since(start)
         except AdGuardError as exc:
             log.error("metering skipped: %s", exc)
-            with self.store as conn:
-                db.set_setting(conn, "meter_last_ts", str(now))
             return 0
+        if truncated:
+            self.warnings.add("querylog_truncated")
+        else:
+            self.warnings.discard("querylog_truncated")
 
-        stamped = []
+        hits = self.usage_hits(entries, start, now)
+        with self.store as conn:
+            needs_service_domains = any(g.services for g in budget.list_groups(conn))
+        if needs_service_domains:
+            self.service_domains()  # AdGuard call, outside the store lock
+
+        charged = 0
+        with self.store as conn:
+            for group in budget.list_groups(conn):
+                if group.paused or group.deleted:
+                    continue
+                free = budget.free_until(conn, group.id)
+                if free and free > now:
+                    continue  # free time is not metered
+                if not budget.is_permitted(conn, group, self.tz, now):
+                    continue
+                suffixes = self.matcher(group)
+                if not suffixes:
+                    continue
+                last_bucket = self._last_bucket.get(group.id, -1)
+                buckets = {
+                    ts // BUCKET
+                    for ts, name in hits
+                    if ts // BUCKET > last_bucket and self.host_matches(name, suffixes)
+                }
+                if not buckets:
+                    continue
+                per_day: dict[str, list[int]] = {}
+                for bucket in buckets:
+                    day = budget.day_str(bucket * BUCKET, self.tz)
+                    per_day.setdefault(day, []).append(bucket)
+                for day, day_buckets in per_day.items():
+                    representative = max(day_buckets) * BUCKET
+                    cap = budget.cap_seconds(conn, group, self.tz, representative)
+                    budget.add_metered_seconds(
+                        conn, group.id, day, BUCKET * len(day_buckets), cap_seconds=cap
+                    )
+                self._last_bucket[group.id] = max(buckets)
+                charged += 1
+            db.set_setting(conn, "meter_last_ts", str(now))
+        return charged
+
+    def usage_hits(self, entries: list[dict], start: int, now: int) -> list[tuple[int, str]]:
+        """(timestamp, hostname) of entries that count as usage inside the window."""
+        hits: list[tuple[int, str]] = []
         for entry in entries:
             ts = parse_time(entry.get("time", ""))
-            if ts is None or not (last < ts <= now):
+            if ts is None or not (start < ts <= now):
                 continue
             client = entry.get("client") or ""
             if client in ("127.0.0.1", "::1"):
                 continue
+            if (entry.get("reason") or "") in BLOCKED_USAGE_REASONS:
+                continue
             name = (entry.get("question") or {}).get("name") or ""
-            stamped.append(name)
-        if stamped:
-            self.service_domains()  # warm the matcher cache outside the lock
-        charged = 0
+            hits.append((ts, name))
+        return hits
+
+    # -- query-log health -------------------------------------------------
+    def check_querylog(self, now: int) -> None:
+        """Warn when the query log makes metering unreliable (at most every 10 min)."""
+        if self._querylog_checked and now - self._querylog_checked < QUERYLOG_HEALTH_INTERVAL:
+            return
+        self._querylog_checked = now
+        try:
+            config = self.adguard.querylog_config()
+        except AdGuardError as exc:
+            log.debug("query-log health check skipped: %s", exc)
+            return
+        if not config:
+            return  # an older AdGuard without the endpoint: nothing to report
+        if config.get("enabled") is False:
+            self.warnings.add("querylog_disabled")
+        else:
+            self.warnings.discard("querylog_disabled")
+        interval = config.get("interval")
+        if isinstance(interval, int | float) and interval < QUERYLOG_RETENTION_MIN_MS:
+            self.warnings.add("querylog_retention_short")
+        else:
+            self.warnings.discard("querylog_retention_short")
+        ignored = config.get("ignored") or []
+        if ignored and self.ignored_covers_a_group(ignored):
+            self.warnings.add("querylog_ignores_group")
+        else:
+            self.warnings.discard("querylog_ignores_group")
+
+    def ignored_covers_a_group(self, ignored: list[str]) -> bool:
+        patterns = {self.normalise_ignored(item) for item in ignored}
+        patterns.discard("")
+        if not patterns:
+            return False
         with self.store as conn:
-            if stamped:
-                day = budget.day_str(now, self.tz)
-                for group in budget.list_groups(conn):
-                    if not budget.is_permitted(conn, group, self.tz, now):
-                        continue
-                    suffixes = self.matcher(group)
-                    if suffixes and any(self.host_matches(name, suffixes) for name in stamped):
-                        cap = budget.budget_seconds(conn, group, self.tz, now)
-                        budget.add_metered_seconds(conn, group.id, day, window, cap_seconds=cap)
-                        charged += 1
-            db.set_setting(conn, "meter_last_ts", str(now))
-        return charged
+            groups = budget.list_groups(conn)
+        hosts = {domain for group in groups for domain in group.domains}
+        if any(group.services for group in groups):
+            domains = self.service_domains()
+            for group in groups:
+                for service_id in group.services:
+                    hosts.update(domains.get(service_id, set()))
+        return any(
+            host == pattern or host.endswith("." + pattern)
+            for host in hosts
+            for pattern in patterns
+        )
+
+    @staticmethod
+    def normalise_ignored(value: str) -> str:
+        text = (value or "").strip().lower().removeprefix("||").removesuffix("^")
+        return text.removeprefix("*.").strip(".")
 
     # -- individual halves, both idempotent ------------------------------
     def sync_services(self, now: int | None = None) -> list[str]:

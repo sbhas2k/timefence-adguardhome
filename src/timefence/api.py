@@ -93,7 +93,7 @@ def create_app(
     )
 
     services_cache: dict[str, Any] = {"ts": 0.0, "data": []}
-    querylog_cache: dict[str, Any] = {"ts": 0.0, "data": []}
+    querylog_cache: dict[str, Any] = {"ts": 0.0, "data": [], "minutes": 0}
 
     # ---------------------------------------------------------------- setup
     def seed_users() -> None:
@@ -826,12 +826,13 @@ def create_app(
         require("admin", request)
         minutes = minutes if minutes in {5, 15, 30} else 15
         now = int(time.time())
-        if now - querylog_cache["ts"] > 20:
+        if now - querylog_cache["ts"] > 20 or querylog_cache["minutes"] < minutes:
             try:
-                querylog_cache["data"] = agh.querylog(limit=2000)
+                querylog_cache["data"], _ = agh.querylog_since(now - minutes * 60)
             except AdGuardError as exc:
                 return json_error(502, i18n.t("error.adguard", detail=str(exc)), "adguard")
             querylog_cache["ts"] = now
+            querylog_cache["minutes"] = minutes
         entries = querylog_cache["data"]
         domains = aggregate(
             entries,
