@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import queue
 import time
@@ -758,3 +759,65 @@ def test_alert_config_never_writes_an_event_row(store):
     assert [row["kind"] for row in events if row["kind"].startswith("alert")] == []
     assert all("TOKEN123" not in (row["detail"] or "") for row in events)
     assert settings_rows["alerts.ntfy_topic"] == "TOKEN123"
+
+
+class _FakeResponse:
+    def __init__(self, status: int = 200) -> None:
+        self.status_code = status
+        self.raw = io.BytesIO(b"ignored")
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_transport_is_configured_safely(monkeypatch, deliveries):
+    assert alerts.SESSION.trust_env is False
+    calls: list[tuple[str, dict]] = []
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return _FakeResponse()
+
+    monkeypatch.setattr(alerts.SESSION, "post", fake_post)
+    target = alerts.Target(url="http://127.0.0.1:9/hook", channel="webhook", host="127.0.0.1")
+    assert alerts._deliver(target, a_message()) == "ok"
+
+    url, kwargs = calls[0]
+    assert url == "http://127.0.0.1:9/hook"
+    assert kwargs["allow_redirects"] is False
+    assert kwargs["timeout"] == (3, 2)
+    assert kwargs["stream"] is True
+
+
+def test_shutdown_waits_for_a_fast_delivery(settings, fake, monkeypatch, caplog):
+    app = create_app(settings, adguard=fake)
+    seen: dict = {}
+
+    def fast_delivery(target, message):
+        seen["started"] = True
+        time.sleep(1.0)
+        return "ok"
+
+    with TestClient(app):
+        worker = app.state.alerts
+        with app.state.store as conn:
+            alerts.write_config(
+                conn, {"channel": "webhook", "webhook_url": "http://127.0.0.1:9/hook"}
+            )
+        monkeypatch.setattr(alerts, "_deliver", fast_delivery)
+        worker.enqueue(alerts.Message(event="group_low", key="low:1", created_at=0))
+        deadline = time.monotonic() + 3
+        while not seen.get("started") and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert seen.get("started") is True
+
+    # the delivery finished inside the join window, so shutdown was clean
+    assert not worker.is_alive()
+    assert "did not stop" not in caplog.text
+    assert "the database is closed" not in caplog.text
+    conn = db.connect(settings.db_path)
+    try:
+        assert db.get_setting(conn, "alerts.last_result") == "ok"
+    finally:
+        conn.close()

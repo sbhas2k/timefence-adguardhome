@@ -10,6 +10,7 @@ import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
+from timefence import i18n
 from timefence.api import create_app
 
 ADMIN = {"username": "admin", "password": "admin"}
@@ -481,3 +482,34 @@ def test_user_cannot_see_or_change_alerts(settings, fake):
         test = client.post("/api/alerts/test", json={}, headers={"X-CSRF-Token": csrf})
         assert test.status_code == 403
         assert test.json()["code"] == "read_only"
+
+
+def _kid_js() -> str:
+    from timefence import api
+
+    return (Path(api.__file__).parent / "static" / "kid.js").read_text(encoding="utf-8")
+
+
+def test_bedtime_strings_have_a_no_time_variant():
+    app = _app_js()
+    kid = _kid_js()
+    assert 'until ? t("status.bedtime", { time: until }) : t("status.bedtime_any")' in app
+    assert 'until ? t("kid.bedtime", { time: until }) : t("kid.bedtime_any")' in kid
+    for key in ("status.bedtime", "status.bedtime_any", "kid.bedtime", "kid.bedtime_any"):
+        assert key in i18n.STRINGS["en"]
+    assert "{time}" in i18n.STRINGS["en"]["status.bedtime"]
+    assert "null" not in i18n.STRINGS["en"]["status.bedtime_any"].lower()
+    assert "null" not in i18n.STRINGS["en"]["kid.bedtime_any"].lower()
+
+
+def test_alert_clear_controls_send_an_empty_string():
+    from timefence import api
+
+    templates = Path(api.__file__).parent / "templates"
+    html = (templates / "app.html").read_text(encoding="utf-8")
+    assert 'data-action="clear-secret"' in html
+    assert 'data-secret="ntfy_token"' in html
+    assert 'data-secret="webhook_url"' in html
+    assert 'payload[secret] = "";' in _app_js()
+    for key in ("alerts.clear", "alerts.clear_token", "alerts.clear_webhook"):
+        assert key in i18n.STRINGS["en"]

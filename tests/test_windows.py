@@ -328,3 +328,20 @@ def test_adguard_blocks_during_bedtime_and_unblocks_after(store, fake):
     reconciler.sync_domains(morning)
     assert fake.ids == []
     assert fake.rules == []
+
+
+def test_windows_covering_the_whole_day_have_no_end(store):
+    # A union of windows can cover every minute, so there is no "until" to show.
+    now = ts_utc(2026, 11, 11, 12)
+    with store as conn:
+        group = make_group(
+            conn,
+            windows=[a_window("00:00", "23:59"), a_window("21:00", "07:00")],
+        )
+        assert budget.bedtime_state(conn, group, TZ, now) == (True, None)
+        state = budget.group_state(conn, group, TZ, now)
+    assert state["status"] == "bedtime"
+    assert state["bedtime_active"] is True
+    assert state["bedtime_until"] is None
+    assert state["blocked_until"] is None
+    assert state["permitted"] is False
