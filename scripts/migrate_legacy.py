@@ -192,8 +192,10 @@ def main() -> int:
     target.commit()
     target.close()
     if args.dry_run:
-        print("dry run: nothing was committed (SQLite transactions above did commit; "
-              "use a copy of the target DB for a true dry run)")
+        print(
+            "dry run: nothing was committed (SQLite transactions above did commit; "
+            "use a copy of the target DB for a true dry run)"
+        )
     print("migration finished")
     return 0
 
