@@ -28,6 +28,10 @@ except Exception:  # pragma: no cover - argon2-cffi is a hard dependency in prac
 LOCK_THRESHOLD = 5
 LOCK_SECONDS = 15 * 60
 
+# Key derivations are CPU- and memory-hungry: let at most two run at a time so
+# a burst of logins cannot exhaust the box.
+HASH_GATE = threading.BoundedSemaphore(2)
+
 
 # --------------------------------------------------------------------------- #
 # hashing
@@ -36,11 +40,12 @@ LOCK_SECONDS = 15 * 60
 
 def hash_secret(secret: str) -> str:
     """argon2id when available, stdlib scrypt otherwise."""
-    if _ARGON2 is not None:
-        return _ARGON2.hash(secret)
-    salt = os.urandom(16)
-    key = hashlib.scrypt(secret.encode(), salt=salt, n=2**14, r=8, p=1, dklen=32)
-    return f"$scrypt$14$8$1${salt.hex()}${key.hex()}"
+    with HASH_GATE:
+        if _ARGON2 is not None:
+            return _ARGON2.hash(secret)
+        salt = os.urandom(16)
+        key = hashlib.scrypt(secret.encode(), salt=salt, n=2**14, r=8, p=1, dklen=32)
+        return f"$scrypt$14$8$1${salt.hex()}${key.hex()}"
 
 
 def _verify_scrypt(stored: str, secret: str) -> bool:
@@ -88,15 +93,16 @@ def _verify_pbkdf2(stored: str, secret: str) -> bool:
 def verify_secret(stored: str, secret: str) -> bool:
     if not stored:
         return False
-    if stored.startswith("$argon2") and _ARGON2 is not None:
-        try:
-            return _ARGON2.verify(stored, secret)
-        except (VerifyMismatchError, InvalidHashError):
-            return False
-    if stored.startswith(("$scrypt$", "scrypt:")):
-        return _verify_scrypt(stored, secret)
-    if stored.startswith("pbkdf2:"):
-        return _verify_pbkdf2(stored, secret)
+    with HASH_GATE:
+        if stored.startswith("$argon2") and _ARGON2 is not None:
+            try:
+                return _ARGON2.verify(stored, secret)
+            except (VerifyMismatchError, InvalidHashError):
+                return False
+        if stored.startswith(("$scrypt$", "scrypt:")):
+            return _verify_scrypt(stored, secret)
+        if stored.startswith("pbkdf2:"):
+            return _verify_pbkdf2(stored, secret)
     return False
 
 

@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -291,12 +291,17 @@ def create_app(
     def body(request_body: Any) -> dict:
         return request_body if isinstance(request_body, dict) else {}
 
-    async def read_json(request: Request) -> dict:
+    async def json_body(request: Request) -> dict:
+        """The request body as a dict, or {} when it is missing or not JSON."""
         try:
             data = await request.json()
         except Exception:
             return {}
         return data if isinstance(data, dict) else {}
+
+    def reconcile(reason: str) -> None:
+        """Ask the reconciler to converge; a busy loop is retried by the loop."""
+        reconciler.run(reason, wait=5)
 
     # ------------------------------------------------------------- lifespan
     @contextlib.asynccontextmanager
@@ -412,14 +417,13 @@ def create_app(
 
     # ------------------------------------------------------------------ auth
     @app.post(f"{base}/api/login")
-    async def api_login(request: Request):
+    def api_login(request: Request, data: dict = Depends(json_body)):
         ip = client_ip(request, settings)
         locked = limiter.locked_for(ip)
         if locked:
             return json_error(
                 429, i18n.t("login.locked", minutes=max(1, locked // 60 + 1)), "locked"
             )
-        data = await read_json(request)
         username = str(data.get("username", "")).strip()
         password = str(data.get("password", ""))
         if not username or not password:
@@ -483,11 +487,10 @@ def create_app(
         return response
 
     @app.post(f"{base}/api/setup")
-    async def api_setup(request: Request):
+    def api_setup(request: Request, data: dict = Depends(json_body)):
         sess = require("admin", request)
         if setup_complete():
             return json_error(400, "setup already completed", "already_setup")
-        data = await read_json(request)
         admin_password = str(data.get("admin_password", ""))
         problem = validate_password(admin_password)
         if problem:
@@ -595,9 +598,8 @@ def create_app(
         }
 
     @app.post(f"{base}/api/groups")
-    async def api_group_create(request: Request):
+    def api_group_create(request: Request, data: dict = Depends(json_body)):
         sess = require("admin", request)
-        data = await read_json(request)
         if sets_removed_mode(data):
             return json_error(400, i18n.t("error.mode_removed"), "mode_removed")
         fields = group_from_payload(data)
@@ -616,13 +618,12 @@ def create_app(
             except budget.ValidationError as exc:
                 return json_error(400, str(exc), "invalid")
             budget.log_event(conn, "group_create", {"group": group.name, "actor": sess.role})
-        reconciler.run("group_create")
+        reconcile("group_create")
         return {"ok": True, "group": group_payload(group, int(time.time()))}
 
     @app.put(f"{base}/api/groups/{{group_id}}")
-    async def api_group_update(group_id: int, request: Request):
+    def api_group_update(group_id: int, request: Request, data: dict = Depends(json_body)):
         sess = require("admin", request)
-        data = await read_json(request)
         if sets_removed_mode(data):
             return json_error(400, i18n.t("error.mode_removed"), "mode_removed")
         with store as conn:
@@ -640,7 +641,7 @@ def create_app(
             except budget.ValidationError as exc:
                 return json_error(400, str(exc), "invalid")
             budget.log_event(conn, "group_update", {"group": group.name, "actor": sess.role})
-        reconciler.run("group_update")
+        reconcile("group_update")
         return {"ok": True, "group": group_payload(group, int(time.time()))}
 
     @app.delete(f"{base}/api/groups/{{group_id}}")
@@ -652,13 +653,12 @@ def create_app(
                 return json_error(404, i18n.t("error.not_found"), "not_found")
             name = budget.delete_group(conn, group_id)
             budget.log_event(conn, "group_delete", {"group": name, "actor": sess.role})
-        reconciler.run("group_delete")
+        reconcile("group_delete")
         return {"ok": True, "deleted": name}
 
     @app.post(f"{base}/api/groups/{{group_id}}/pause")
-    async def api_group_pause(group_id: int, request: Request):
+    def api_group_pause(group_id: int, request: Request, data: dict = Depends(json_body)):
         sess = require("admin", request)
-        data = await read_json(request)
         paused = bool(data.get("paused", True))
         with store as conn:
             try:
@@ -668,13 +668,12 @@ def create_app(
             budget.log_event(
                 conn, "group_pause", {"group": group.name, "paused": paused, "actor": sess.role}
             )
-        reconciler.run("group_pause")
+        reconcile("group_pause")
         return {"ok": True, "group": group_payload(group, int(time.time()))}
 
     @app.post(f"{base}/api/groups/{{group_id}}/bonus")
-    async def api_group_bonus(group_id: int, request: Request):
+    def api_group_bonus(group_id: int, request: Request, data: dict = Depends(json_body)):
         sess = require("admin", request)
-        data = await read_json(request)
         try:
             minutes = int(data.get("minutes", 15))
         except (TypeError, ValueError):
@@ -690,13 +689,12 @@ def create_app(
             budget.log_event(
                 conn, "admin_bonus", {"group": group.name, "minutes": minutes, "actor": sess.role}
             )
-        reconciler.run("admin_bonus")
+        reconcile("admin_bonus")
         return {"ok": True, "group": group_payload(group, int(time.time()))}
 
     @app.post(f"{base}/api/groups/{{group_id}}/free")
-    async def api_group_free(group_id: int, request: Request):
+    def api_group_free(group_id: int, request: Request, data: dict = Depends(json_body)):
         sess = require("admin", request)
-        data = await read_json(request)
         with store as conn:
             group = budget.get_group(conn, group_id)
             if not group or group.deleted:
@@ -713,7 +711,7 @@ def create_app(
                 "admin_free",
                 {"group": group.name, "until": until, "actor": sess.role},
             )
-        reconciler.run("admin_free")
+        reconcile("admin_free")
         return {"ok": True, "until": until, "group": group_payload(group, int(time.time()))}
 
     @app.post(f"{base}/api/groups/{{group_id}}/free/clear")
@@ -725,7 +723,7 @@ def create_app(
                 return json_error(404, i18n.t("error.not_found"), "not_found")
             budget.clear_free(conn, group_id)
             budget.log_event(conn, "admin_free_clear", {"group": group.name, "actor": sess.role})
-        reconciler.run("admin_free_clear")
+        reconcile("admin_free_clear")
         return {"ok": True, "group": group_payload(group, int(time.time()))}
 
     @app.post(f"{base}/api/groups/{{group_id}}/block")
@@ -740,7 +738,7 @@ def create_app(
                 conn, group_id, budget.local_midnight(int(time.time()), settings.zone) + 86400
             )
             budget.log_event(conn, "admin_block", {"group": group.name, "actor": sess.role})
-        reconciler.run("admin_block")
+        reconcile("admin_block")
         return {
             "ok": True,
             "group": group_payload(group, int(time.time())),
@@ -847,9 +845,8 @@ def create_app(
         }
 
     @app.post(f"{base}/api/discover/add")
-    async def api_discover_add(request: Request):
+    def api_discover_add(request: Request, data: dict = Depends(json_body)):
         sess = require("admin", request)
-        data = await read_json(request)
         try:
             group_id = int(data.get("group_id"))
         except (TypeError, ValueError):
@@ -880,14 +877,13 @@ def create_app(
                 "discover_add",
                 {"group": group.name, "domains": domains, "actor": sess.role},
             )
-        reconciler.run("discover_add")
+        reconcile("discover_add")
         return {"ok": True, "group": group_payload(group, int(time.time())), "added": domains}
 
     # -------------------------------------------------------------- admin-ish
     @app.post(f"{base}/api/admin/credentials")
-    async def api_admin_credentials(request: Request):
+    def api_admin_credentials(request: Request, data: dict = Depends(json_body)):
         sess = require("admin", request)
-        data = await read_json(request)
         role = str(data.get("role", ""))
         secret = str(data.get("secret", ""))
         if role == "admin":
@@ -930,9 +926,8 @@ def create_app(
         return {"users": [public_user(r) for r in rows]}
 
     @app.post(f"{base}/api/users")
-    async def api_user_create(request: Request):
+    def api_user_create(request: Request, data: dict = Depends(json_body)):
         sess = require("admin", request)
-        data = await read_json(request)
         username = str(data.get("username", "")).strip()
         password = str(data.get("password", ""))
         role = str(data.get("role", "user")).strip().lower()
@@ -960,9 +955,8 @@ def create_app(
         return {"ok": True, "user": public_user(row)}
 
     @app.post(f"{base}/api/users/{{user_id}}/password")
-    async def api_user_password(user_id: int, request: Request):
+    def api_user_password(user_id: int, request: Request, data: dict = Depends(json_body)):
         sess = require("admin", request)
-        data = await read_json(request)
         password = str(data.get("password", ""))
         row = user_row(user_id)
         if not row:
@@ -983,9 +977,8 @@ def create_app(
         return {"ok": True}
 
     @app.post(f"{base}/api/users/{{user_id}}/role")
-    async def api_user_role(user_id: int, request: Request):
+    def api_user_role(user_id: int, request: Request, data: dict = Depends(json_body)):
         sess = require("admin", request)
-        data = await read_json(request)
         role = str(data.get("role", "")).strip().lower()
         if role not in ("admin", "user"):
             return json_error(400, i18n.t("users.bad_role"), "invalid")
@@ -1008,9 +1001,8 @@ def create_app(
         return {"ok": True, "user": public_user(user_row(user_id))}
 
     @app.post(f"{base}/api/users/{{user_id}}/disabled")
-    async def api_user_disabled(user_id: int, request: Request):
+    def api_user_disabled(user_id: int, request: Request, data: dict = Depends(json_body)):
         sess = require("admin", request)
-        data = await read_json(request)
         disabled = bool(data.get("disabled", True))
         with store as conn:
             row = user_row(user_id)
@@ -1058,7 +1050,7 @@ def create_app(
             budget.reset_today(conn, group_id, settings.zone)
             budget.clear_force_block(conn, group_id)
             budget.log_event(conn, "admin_reset", {"group": group.name, "actor": sess.username})
-        reconciler.run("admin_reset")
+        reconcile("admin_reset")
         with store as conn:
             group = budget.get_group(conn, group_id)
         return {"ok": True, "group": group_payload(group, int(time.time()))}
@@ -1072,7 +1064,7 @@ def create_app(
                 return json_error(404, i18n.t("error.not_found"), "not_found")
             budget.clear_force_block(conn, group_id)
             budget.log_event(conn, "admin_unblock", {"group": group.name, "actor": sess.username})
-        reconciler.run("admin_unblock")
+        reconcile("admin_unblock")
         with store as conn:
             group = budget.get_group(conn, group_id)
         return {"ok": True, "group": group_payload(group, int(time.time()))}
