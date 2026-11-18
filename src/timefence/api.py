@@ -129,8 +129,14 @@ def create_app(
         autoescape=select_autoescape(["html"]),
     )
 
-    if settings.tz in {"UTC", "Etc/UTC"}:
-        log.warning("TZ is UTC; budgets reset at UTC midnight. Set TZ to your IANA timezone.")
+    tz_labels = {"env": "TZ", "system": "system", "default": "default"}
+    log.info(
+        "Timezone: %s (from %s)",
+        settings.tz,
+        tz_labels.get(settings.tz_source, settings.tz_source),
+    )
+    if settings.tz_source == "default":
+        log.warning("no timezone is configured; budgets reset at UTC midnight")
 
     services_cache: dict[str, Any] = {"ts": 0.0, "data": []}
     querylog_cache: dict[str, Any] = {"ts": 0.0, "data": [], "minutes": 0}
@@ -320,7 +326,7 @@ def create_app(
             "warnings": sorted(
                 reconciler.warnings
                 | {notice for notice in [migration_notice()] if notice}
-                | ({"tz_utc"} if settings.tz in {"UTC", "Etc/UTC"} else set())
+                | ({"tz_utc"} if settings.tz_source == "default" else set())
             ),
         }
         return payload

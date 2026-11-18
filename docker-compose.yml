@@ -28,7 +28,7 @@ services:
       ADGUARD_USER: admin
       ADGUARD_PASSWORD_FILE: /run/secrets/adguard_password
       BASE_PATH: /
-      TZ: UTC                  # CHANGE ME: your IANA timezone, e.g. Europe/London
+      # TZ: Europe/London      # optional: defaults to the host timezone
       LISTEN_HOST: 0.0.0.0      # bridge networking needs this; keep the port bound below
       LISTEN_PORT: "8099"
       DATA_DIR: /data
@@ -38,6 +38,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - timefence-data:/data
+      # - /etc/localtime:/etc/localtime:ro   # follow the host timezone
     ports:
       - "127.0.0.1:8099:8099"
     secrets:

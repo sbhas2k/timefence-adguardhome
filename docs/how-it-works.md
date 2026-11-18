@@ -44,6 +44,14 @@ budget resets at local midnight — no cron job is involved, and the day boundar
 is computed from a date, not from `now + 86400`, so daylight-saving days (23 or
 25 hours) are correct.
 
+The effective timezone is, in order: the `TZ` environment variable when set
+(an unknown name stops the start with a clear error), the host's
+`/etc/timezone` or the resolved `/etc/localtime`, and finally UTC. The fallback
+is the only case that shows the `tz_utc` warning; an explicit `TZ=UTC` or a
+system timezone that happens to be UTC is a deliberate choice. `/etc/timezone`
+and `/etc/localtime` are compared against the local zoneinfo database, so a name
+the system does not know is ignored.
+
 A recorded usage value never goes down: a negative bonus can lower the cap for
 *future* charges but cannot erase time that was already metered.
 

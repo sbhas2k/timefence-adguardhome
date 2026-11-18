@@ -123,7 +123,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "admin.adguard_fail": "Not reachable: {detail}",
         "admin.version": "Version",
         "admin.setup_complete": "Setup completed",
-        "warn.tz_utc": "TZ is UTC, so budgets reset at UTC midnight. Set TZ to your IANA timezone.",
+        "warn.tz_utc": "No timezone is configured, so budgets reset at UTC midnight. Set TZ to your IANA timezone, for example Europe/London.",
         "warn.querylog_disabled": "AdGuard's query log is off, so usage cannot be counted.",
         "warn.querylog_retention_short": "AdGuard keeps the query log for less than an hour, so usage may be under-counted.",
         "warn.querylog_truncated": "The query log had more entries than TimeFence could read; some usage may be missing.",

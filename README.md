@@ -116,7 +116,7 @@ local runs). `install.sh` writes `/etc/timefence/timefence.env` (mode 600).
 | `ADGUARD_PASSWORD` | – | AdGuard Home password (inline) |
 | `ADGUARD_PASSWORD_FILE` | – | File containing the password (wins over the inline value) |
 | `BASE_PATH` | `/` | URL prefix the app is served under, e.g. `/timer` |
-| `TZ` | `UTC` | IANA timezone for budgets and the midnight reset (**set yours**) |
+| `TZ` | *host timezone* | IANA timezone for budgets and the midnight reset; unset follows the host |
 | `LISTEN_HOST` | `127.0.0.1` | Bind address (the image and `install.sh` keep it on loopback) |
 | `LISTEN_PORT` | `8099` | Bind port |
 | `DATA_DIR` | `/var/lib/timefence` | SQLite database + session secret (mode 0700 / 0600) |
@@ -125,8 +125,11 @@ local runs). `install.sh` writes `/etc/timefence/timefence.env` (mode 600).
 | `SECURE_COOKIES` | `true` | `false` only for plain-HTTP development |
 | `LOG_LEVEL` | `INFO` | `DEBUG`/`INFO`/`WARNING`/`ERROR` |
 
-`TZ` defaults to `UTC`; TimeFence logs a warning and shows an admin banner until
-you set your IANA timezone.
+`TZ` is optional. When it is not set, TimeFence reads the host's timezone
+(`/etc/timezone`, then the real path of `/etc/localtime`) and only falls back to
+UTC when neither is available; that fallback logs a warning and shows an admin
+banner. Setting `TZ=UTC` explicitly, or a host whose system timezone is UTC, is
+a choice and does not warn.
 
 `timefence check` validates the configuration and prints the AdGuard connection
 result without starting the web server.

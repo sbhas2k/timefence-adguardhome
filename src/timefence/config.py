@@ -11,9 +11,84 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 log = logging.getLogger("timefence.config")
 
+TIMEZONE_FILE = Path("/etc/timezone")
+LOCALTIME_FILE = Path("/etc/localtime")
+
 
 class ConfigError(RuntimeError):
     """Raised when the environment does not describe a usable configuration."""
+
+
+def _zoneinfo_key(path: str | Path) -> str | None:
+    """'/usr/share/zoneinfo/Europe/London' -> 'Europe/London'."""
+    text = str(path).replace("\\", "/")
+    marker = "zoneinfo/"
+    index = text.rfind(marker)
+    if index < 0:
+        return None
+    key = text[index + len(marker) :].strip("/")
+    return key or None
+
+
+def _normalise_zone(value: str) -> str:
+    """Accept ':Europe/London' and '/usr/share/zoneinfo/Europe/London' too."""
+    text = value.strip()
+    if text.startswith(":"):
+        text = text[1:].strip()
+    if text.startswith("/") or "zoneinfo/" in text.replace("\\", "/"):
+        key = _zoneinfo_key(text)
+        if key:
+            return key
+    return text
+
+
+def _valid_zone(name: str) -> bool:
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return False
+    return True
+
+
+def _file_zone(path: Path) -> str | None:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return None
+    if not lines or not lines[0].strip():
+        return None
+    return _normalise_zone(lines[0]) or None
+
+
+def _localtime_zone(path: Path) -> str | None:
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return None
+    return _zoneinfo_key(resolved)
+
+
+def detect_timezone(
+    value: str | None,
+    *,
+    timezone_file: Path = TIMEZONE_FILE,
+    localtime_file: Path = LOCALTIME_FILE,
+) -> tuple[str, str]:
+    """Return (IANA name, source), source being 'env', 'system' or 'default'.
+
+    An explicit TZ always wins (and an unknown one is an error). Otherwise the
+    host's `/etc/timezone` and then the resolved `/etc/localtime` are tried, and
+    only a name the local zoneinfo database knows is accepted.
+    """
+    if value is not None and str(value).strip():
+        name = _normalise_zone(str(value))
+        if not _valid_zone(name):
+            raise ConfigError(f"TZ: unknown timezone {value!r}")
+        return name, "env"
+    for candidate in (_file_zone(timezone_file), _localtime_zone(localtime_file)):
+        if candidate and _valid_zone(candidate):
+            return candidate, "system"
+    return "UTC", "default"
 
 
 def _bool(value: str | None, default: bool) -> bool:
@@ -60,6 +135,7 @@ class Settings:
     adguard_password: str = field(default="", repr=False)
     base_path: str = "/"
     tz: str = "UTC"
+    tz_source: str = "default"  # env | system | default
     listen_host: str = "127.0.0.1"
     listen_port: int = 8099
     data_dir: Path = Path("/var/lib/timefence")
@@ -77,8 +153,19 @@ class Settings:
         return self.data_dir / "timefence.db"
 
     @classmethod
-    def from_env(cls, env: dict[str, str] | None = None) -> Settings:
+    def from_env(
+        cls,
+        env: dict[str, str] | None = None,
+        *,
+        timezone_file: Path | None = None,
+        localtime_file: Path | None = None,
+    ) -> Settings:
         e = dict(os.environ if env is None else env)
+        tz_name, tz_source = detect_timezone(
+            e.get("TZ"),
+            timezone_file=TIMEZONE_FILE if timezone_file is None else timezone_file,
+            localtime_file=LOCALTIME_FILE if localtime_file is None else localtime_file,
+        )
 
         password = e.get("ADGUARD_PASSWORD", "")
         password_file = e.get("ADGUARD_PASSWORD_FILE", "").strip()
@@ -95,7 +182,8 @@ class Settings:
             adguard_user=e.get("ADGUARD_USER") or "admin",
             adguard_password=password,
             base_path=normalize_base_path(e.get("BASE_PATH")),
-            tz=(e.get("TZ") or "UTC").strip(),
+            tz=tz_name,
+            tz_source=tz_source,
             listen_host=e.get("LISTEN_HOST") or "127.0.0.1",
             listen_port=_int(e.get("LISTEN_PORT"), 8099),
             data_dir=Path(e.get("DATA_DIR") or "/var/lib/timefence"),
@@ -146,6 +234,7 @@ class Settings:
             "adguard_password": "***" if self.adguard_password else "(unset)",
             "base_path": self.base_path,
             "tz": self.tz,
+            "tz_source": self.tz_source,
             "listen": f"{self.listen_host}:{self.listen_port}",
             "data_dir": str(self.data_dir),
             "trusted_proxies": [str(n) for n in self.trusted_proxies],

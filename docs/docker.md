@@ -102,8 +102,18 @@ upstreams, cache settings) lives in those two directories, so it comes along.
 ## Gotchas
 
 - **`TZ`** matters for the midnight reset, AdGuard's *"Local"* schedule
-  timezone and container logs. Set it explicitly (the examples carry a CHANGE ME
-  comment).
+  timezone and container logs. Set it explicitly when you want a fixed zone
+  (`TZ: Europe/London`); leave it unset to follow the host. For that, mount the
+  host's zone files read-only:
+
+  ```yaml
+  volumes:
+    - /etc/localtime:/etc/localtime:ro
+    - /etc/timezone:/etc/timezone:ro   # optional
+  ```
+
+  Without either, the container falls back to UTC and the admin banner says so.
+  The image installs the tz database, so IANA names resolve inside it.
 - **Loopback binding** is not the same inside a container: `127.0.0.1` in a
   bridge container is the container itself. Use `host.docker.internal` +
   `extra_hosts` only if AdGuard listens on a non-loopback address.

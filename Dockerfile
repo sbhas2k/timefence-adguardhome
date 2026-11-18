@@ -22,13 +22,13 @@ COPY deploy/docker-entrypoint.sh /usr/local/bin/timefence-entrypoint
 RUN pip install --no-deps . && rm -rf /app/src && chmod 755 /usr/local/bin/timefence-entrypoint
 
 USER timefence:timefence
+# TZ is optional: without it the app follows the host timezone when you mount
+# /etc/localtime (see docs/docker.md), and otherwise falls back to UTC.
 ENV DATA_DIR=/data \
     BASE_PATH=/ \
     LISTEN_HOST=127.0.0.1 \
     LISTEN_PORT=8099 \
     SECURE_COOKIES=true \
-    # CHANGE ME: your IANA timezone, e.g. Europe/London
-    TZ=UTC \
     LOG_LEVEL=INFO
 
 EXPOSE 8099

@@ -19,7 +19,7 @@ services:
       ADGUARD_USER: admin
       ADGUARD_PASSWORD_FILE: /run/secrets/adguard.pass
       BASE_PATH: /
-      TZ: UTC                  # CHANGE ME: your IANA timezone, e.g. Europe/London
+      # TZ: Europe/London      # optional: defaults to the host timezone
       LISTEN_HOST: 127.0.0.1
       LISTEN_PORT: "8099"
       DATA_DIR: /data
@@ -29,6 +29,7 @@ services:
     volumes:
       - timefence-data:/data
       - /etc/timefence/adguard.pass:/run/secrets/adguard.pass:ro
+      # - /etc/localtime:/etc/localtime:ro   # follow the host timezone
     logging:
       driver: journald
       options:
