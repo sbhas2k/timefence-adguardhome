@@ -275,3 +275,46 @@ def test_auto_mode_blocks_for_the_rest_of_the_day_then_allows_tomorrow(store, fa
         assert budget.is_permitted(conn, group, TZ, tomorrow) is True
     reconciler.sync_services(tomorrow)
     assert fake.ids == []
+
+
+# --------------------------------------------------------------------------- #
+# resilience, damaged rule sections and release
+# --------------------------------------------------------------------------- #
+
+
+def test_unexpected_exception_does_not_abort_the_run(store, fake, monkeypatch):
+    now = int(time.time())
+    with store as conn:
+        group = add_group(conn, services=("youtube",), domains=("example.com",))
+        budget.set_force_block(conn, group.id, now + 3600)
+
+    def boom(*args, **kwargs):
+        raise ValueError("broken")
+
+    monkeypatch.setattr(fake, "blocked_services", boom)
+    result = Reconciler(store, fake, TZ).run("test")
+
+    assert "internal error: ValueError" in result["errors"]
+    assert "||example.com^" in fake.rules  # the domain phase still ran
+
+
+def test_unbalanced_begin_keeps_foreign_rules():
+    result = build_rules(["||f1^", SECTION_BEGIN, "||a.com^", "||f2^"], ["b.com"])
+    assert result == ["||f1^", "||a.com^", "||f2^", SECTION_BEGIN, "||b.com^", SECTION_END]
+
+
+def test_stray_end_is_dropped_alone():
+    assert build_rules(["||f1^", SECTION_END, "||f2^"], []) == ["||f1^", "||f2^"]
+
+
+def test_release_removes_only_owned_state(store, fake):
+    with store as conn:
+        add_group(conn, services=("youtube",), domains=("example.com",))
+    fake.ids = ["youtube", "tiktok"]
+    fake.rules = ["||foreign.example^", SECTION_BEGIN, "||example.com^", SECTION_END]
+
+    removed = Reconciler(store, fake, TZ).release()
+
+    assert "youtube" in removed["services"]
+    assert fake.ids == ["tiktok"]  # a foreign service survives
+    assert fake.rules == ["||foreign.example^"]  # so does a foreign rule

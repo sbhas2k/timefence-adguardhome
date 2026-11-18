@@ -9,6 +9,8 @@ from fastapi.testclient import TestClient
 
 from timefence.api import create_app
 
+from .conftest import FakeAdGuard
+
 ADMIN = {"username": "admin", "password": "admin"}
 ADMIN2 = {"username": "admin", "password": "correct horse battery"}
 
@@ -56,3 +58,101 @@ def test_healthz_answers_while_adguard_is_slow(settings, fake):
         assert not failures
         assert response.status_code == 200
         assert elapsed < 1.5, f"/healthz took {elapsed:.2f}s while AdGuard was slow"
+
+
+def test_shutdown_blocks_every_group(settings, fake):
+    app = create_app(settings, adguard=fake)
+    with TestClient(app) as client:
+        sign_in_as_admin(client)
+        created = client.post(
+            "/api/groups",
+            json={
+                "name": "YouTube",
+                "weekday_minutes": 60,
+                "services": ["youtube"],
+                "domains_text": "example.com",
+            },
+        )
+        assert created.status_code == 200, created.text
+        assert fake.ids == []  # budget left: allowed
+
+    assert fake.ids == ["youtube"]
+    assert "||example.com^" in fake.rules
+
+
+def test_shutdown_block_wins_over_a_running_loop(settings, fake):
+    app = create_app(settings, adguard=fake)
+    reconciler = app.state.reconciler
+    with TestClient(app) as client:
+        sign_in_as_admin(client)
+        created = client.post(
+            "/api/groups",
+            json={"name": "YouTube", "weekday_minutes": 60, "services": ["youtube"]},
+        )
+        assert created.status_code == 200, created.text
+        fake.ids = ["youtube"]  # the next run has an unblock write pending
+        fake.delay = 1.0
+        thread = threading.Thread(target=reconciler.run, args=("loop",), name="slow-run")
+        thread.start()
+        time.sleep(0.1)
+
+    thread.join(30)
+    fake.delay = 0.0
+    assert not thread.is_alive()
+    assert "youtube" in fake.ids
+    services_calls = [entry for entry in fake.calls if entry[0] == "services"]
+    assert services_calls and "youtube" in services_calls[-1][1]
+
+
+def test_healthz_degraded_when_sync_is_stale(settings, fake):
+    app = create_app(settings, adguard=fake)
+    with TestClient(app) as client:
+        assert client.get("/healthz").status_code == 200
+
+        app.state.reconciler.last_ok_ts = time.time() - 3 * settings.reconcile_interval - 1
+        response = client.get("/healthz")
+        assert response.status_code == 503
+        assert response.json()["status"] == "degraded"
+
+        app.state.reconciler.last_ok_ts = time.time()
+        assert client.get("/healthz").status_code == 200
+
+
+def test_healthz_degraded_when_adguard_fails(settings, fake):
+    fake.fail_all = True
+    app = create_app(settings, adguard=fake)
+    with TestClient(app) as client:
+        response = client.get("/healthz")
+        assert response.status_code == 503
+        assert response.json()["status"] == "degraded"
+
+
+def test_admin_state_reports_sync_and_warnings(settings, fake):
+    app = create_app(settings, adguard=fake)
+    with TestClient(app) as client:
+        sign_in_as_admin(client)
+        state = client.get("/api/state").json()
+        assert isinstance(state["last_sync"], int)
+        assert state["warnings"] == []
+
+        app.state.reconciler.warnings.add("rules_section_damaged")
+        state = client.get("/api/state").json()
+        assert state["warnings"] == ["rules_section_damaged"]
+
+
+def test_restart_restores_true_state_after_shutdown_block(settings, fake):
+    app = create_app(settings, adguard=fake)
+    with TestClient(app) as client:
+        sign_in_as_admin(client)
+        created = client.post(
+            "/api/groups",
+            json={"name": "YouTube", "weekday_minutes": 60, "services": ["youtube"]},
+        )
+        assert created.status_code == 200, created.text
+        assert fake.ids == []
+    assert fake.ids == ["youtube"]  # a clean stop blocks every managed group
+
+    fake2 = FakeAdGuard()
+    app2 = create_app(settings, adguard=fake2)
+    with TestClient(app2):
+        assert fake2.ids == []  # budget left: allowed again
