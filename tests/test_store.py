@@ -103,3 +103,48 @@ def test_failed_group_update_rolls_back(settings, fake):
         after = [row for row in rows if row["name"] == "Games"][0]
         assert after["services"] == ["roblox"]
         assert after["domains"] == ["kept.example"]
+
+
+def test_no_route_handler_is_a_coroutine(settings, fake):
+    import inspect
+
+    from fastapi.routing import APIRoute
+
+    app = create_app(settings, adguard=fake)
+    store = app.state.store
+    try:
+        routes = [route for route in app.routes if isinstance(route, APIRoute)]
+        assert routes
+        for route in routes:
+            assert not inspect.iscoroutinefunction(route.endpoint), route.path
+    finally:
+        store.close()
+
+
+def test_no_store_use_in_coroutines():
+    import ast
+    from pathlib import Path
+
+    from timefence import api
+
+    source = Path(api.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    offenders: list[int] = []
+
+    def walk(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef | ast.Lambda):
+                continue  # plain functions run in the threadpool; they may take the lock
+            if isinstance(child, ast.With | ast.AsyncWith):
+                for item in child.items:
+                    expression = item.context_expr
+                    if isinstance(expression, ast.Name) and expression.id == "store":
+                        offenders.append(child.lineno)
+            if isinstance(child, ast.Name) and child.id == "conn":
+                offenders.append(child.lineno)
+            walk(child)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef):
+            walk(node)
+    assert offenders == []
