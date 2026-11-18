@@ -1,0 +1,12 @@
+[Unit]
+Description=Allow TimeFence's DNS port only from the home address (DDNS)
+Documentation=https://github.com/sbhas2k/timefence-adguardhome/blob/main/docs/remote-vm.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# CHANGE ME: the DDNS hostname your router (or ISP tool) keeps up to date.
+# The helper re-resolves it and rewrites only the port-53 rules; on any failure
+# it leaves the existing rules alone and exits non-zero (the timer retries).
+ExecStart=/usr/local/bin/ddns-allowlist.sh ddns.example.org

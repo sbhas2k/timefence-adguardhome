@@ -27,6 +27,8 @@ jobs:
         run: |
           ruff check src tests scripts
           ruff format --check src tests scripts
+      - name: Shellcheck DDNS helper
+        run: shellcheck deploy/ddns-allowlist.sh
       - name: Tests
         run: pytest -q
 
