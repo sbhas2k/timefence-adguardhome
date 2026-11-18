@@ -1,4 +1,4 @@
-"""HTTP flows: users, forced setup, CSRF, groups, modes, guard, sessions, fail-safe."""
+"""HTTP flows: users, forced setup, CSRF, groups, guard, fail-safe."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from timefence.api import create_app
 
-from .conftest import FakeAdGuard, make_entry
+from .conftest import FakeAdGuard, locked_conn, make_entry
 
 ADMIN = {"username": "admin", "password": "admin"}
 ADMIN2 = {"username": "admin", "password": "correct horse battery"}
@@ -27,7 +27,7 @@ def complete_setup(client):
 
 
 def make_group(client, **overrides):
-    payload = {"name": "Games", "weekday_minutes": 45, "services": ["roblox"], "mode": "session"}
+    payload = {"name": "Games", "weekday_minutes": 45, "services": ["roblox"]}
     payload.update(overrides)
     response = client.post("/api/groups", json=payload)
     assert response.status_code == 200, response.text
@@ -64,7 +64,7 @@ def test_setup_validates_and_completes(admin):
 
 def test_csrf_is_required_for_writes(ready):
     client = ready["client"]
-    response = client.post("/api/session/stop", json={"group_id": 1}, headers={"X-CSRF-Token": "x"})
+    response = client.post("/api/groups/1/block", json={}, headers={"X-CSRF-Token": "x"})
     assert response.status_code == 403
     assert response.json()["code"] == "csrf"
 
@@ -161,28 +161,50 @@ def test_auto_mode_is_allowed_by_default(ready, fake):
     group = client.post(
         "/api/groups", json={"name": "YouTube", "weekday_minutes": 60, "services": ["youtube"]}
     ).json()["group"]
-    assert group["mode"] == "auto"
     assert group["permitted"] is True
     assert fake.ids == []  # nothing blocked: ads only
     assert fake.rules == []
 
 
-def test_session_mode_is_blocked_by_default(ready, fake):
+def test_session_mode_is_rejected(ready):
     client = ready["client"]
-    group = make_group(client, services=["youtube"])
-    assert group["permitted"] is False
-    assert fake.ids == ["youtube"]
-
-    client.put(
-        f"/api/groups/{group['id']}",
-        json={
-            "name": group["name"],
-            "weekday_minutes": 60,
-            "services": ["youtube"],
-            "mode": "auto",
-        },
+    created = client.post(
+        "/api/groups",
+        json={"name": "YouTube", "weekday_minutes": 60, "services": ["youtube"], "mode": "session"},
     )
-    assert fake.ids == []  # switched to auto -> unblocked
+    assert created.status_code == 400
+    assert created.json()["code"] == "mode_removed"
+
+    group = client.post(
+        "/api/groups", json={"name": "YouTube", "weekday_minutes": 60, "services": ["youtube"]}
+    ).json()["group"]
+    updated = client.put(
+        f"/api/groups/{group['id']}",
+        json={"name": "YouTube", "weekday_minutes": 30, "mode": "session"},
+    )
+    assert updated.status_code == 400
+    assert updated.json()["code"] == "mode_removed"
+
+
+def test_session_endpoints_are_gone(ready):
+    client = ready["client"]
+    group = make_group(client)
+    started = client.post("/api/session/start", json={"group_id": group["id"], "minutes": 15})
+    stopped = client.post("/api/session/stop", json={"group_id": group["id"]})
+    assert started.status_code in {404, 405}
+    assert stopped.status_code in {404, 405}
+
+
+def test_state_has_no_session_fields(ready):
+    client = ready["client"]
+    make_group(client)
+    state = client.get("/api/state").json()
+    assert "sessions_today" not in state
+    assert "session_options" not in state["app"]
+    for group in state["groups"]:
+        assert "active_session" not in group
+        assert "mode" not in group
+    assert "session_options" not in client.get("/api/meta").json()
 
 
 def test_group_crud(ready, fake):
@@ -195,17 +217,14 @@ def test_group_crud(ready, fake):
             "weekday_minutes": 30,
             "weekend_minutes": 45,
             "services": ["youtube"],
-            "mode": "session",
         },
     )
     assert updated.status_code == 200
     assert updated.json()["group"]["weekend_minutes"] == 45
 
+    assert fake.ids == []  # allowed until the daily minutes are used
     assert client.post(f"/api/groups/{group['id']}/pause", json={"paused": True}).status_code == 200
-    assert (
-        client.post("/api/session/start", json={"group_id": group["id"], "minutes": 15}).status_code
-        == 409
-    )  # paused
+    assert fake.ids == ["youtube"]
 
     assert client.delete(f"/api/groups/{group['id']}").status_code == 200
     assert fake.ids == []
@@ -219,11 +238,13 @@ def test_domains_are_normalised_and_unique(ready, fake):
             "name": "Games",
             "weekday_minutes": 45,
             "domains_text": "https://Example-Game.com/play?x=1",
-            "mode": "session",
         },
     )
     assert first.status_code == 200, first.text
     assert first.json()["group"]["domains"] == ["example-game.com"]
+    assert fake.rules == []  # allowed, so nothing is blocked yet
+
+    client.post(f"/api/groups/{first.json()['group']['id']}/block", json={})
     assert "||example-game.com^" in fake.rules
 
     second = client.post(
@@ -290,67 +311,15 @@ def test_discover_hides_noise_and_managed_domains(ready, fake):
 def test_test_endpoint_reports_blocked_hosts(ready, fake):
     client = ready["client"]
     group = make_group(client, services=["roblox"])
+    client.post(f"/api/groups/{group['id']}/block", json={})
     results = client.get(f"/api/groups/{group['id']}/test").json()["results"]
     hosts = {r["host"]: r["blocked"] for r in results}
     assert hosts["roblox.com"] is True
 
 
 # --------------------------------------------------------------------------- #
-# sessions (session mode) and fail-safety
+# quick actions
 # --------------------------------------------------------------------------- #
-
-
-def test_session_start_unblocks_then_blocks_at_expiry(ready, fake):
-    client = ready["client"]
-    group = make_group(
-        client, weekday_minutes=2, services=["roblox"], domains_text="example-game-test.com"
-    )
-    assert fake.ids == ["roblox"]
-    assert "||example-game-test.com^" in fake.rules
-
-    started = client.post("/api/session/start", json={"group_id": group["id"], "minutes": 60})
-    assert started.status_code == 200, started.text
-    assert started.json()["session"]["planned_seconds"] == 120
-    assert fake.ids == []
-    assert fake.rules == []
-
-    conn = client.app.state.conn
-    conn.execute("UPDATE sessions SET started_at=started_at-180 WHERE ended_at IS NULL")
-    conn.commit()
-    client.app.state.reconciler.run("test")
-    assert fake.ids == ["roblox"]
-    assert "||example-game-test.com^" in fake.rules
-    entry = client.get("/api/state").json()["groups"][0]
-    assert entry["remaining_minutes"] <= 0.5
-    assert entry["active_session"] is None
-
-
-def test_stop_bills_only_used_minutes(ready, fake):
-    client = ready["client"]
-    group = make_group(client, weekday_minutes=60)
-    client.post("/api/session/start", json={"group_id": group["id"], "minutes": 15})
-    conn = client.app.state.conn
-    conn.execute("UPDATE sessions SET started_at=started_at-90 WHERE ended_at IS NULL")
-    conn.commit()
-    stopped = client.post("/api/session/stop", json={"group_id": group["id"]}).json()
-    assert stopped["stopped"][0]["used_seconds"] >= 90
-    assert fake.ids == ["roblox"]
-
-
-def test_fail_safe_restart_blocks_everything(settings, fake):
-    app = create_app(settings, adguard=fake)
-    with TestClient(app) as client:
-        complete_setup(client)
-        group = make_group(client, weekday_minutes=60)
-        client.post("/api/session/start", json={"group_id": group["id"], "minutes": 15})
-        assert fake.ids == []
-
-    fake2 = FakeAdGuard()
-    app2 = create_app(settings, adguard=fake2)
-    with TestClient(app2) as client2:
-        rows = list(client2.app.state.conn.execute("SELECT end_reason FROM sessions"))
-        assert rows and all(row["end_reason"] == "service_restart" for row in rows)
-        assert fake2.ids == ["roblox"]
 
 
 def test_block_now_sets_a_force_block(ready, fake):
@@ -397,7 +366,6 @@ def test_groups_can_be_owned_and_users_only_see_their_own(ready, fake):
             "name": "Kid1 games",
             "weekday_minutes": 20,
             "services": ["roblox"],
-            "mode": "session",
             "owner_id": kid1["id"],
         },
     ).json()["group"]
@@ -409,7 +377,6 @@ def test_groups_can_be_owned_and_users_only_see_their_own(ready, fake):
             "name": "Kid2 games",
             "weekday_minutes": 20,
             "services": ["youtube"],
-            "mode": "session",
             "owner_id": kid2["id"],
         },
     ).json()["group"]
@@ -427,15 +394,7 @@ def test_groups_can_be_owned_and_users_only_see_their_own(ready, fake):
     kid_state = client.get("/api/state").json()
     assert {g["name"] for g in kid_state["groups"]} == {"Kid1 games", "Shared"}
 
-    # and cannot touch kid2's group
-    assert (
-        client.post("/api/session/start", json={"group_id": other["id"], "minutes": 15}).status_code
-        == 404
-    )
-    assert (
-        client.post("/api/session/start", json={"group_id": own["id"], "minutes": 15}).status_code
-        == 200
-    )
+    assert other["name"] == "Kid2 games"
 
     # admin can reassign a group (log back in as admin first)
     login(client, "admin", "correct horse battery")
@@ -445,7 +404,6 @@ def test_groups_can_be_owned_and_users_only_see_their_own(ready, fake):
             "name": "Kid1 games",
             "weekday_minutes": 20,
             "services": ["roblox"],
-            "mode": "session",
             "owner_id": kid2["id"],
         },
     )
@@ -477,13 +435,13 @@ def test_reset_today_clears_metered_usage(ready, fake):
     group = client.post(
         "/api/groups", json={"name": "YouTube", "weekday_minutes": 10, "services": ["youtube"]}
     ).json()["group"]
-    conn = client.app.state.conn
     from timefence import budget
 
     now = int(__import__("time").time())
     day = budget.day_str(now, client.app.state.settings.zone)
-    budget.add_bonus(conn, group["id"], 15, client.app.state.settings.zone)  # 10 + 15 min
-    budget.add_metered_seconds(conn, group["id"], day, 1500)  # use it all
+    with locked_conn(client.app) as conn:
+        budget.add_bonus(conn, group["id"], 15, client.app.state.settings.zone)  # 10 + 15 min
+        budget.add_metered_seconds(conn, group["id"], day, 1500)  # use it all
     client.app.state.reconciler.run("test")
     assert client.get("/api/state").json()["groups"][0]["permitted"] is False
     assert fake.ids == ["youtube"]

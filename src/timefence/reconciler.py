@@ -153,8 +153,6 @@ class Reconciler:
         if stamped:
             day = budget.day_str(now, self.tz)
             for group in budget.list_groups(self.conn):
-                if group.mode != "auto":
-                    continue
                 if not budget.is_permitted(self.conn, group, self.tz, now):
                     continue
                 suffixes = self.matcher(group)
@@ -200,19 +198,6 @@ class Reconciler:
         charged = self.meter(now, reason)
         if charged:
             result["metered_groups"] = charged
-        closed = budget.close_expired(self.conn, now)
-        if closed:
-            result["closed"] = len(closed)
-            for row in closed:
-                budget.log_event(
-                    self.conn,
-                    "session_end",
-                    {
-                        "group_id": row["group_id"],
-                        "reason": "expired",
-                        "used_seconds": row["used_seconds"],
-                    },
-                )
         try:
             changed_services = self.sync_services(now)
             if changed_services:

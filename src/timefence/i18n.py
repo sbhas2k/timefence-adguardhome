@@ -204,6 +204,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "error.already_active": "A session is already running.",
         "error.paused": "This group is paused.",
         "error.not_found": "Not found.",
+        "error.mode_removed": "Session mode was removed in 0.4.0. Groups are allowed until their daily minutes are used.",
         "error.adguard": "AdGuard Home did not answer: {detail}",
         "error.invalid_group": "{detail}",
     }

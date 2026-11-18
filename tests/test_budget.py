@@ -30,7 +30,6 @@ def make_group(
     domains=(),
     name="YouTube",
     paused=False,
-    mode="session",
 ):
     return budget.create_group(
         conn,
@@ -41,7 +40,6 @@ def make_group(
         services=list(services),
         domains=list(domains),
         paused=paused,
-        mode=mode,
     )
 
 
@@ -117,64 +115,13 @@ def test_day_boundary_and_local_midnight():
 def test_usage_does_not_leak_across_midnight(conn):
     group = make_group(conn, minutes=10)
     before_midnight = ts_on(2026, 11, 13, 23, 50)
-    row = budget.start_session(conn, group, 5, TZ, actor="user", now=before_midnight)
-    budget.close_session(conn, row["id"], "expired", before_midnight + 300)
+    budget.add_metered_seconds(conn, group.id, budget.day_str(before_midnight, TZ), 300)
 
     today = budget.day_str(before_midnight, TZ)
     tomorrow = budget.day_str(before_midnight + 86400, TZ)
-    assert budget.used_seconds(conn, group, today, TZ, before_midnight + 400) == 300
-    assert budget.used_seconds(conn, group, tomorrow, TZ, before_midnight + 86400) == 0
+    assert budget.used_seconds(conn, group, today) == 300
+    assert budget.used_seconds(conn, group, tomorrow) == 0
     assert budget.remaining_seconds(conn, group, TZ, before_midnight + 86400) == 600
-
-
-# --------------------------------------------------------------------------- #
-# sessions
-# --------------------------------------------------------------------------- #
-
-
-def test_session_is_capped_at_remaining_budget(conn):
-    group = make_group(conn, minutes=2)
-    now = ts_on(2026, 11, 11, 12)
-    session = budget.start_session(conn, group, 60, TZ, actor="user", now=now)
-    assert session["planned_seconds"] == 120
-    assert budget.remaining_seconds(conn, group, TZ, now + 120) == 0
-
-
-def test_stop_bills_only_elapsed_time(conn):
-    group = make_group(conn, minutes=60)
-    now = ts_on(2026, 11, 11, 12)
-    session = budget.start_session(conn, group, 15, TZ, actor="user", now=now)
-    assert session["planned_seconds"] == 900
-    closed = budget.close_session(conn, session["id"], "stopped", now + 90)
-    assert closed["used_seconds"] == 90
-    assert budget.remaining_seconds(conn, group, TZ, now + 90) == 3600 - 90
-
-
-def test_expiry_charges_the_planned_time(conn):
-    group = make_group(conn, minutes=60)
-    now = ts_on(2026, 11, 11, 12)
-    session = budget.start_session(conn, group, 15, TZ, actor="user", now=now)
-    closed = budget.close_expired(conn, now + 15 * 60)
-    assert [c["id"] for c in closed] == [session["id"]]
-    assert closed[0]["used_seconds"] == 900
-    assert closed[0]["end_reason"] == "expired"
-
-
-def test_no_budget_left_and_double_start(conn):
-    group = make_group(conn, minutes=1)
-    now = ts_on(2026, 11, 11, 12)
-    budget.start_session(conn, group, 1, TZ, actor="user", now=now)
-    with pytest.raises(budget.ValidationError):
-        budget.start_session(conn, group, 1, TZ, actor="user", now=now + 5)
-    budget.close_session(conn, budget.active_session(conn, group.id)["id"], "stopped", now + 60)
-    with pytest.raises(budget.ValidationError):
-        budget.start_session(conn, group, 1, TZ, actor="user", now=now + 120)
-
-
-def test_paused_group_cannot_start(conn):
-    group = make_group(conn, minutes=60, paused=True)
-    with pytest.raises(budget.ValidationError):
-        budget.start_session(conn, group, 15, TZ, actor="user", now=ts_on(2026, 11, 11, 12))
 
 
 # --------------------------------------------------------------------------- #
@@ -196,11 +143,14 @@ def test_bonus_minutes_extend_the_budget(conn):
 def test_free_allow_does_not_charge_budget(conn):
     group = make_group(conn, minutes=10)
     now = ts_on(2026, 11, 11, 12)
+    budget.set_force_block(conn, group.id, now + 5000)
+    group = budget.get_group(conn, group.id)
+    assert not budget.is_permitted(conn, group, TZ, now)
     budget.set_free_until(conn, group.id, now + 3600)
     assert budget.is_permitted(conn, group, TZ, now)
     assert not budget.is_permitted(conn, group, TZ, now + 3700)
     assert budget.remaining_seconds(conn, group, TZ, now) == 600
-    assert budget.used_seconds(conn, group, budget.day_str(now, TZ), TZ, now) == 0
+    assert budget.used_seconds(conn, group, budget.day_str(now, TZ)) == 0
 
 
 def test_parse_hhmm_rolls_to_tomorrow():
@@ -231,8 +181,7 @@ def test_services_and_domains_are_unique_across_groups(conn):
 def test_delete_keeps_history_and_frees_the_domain(conn):
     group = make_group(conn, services=(), domains=("example.com",))
     now = ts_on(2026, 11, 11, 12)
-    row = budget.start_session(conn, group, 15, TZ, actor="user", now=now)
-    budget.close_session(conn, row["id"], "stopped", now + 60)
+    budget.add_metered_seconds(conn, group.id, budget.day_str(now, TZ), 60)
 
     budget.delete_group(conn, group.id)
     assert budget.list_groups(conn) == []
@@ -243,14 +192,13 @@ def test_delete_keeps_history_and_frees_the_domain(conn):
     assert reused.domains == ["example.com"]
 
 
-def test_group_state_reports_remaining_and_session(conn):
+def test_group_state_reports_remaining_and_status(conn):
     group = make_group(conn, minutes=30)
     now = ts_on(2026, 11, 11, 12)
-    budget.start_session(conn, group, 15, TZ, actor="user", now=now)
+    budget.add_metered_seconds(conn, group.id, budget.day_str(now, TZ), 60)
     state = budget.group_state(conn, group, TZ, now + 60)
     assert state["permitted"] is True
-    assert state["active_session"]["ends_at"] == now + 900
-    assert state["remaining_minutes"] == 30 - 1
+    assert state["remaining_minutes"] == 29
     assert state["used_minutes"] == 1
 
 

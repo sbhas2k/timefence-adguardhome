@@ -28,7 +28,7 @@ def conn(tmp_path):
     connection.close()
 
 
-def add_group(conn, name="YouTube", services=("youtube",), domains=(), minutes=60, mode="session"):
+def add_group(conn, name="YouTube", services=("youtube",), domains=(), minutes=60):
     return budget.create_group(
         conn,
         name=name,
@@ -37,7 +37,6 @@ def add_group(conn, name="YouTube", services=("youtube",), domains=(), minutes=6
         weekend_minutes=minutes,
         services=list(services),
         domains=list(domains),
-        mode=mode,
     )
 
 
@@ -101,14 +100,19 @@ def test_build_rules_is_idempotent():
 def test_service_sync_preserves_unmanaged_services_and_schedule(conn, fake):
     fake.ids = ["tiktok", "youtube"]
     fake.schedule = {"time_zone": "Asia/Kolkata", "mon": {"start": 0, "end": 86400}}
-    add_group(conn, services=("youtube",), mode="session")
+    group = add_group(conn, services=("youtube",))
     reconciler = Reconciler(conn, fake, TZ)
 
     changed = reconciler.sync_services(int(time.time()))
-    assert "tiktok" in fake.ids  # foreign service kept
-    assert "youtube" in fake.ids  # managed and blocked by default
+    assert fake.ids == ["tiktok"]  # allowed until the daily minutes are used
+    assert changed == ["youtube"]
+
+    # a paused group is blocked; foreign services and the schedule survive
+    budget.update_group(conn, group.id, paused=True)
+    reconciler.sync_services(int(time.time()))
+    assert "tiktok" in fake.ids
+    assert "youtube" in fake.ids
     assert fake.schedule == {"time_zone": "Asia/Kolkata", "mon": {"start": 0, "end": 86400}}
-    assert changed == []
 
     # already in sync -> no API write at all
     calls = len(fake.calls)
@@ -117,25 +121,24 @@ def test_service_sync_preserves_unmanaged_services_and_schedule(conn, fake):
 
 
 def test_service_sync_unblocks_a_permitted_group(conn, fake):
-    group = add_group(conn, services=("youtube",), mode="session")
+    group = add_group(conn, services=("youtube",))
     now = int(time.time())
     reconciler = Reconciler(conn, fake, TZ)
     reconciler.sync_services(now)
-    assert fake.ids == ["youtube"]
-
-    budget.start_session(conn, group, 15, TZ, actor="user", now=now)
-    reconciler.sync_services(now + 10)
     assert fake.ids == []
 
-    # free-allow time also unblocks without spending budget
-    budget.stop_sessions(conn, group.id, "stopped", now + 20)
+    budget.set_force_block(conn, group.id, now + 3600)
+    reconciler.sync_services(now + 10)
+    assert fake.ids == ["youtube"]
+
+    # free-allow time overrides the block without spending budget
     budget.set_free_until(conn, group.id, now + 3600)
     reconciler.sync_services(now + 30)
     assert fake.ids == []
 
 
 def test_paused_group_is_always_blocked(conn, fake):
-    group = add_group(conn, services=("roblox",), minutes=60, mode="session")
+    group = add_group(conn, services=("roblox",), minutes=60)
     now = int(time.time())
     reconciler = Reconciler(conn, fake, TZ)
     budget.update_group(conn, group.id, paused=True)
@@ -144,19 +147,23 @@ def test_paused_group_is_always_blocked(conn, fake):
 
 
 def test_domain_sync_only_costs_one_write_per_change(conn, fake):
-    group = add_group(conn, services=(), domains=("example.com",), mode="session")
+    group = add_group(conn, services=(), domains=("example.com",))
     reconciler = Reconciler(conn, fake, TZ)
     now = int(time.time())
 
     reconciler.sync_domains(now)
-    assert fake.rules == [SECTION_BEGIN, "||example.com^", SECTION_END]
+    assert fake.rules == []
 
     calls = len(fake.calls)
     reconciler.sync_domains(now)
     assert len(fake.calls) == calls
 
-    budget.start_session(conn, group, 15, TZ, actor="user", now=now)
+    budget.set_force_block(conn, group.id, now + 3600)
     reconciler.sync_domains(now + 1)
+    assert fake.rules == [SECTION_BEGIN, "||example.com^", SECTION_END]
+
+    budget.clear_force_block(conn, group.id)
+    reconciler.sync_domains(now + 2)
     assert fake.rules == []
 
 
@@ -178,7 +185,7 @@ def test_reconciler_survives_adguard_errors(conn, fake, monkeypatch):
 
 
 def test_auto_mode_is_open_until_the_budget_is_spent(conn, fake):
-    group = add_group(conn, services=("youtube",), minutes=1, mode="auto")
+    group = add_group(conn, services=("youtube",), minutes=1)
     reconciler = Reconciler(conn, fake, TZ)
     now = int(time.time())
 
@@ -193,8 +200,8 @@ def test_auto_mode_is_open_until_the_budget_is_spent(conn, fake):
 
 
 def test_metering_charges_time_only_when_the_group_was_queried(conn, fake):
-    youtube = add_group(conn, services=("youtube",), minutes=30, mode="auto")
-    roblox = add_group(conn, name="Roblox", services=("roblox",), minutes=30, mode="auto")
+    youtube = add_group(conn, services=("youtube",), minutes=30)
+    roblox = add_group(conn, name="Roblox", services=("roblox",), minutes=30)
     reconciler = Reconciler(conn, fake, TZ)
     now = int(time.time())
 
@@ -237,7 +244,7 @@ def test_metering_charges_time_only_when_the_group_was_queried(conn, fake):
 
 
 def test_auto_mode_blocks_for_the_rest_of_the_day_then_allows_tomorrow(conn, fake):
-    group = add_group(conn, services=("youtube",), minutes=1, mode="auto")
+    group = add_group(conn, services=("youtube",), minutes=1)
     reconciler = Reconciler(conn, fake, TZ)
     now = int(time.time())
     day = budget.day_str(now, TZ)

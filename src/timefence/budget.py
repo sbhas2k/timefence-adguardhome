@@ -138,7 +138,6 @@ class Group:
     weekend_minutes: int
     paused: bool
     deleted: bool
-    mode: str = "auto"  # "auto" = allowed until the budget runs out
     force_block_until: int = 0  # admin "Block now" until midnight
     owner_id: int | None = None  # user this group belongs to (None = shared)
     services: list[str] = field(default_factory=list)
@@ -170,7 +169,6 @@ def _group_from_row(conn: sqlite3.Connection, row: sqlite3.Row) -> Group:
         weekend_minutes=row["weekend_minutes"],
         paused=bool(row["paused"]),
         deleted=bool(row["deleted"]),
-        mode=row["mode"] or "auto",
         force_block_until=int(row["force_block_until"] or 0),
         owner_id=row["owner_id"],
         services=services,
@@ -249,7 +247,6 @@ def create_group(
     services: list[str] | None = None,
     domains: list[str] | None = None,
     paused: bool = False,
-    mode: str = "auto",
     owner_id: int | None = None,
     now: int | None = None,
 ) -> Group:
@@ -267,19 +264,16 @@ def create_group(
             raise ValidationError("minutes must be between 0 and 1440")
     if not services and not domains:
         raise ValidationError("a group needs at least one service or domain")
-    if mode not in ("auto", "session"):
-        raise ValidationError("mode must be 'auto' or 'session'")
     _assert_unique(conn, services, domains, None)
     cur = conn.execute(
-        "INSERT INTO groups(name, emoji, weekday_minutes, weekend_minutes, paused, mode, "
-        "owner_id, created_at) VALUES(?,?,?,?,?,?,?,?)",
+        "INSERT INTO groups(name, emoji, weekday_minutes, weekend_minutes, paused, "
+        "owner_id, created_at) VALUES(?,?,?,?,?,?,?)",
         (
             name,
             emoji.strip()[:8],
             int(weekday_minutes),
             int(weekend),
             int(paused),
-            mode,
             owner_id,
             now or int(time.time()),
         ),
@@ -302,7 +296,6 @@ def update_group(
     services: list[str] | None = None,
     domains: list[str] | None = None,
     paused: bool | None = None,
-    mode: str | None = None,
     owner_id: int | None = None,
     set_owner: bool = False,
 ) -> Group:
@@ -310,8 +303,6 @@ def update_group(
     if not group or group.deleted:
         raise ValidationError("group not found")
 
-    if mode is not None and mode not in ("auto", "session"):
-        raise ValidationError("mode must be 'auto' or 'session'")
     new_name = group.name if name is None else name.strip()
     if not new_name:
         raise ValidationError("name is required")
@@ -341,14 +332,13 @@ def update_group(
 
     conn.execute(
         "UPDATE groups SET name=?, emoji=?, weekday_minutes=?, weekend_minutes=?, "
-        "paused=?, mode=?, owner_id=? WHERE id=?",
+        "paused=?, owner_id=? WHERE id=?",
         (
             new_name,
             (group.emoji if emoji is None else emoji.strip()[:8]),
             new_weekday,
             new_weekend,
             int(group.paused if paused is None else paused),
-            (group.mode if mode is None else mode),
             (owner_id if set_owner else group.owner_id),
             group_id,
         ),
@@ -384,14 +374,6 @@ def bonus_seconds(conn: sqlite3.Connection, gid: int, day: str) -> int:
     return int(row["seconds"]) if row else 0
 
 
-def active_session(conn: sqlite3.Connection, gid: int) -> sqlite3.Row | None:
-    return conn.execute(
-        "SELECT * FROM sessions WHERE group_id=? AND ended_at IS NULL "
-        "ORDER BY started_at DESC LIMIT 1",
-        (gid,),
-    ).fetchone()
-
-
 def metered_seconds(conn: sqlite3.Connection, gid: int, day: str) -> int:
     row = conn.execute(
         "SELECT seconds FROM usage_seconds WHERE day=? AND group_id=?", (day, gid)
@@ -417,25 +399,9 @@ def add_metered_seconds(
     return new
 
 
-def used_seconds(
-    conn: sqlite3.Connection, group: Group, day: str, tz: ZoneInfo, now: int | None = None
-) -> int:
-    """Usage for `day`: metered seconds in auto mode, session billing otherwise."""
-    if group.mode != "session":
-        return metered_seconds(conn, group.id, day)
-    now = now or int(time.time())
-    total = 0
-    for row in conn.execute(
-        "SELECT started_at, ended_at, planned_seconds, used_seconds FROM sessions WHERE group_id=?",
-        (group.id,),
-    ):
-        if day_str(row["started_at"], tz) != day:
-            continue
-        if row["ended_at"] is None:
-            total += min(row["planned_seconds"], max(0, now - row["started_at"]))
-        else:
-            total += row["used_seconds"]
-    return total
+def used_seconds(conn: sqlite3.Connection, group: Group, day: str) -> int:
+    """Seconds charged to `day`: only DNS activity ever counts as usage."""
+    return metered_seconds(conn, group.id, day)
 
 
 def budget_seconds(
@@ -451,7 +417,7 @@ def remaining_seconds(
 ) -> int:
     now = now or int(time.time())
     day = day_str(now, tz)
-    return max(0, budget_seconds(conn, group, tz, now) - used_seconds(conn, group, day, tz, now))
+    return max(0, budget_seconds(conn, group, tz, now) - used_seconds(conn, group, day))
 
 
 def free_until(conn: sqlite3.Connection, gid: int) -> int | None:
@@ -474,9 +440,8 @@ def is_permitted(
 ) -> bool:
     """Allowed right now?
 
-    auto    : yes while there is budget left today (free-allow overrides a
-              force-block; a force-block overrides the remaining budget).
-    session : only while a session is running (or free-allow).
+    Yes while there is budget left today. Free-allow overrides a force-block;
+    a force-block overrides the remaining budget.
     """
     now = now or int(time.time())
     if group.paused or group.deleted:
@@ -486,97 +451,7 @@ def is_permitted(
         return True
     if group.force_block_until and group.force_block_until > now:
         return False
-    if group.mode == "auto":
-        return remaining_seconds(conn, group, tz, now) > 0
-    session = active_session(conn, group.id)
-    return bool(session and session["started_at"] + session["planned_seconds"] > now)
-
-
-def start_session(
-    conn: sqlite3.Connection,
-    group: Group,
-    minutes: int,
-    tz: ZoneInfo,
-    *,
-    actor: str,
-    now: int | None = None,
-    options: tuple[int, ...] = (15, 30, 60),
-) -> sqlite3.Row:
-    now = now or int(time.time())
-    if group.paused:
-        raise ValidationError("this group is paused")
-    if group.mode != "session":
-        raise ValidationError(
-            "this group is allowed until its budget runs out; use bonus minutes instead"
-        )
-    minutes = int(minutes)
-    if minutes <= 0 or minutes > 1440:
-        raise ValidationError("minutes out of range")
-    if minutes not in options and minutes > max(options):
-        raise ValidationError("unsupported session length")
-    if is_permitted(conn, group, tz, now):
-        raise ValidationError("a session is already running (or the group is in free-allow mode)")
-    remaining = remaining_seconds(conn, group, tz, now)
-    if remaining < 60:
-        raise ValidationError("no minutes left today")
-    planned = min(minutes * 60, remaining)
-    planned = max(60, (planned // 60) * 60)
-    conn.execute(
-        "INSERT INTO sessions(group_id, planned_seconds, started_at, actor) VALUES(?,?,?,?)",
-        (group.id, planned, now, actor),
-    )
-    conn.commit()
-    return conn.execute("SELECT * FROM sessions ORDER BY id DESC LIMIT 1").fetchone()  # type: ignore[return-value]
-
-
-def close_session(
-    conn: sqlite3.Connection, session_id: int, reason: str, now: int | None = None
-) -> sqlite3.Row | None:
-    now = now or int(time.time())
-    row = conn.execute(
-        "SELECT * FROM sessions WHERE id=? AND ended_at IS NULL", (session_id,)
-    ).fetchone()
-    if not row:
-        return None
-    if reason == "expired":
-        used = row["planned_seconds"]
-        ended = row["started_at"] + row["planned_seconds"]
-    else:
-        used = max(0, min(row["planned_seconds"], now - row["started_at"]))
-        ended = now
-    conn.execute(
-        "UPDATE sessions SET ended_at=?, used_seconds=?, end_reason=? WHERE id=?",
-        (ended, used, reason, session_id),
-    )
-    conn.commit()
-    return conn.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
-
-
-def stop_sessions(
-    conn: sqlite3.Connection, group_id: int, reason: str, now: int | None = None
-) -> list[sqlite3.Row]:
-    rows = list(
-        conn.execute("SELECT id FROM sessions WHERE group_id=? AND ended_at IS NULL", (group_id,))
-    )
-    stopped = []
-    for row in rows:
-        closed = close_session(conn, row["id"], reason, now)
-        if closed:
-            stopped.append(closed)
-    return stopped
-
-
-def close_expired(conn: sqlite3.Connection, now: int | None = None) -> list[sqlite3.Row]:
-    now = now or int(time.time())
-    closed = []
-    for row in list(
-        conn.execute("SELECT id, started_at, planned_seconds FROM sessions WHERE ended_at IS NULL")
-    ):
-        if row["started_at"] + row["planned_seconds"] <= now:
-            result = close_session(conn, row["id"], "expired", now)
-            if result:
-                closed.append(result)
-    return closed
+    return remaining_seconds(conn, group, tz, now) > 0
 
 
 def add_bonus(
@@ -627,73 +502,16 @@ def history(
 ) -> list[dict]:
     now = now or int(time.time())
     start = local_midnight(now, tz) - (days - 1) * 86400
-    groups = {g.id: g for g in list_groups(conn, include_deleted=True)}
-    sessions = list(
-        conn.execute(
-            "SELECT group_id, started_at, ended_at, planned_seconds, used_seconds "
-            "FROM sessions WHERE started_at>=?",
-            (start,),
-        )
-    )
+    groups = [g.id for g in list_groups(conn, include_deleted=True)]
     out = []
     for offset in range(days):
         day = day_str(start + offset * 86400, tz)
         entry: dict[str, float | str] = {"day": day}
-        for gid, group in groups.items():
+        for gid in groups:
             if group_ids is not None and gid not in group_ids:
-                entry.pop(str(gid), None)
                 continue
-            if group.mode == "session":
-                used = 0
-                for row in sessions:
-                    if row["group_id"] != gid or day_str(row["started_at"], tz) != day:
-                        continue
-                    used += (
-                        row["used_seconds"]
-                        if row["ended_at"] is not None
-                        else min(row["planned_seconds"], max(0, now - row["started_at"]))
-                    )
-            else:
-                used = metered_seconds(conn, gid, day)
-            entry[str(gid)] = round(used / 60, 1)
+            entry[str(gid)] = round(metered_seconds(conn, gid, day) / 60, 1)
         out.append(entry)
-    return out
-
-
-def sessions_today(
-    conn: sqlite3.Connection,
-    tz: ZoneInfo,
-    now: int | None = None,
-    group_ids: set[int] | None = None,
-) -> list[dict]:
-    now = now or int(time.time())
-    start = local_midnight(now, tz)
-    groups = {g.id: g for g in list_groups(conn, include_deleted=True)}
-    out = []
-    for row in conn.execute(
-        "SELECT * FROM sessions WHERE started_at>=? ORDER BY started_at DESC", (start,)
-    ):
-        if group_ids is not None and row["group_id"] not in group_ids:
-            continue
-        group = groups.get(row["group_id"])
-        used = (
-            row["used_seconds"]
-            if row["ended_at"] is not None
-            else min(row["planned_seconds"], max(0, now - row["started_at"]))
-        )
-        out.append(
-            {
-                "id": row["id"],
-                "group": group.name if group else f"#{row['group_id']}",
-                "emoji": group.emoji if group else "",
-                "started_at": row["started_at"],
-                "ended_at": row["ended_at"],
-                "planned_minutes": row["planned_seconds"] // 60,
-                "used_minutes": round(used / 60, 1),
-                "end_reason": row["end_reason"],
-                "actor": row["actor"],
-            }
-        )
     return out
 
 
@@ -710,7 +528,6 @@ def group_state(
 ) -> dict:
     now = now or int(time.time())
     day = day_str(now, tz)
-    session = active_session(conn, group.id)
     until = free_until(conn, group.id)
     permitted = is_permitted(conn, group, tz, now)
     return {
@@ -721,26 +538,15 @@ def group_state(
         "weekend_minutes": group.weekend_minutes,
         "minutes_today": group.minutes_for(now, tz),
         "paused": group.paused,
-        "mode": group.mode,
         "force_block_until": group.force_block_until if group.force_block_until > now else 0,
         "owner_id": group.owner_id,
         "services": group.services,
         "domains": group.domains,
         "bonus_minutes": round(bonus_seconds(conn, group.id, day) / 60, 1),
-        "used_minutes": round(used_seconds(conn, group, day, tz, now) / 60, 1),
+        "used_minutes": round(used_seconds(conn, group, day) / 60, 1),
         "remaining_minutes": round(remaining_seconds(conn, group, tz, now) / 60, 1),
         "permitted": permitted,
         "free_until": until if until and until > now else None,
-        "active_session": (
-            {
-                "id": session["id"],
-                "ends_at": session["started_at"] + session["planned_seconds"],
-                "started_at": session["started_at"],
-                "planned_minutes": session["planned_seconds"] // 60,
-            }
-            if session
-            else None
-        ),
     }
 
 

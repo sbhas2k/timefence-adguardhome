@@ -49,6 +49,12 @@ validate_password = credentials.validate_admin_password
 validate_pin = credentials.validate_user_pin
 
 
+def sets_removed_mode(data: dict) -> bool:
+    """True when a payload asks for a mode other than the only one left."""
+    mode = data.get("mode")
+    return mode is not None and str(mode).strip().lower() != "auto"
+
+
 # --------------------------------------------------------------------------- #
 # application factory
 # --------------------------------------------------------------------------- #
@@ -217,13 +223,11 @@ def create_app(
                 "base_path": settings.base_path,
                 "timezone": settings.tz,
                 "setup_complete": setup_complete(),
-                "session_options": [15, 30, 60],
                 "role": role,
                 "now": now,
             },
             "groups": groups,
             "history": budget.history(conn, settings.zone, days=7, now=now, group_ids=group_ids),
-            "sessions_today": budget.sessions_today(conn, settings.zone, now, group_ids=group_ids),
             "adguard_error": reconciler.last_error,
         }
         return payload
@@ -286,14 +290,6 @@ def create_app(
             log.error("AdGuard Home connection FAILED: %s", detail)
         log.info("configuration: %s", settings.redacted())
         with lock:
-            open_sessions = list(conn.execute("SELECT id FROM sessions WHERE ended_at IS NULL"))
-            for row in open_sessions:
-                budget.close_session(conn, row["id"], "service_restart")
-            if open_sessions:
-                log.info(
-                    "fail-safe: closed %d session(s) left open by a previous run",
-                    len(open_sessions),
-                )
             reconciler.run("startup")
         stop = asyncio.Event()
 
@@ -499,7 +495,6 @@ def create_app(
             "timezone": settings.tz,
             "setup_complete": setup_complete(),
             "role": sess.role if sess else None,
-            "session_options": [15, 30, 60],
             "now": int(time.time()),
         }
 
@@ -515,77 +510,6 @@ def create_app(
         payload["app"]["csrf"] = sess.csrf
         payload["app"]["username"] = sess.username
         return payload
-
-    # -------------------------------------------------------------- sessions
-    @app.post(f"{base}/api/session/start")
-    async def api_session_start(request: Request):
-        sess = require("user", request)
-        data = await read_json(request)
-        try:
-            group_id = int(data.get("group_id"))
-            minutes = int(data.get("minutes"))
-        except (TypeError, ValueError):
-            return json_error(400, "group_id and minutes are required", "bad_request")
-        with lock:
-            group = budget.get_group(conn, group_id)
-            if not group or group.deleted or not can_see(sess, group_id):
-                return json_error(404, i18n.t("error.not_found"), "not_found")
-            try:
-                session = budget.start_session(conn, group, minutes, settings.zone, actor=sess.role)
-            except budget.ValidationError as exc:
-                message = str(exc)
-                code = "no_budget" if "no minutes" in message else "invalid"
-                return json_error(409, message, code)
-            budget.log_event(
-                conn,
-                "session_start",
-                {
-                    "group_id": group.id,
-                    "group": group.name,
-                    "minutes": session["planned_seconds"] // 60,
-                    "actor": sess.role,
-                },
-            )
-            result = reconciler.run("session_start")
-        payload = state_payload(sess.role, group_ids=visible_group_ids(sess))
-        payload["app"]["csrf"] = sess.csrf
-        payload["app"]["username"] = sess.username
-        return {"ok": True, "session": dict(session), "reconcile": result, "state": payload}
-
-    @app.post(f"{base}/api/session/stop")
-    async def api_session_stop(request: Request):
-        sess = require("user", request)
-        data = await read_json(request)
-        try:
-            group_id = int(data.get("group_id"))
-        except (TypeError, ValueError):
-            return json_error(400, "group_id is required", "bad_request")
-        with lock:
-            group = budget.get_group(conn, group_id)
-            if not group or not can_see(sess, group_id):
-                return json_error(404, i18n.t("error.not_found"), "not_found")
-            stopped = budget.stop_sessions(conn, group_id, "stopped")
-            if stopped:
-                budget.log_event(
-                    conn,
-                    "session_stop",
-                    {
-                        "group_id": group_id,
-                        "group": group.name,
-                        "used_seconds": stopped[0]["used_seconds"],
-                        "actor": sess.role,
-                    },
-                )
-            result = reconciler.run("session_stop")
-        payload = state_payload(sess.role, group_ids=visible_group_ids(sess))
-        payload["app"]["csrf"] = sess.csrf
-        payload["app"]["username"] = sess.username
-        return {
-            "ok": True,
-            "stopped": [dict(s) for s in stopped],
-            "reconcile": result,
-            "state": payload,
-        }
 
     # ---------------------------------------------------------------- groups
     @app.get(f"{base}/api/groups")
@@ -616,9 +540,6 @@ def create_app(
             domains = data.get("domains") or (existing.domains if existing else [])
         else:
             domains = budget.normalize_domains(str(domains_text))
-        mode = str(data.get("mode", existing.mode if existing else "auto")).strip().lower()
-        if mode not in ("auto", "session"):
-            mode = "auto"
         owner_raw = data.get("owner_id", existing.owner_id if existing else None)
         if owner_raw in ("", None):
             owner_id = None
@@ -637,7 +558,6 @@ def create_app(
             "emoji": str(data.get("emoji", existing.emoji if existing else "")).strip(),
             "weekday_minutes": weekday,
             "weekend_minutes": weekend,
-            "mode": mode,
             "owner_id": owner_id,
             "set_owner": "owner_id" in data,
             "services": [
@@ -651,6 +571,8 @@ def create_app(
     async def api_group_create(request: Request):
         sess = require("admin", request)
         data = await read_json(request)
+        if sets_removed_mode(data):
+            return json_error(400, i18n.t("error.mode_removed"), "mode_removed")
         fields = group_from_payload(data)
         hits = critical_hits(fields["domains"])
         if hits and not data.get("confirm_critical"):
@@ -674,6 +596,8 @@ def create_app(
     async def api_group_update(group_id: int, request: Request):
         sess = require("admin", request)
         data = await read_json(request)
+        if sets_removed_mode(data):
+            return json_error(400, i18n.t("error.mode_removed"), "mode_removed")
         with lock:
             existing = budget.get_group(conn, group_id)
             if not existing or existing.deleted:
@@ -699,7 +623,6 @@ def create_app(
             group = budget.get_group(conn, group_id)
             if not group or group.deleted:
                 return json_error(404, i18n.t("error.not_found"), "not_found")
-            budget.stop_sessions(conn, group_id, "deleted")
             name = budget.delete_group(conn, group_id)
             budget.log_event(conn, "group_delete", {"group": name, "actor": sess.role})
             reconciler.run("group_delete")
@@ -715,8 +638,6 @@ def create_app(
                 group = budget.update_group(conn, group_id, paused=paused)
             except budget.ValidationError as exc:
                 return json_error(400, str(exc), "invalid")
-            if paused:
-                budget.stop_sessions(conn, group_id, "admin_block")
             budget.log_event(
                 conn, "group_pause", {"group": group.name, "paused": paused, "actor": sess.role}
             )
@@ -791,12 +712,10 @@ def create_app(
             budget.set_force_block(
                 conn, group_id, budget.local_midnight(int(time.time()), settings.zone) + 86400
             )
-            stopped = budget.stop_sessions(conn, group_id, "admin_block")
             budget.log_event(conn, "admin_block", {"group": group.name, "actor": sess.role})
             reconciler.run("admin_block")
         return {
             "ok": True,
-            "stopped": [dict(s) for s in stopped],
             "group": group_payload(group, int(time.time())),
         }
 
@@ -1095,7 +1014,6 @@ def create_app(
             group = budget.get_group(conn, group_id)
             if not group or group.deleted:
                 return json_error(404, i18n.t("error.not_found"), "not_found")
-            budget.stop_sessions(conn, group_id, "admin_reset")
             budget.reset_today(conn, group_id, settings.zone)
             budget.clear_force_block(conn, group_id)
             budget.log_event(conn, "admin_reset", {"group": group.name, "actor": sess.username})
