@@ -722,7 +722,13 @@ def test_worker_starts_with_the_app_and_stops_before_the_store(settings, fake, m
             )
         monkeypatch.setattr(alerts_module, "_deliver", slow_delivery)
         worker.enqueue(alerts_module.Message(event="group_low", key="low:1", created_at=0))
+        deadline = time.monotonic() + 3
+        while not seen.get("started") and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert seen.get("started") is True
 
+    # a pending message may be dropped at shutdown on purpose; this one was
+    # already in flight, so shutdown has to wait, warn once and let it finish
     assert seen.get("started") is True
     worker.join(6)
     assert not worker.is_alive()
