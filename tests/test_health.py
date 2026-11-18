@@ -156,3 +156,20 @@ def test_restart_restores_true_state_after_shutdown_block(settings, fake):
     app2 = create_app(settings, adguard=fake2)
     with TestClient(app2):
         assert fake2.ids == []  # budget left: allowed again
+
+
+def test_create_app_sets_private_umask(settings, fake, monkeypatch):
+    import os
+
+    calls: list[int] = []
+
+    def spy(mask: int) -> int:
+        calls.append(mask)
+        return 0o022
+
+    monkeypatch.setattr(os, "umask", spy)
+    app = create_app(settings, adguard=fake)
+    try:
+        assert 0o077 in calls
+    finally:
+        app.state.store.close()

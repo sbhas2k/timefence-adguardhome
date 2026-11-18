@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import stat
+
 import pytest
 
 from timefence.config import ConfigError, Settings, normalize_base_path
@@ -85,3 +88,11 @@ def test_bad_adguard_url():
     settings = Settings.from_env(_env(ADGUARD_URL="ftp://x"))
     with pytest.raises(ConfigError):
         settings.validate()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes only")
+def test_data_dir_is_private(tmp_path):
+    target = tmp_path / "private"
+    settings = Settings.from_env({"ADGUARD_PASSWORD": "secret", "DATA_DIR": str(target)})
+    settings.validate()
+    assert stat.S_IMODE(os.stat(target).st_mode) == 0o700
