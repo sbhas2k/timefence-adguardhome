@@ -69,8 +69,11 @@ def test_querylog_since_stops_at_window_start():
 
 def test_querylog_since_reports_truncation():
     pages = [
-        {"data": [{"time": "2026-11-12T16:00:00.000Z"}], "oldest": "2026-11-12T16:00:00.000Z"}
-        for _ in range(3)
+        {
+            "data": [{"time": f"2026-11-12T16:0{index}:00.000Z"}],
+            "oldest": f"2026-11-12T16:0{index}:00.000Z",
+        }
+        for index in (3, 2, 1)
     ]
     client = PagingClient(pages)
 

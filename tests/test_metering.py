@@ -51,9 +51,9 @@ def entry(ts: int, host: str = "www.youtube.com", reason: str = "NotFilteredNotF
     }
 
 
-def settle(store, fake, now: int, entries: list[dict], reason: str = "loop") -> int:
+def settle(reconciler: Reconciler, fake, now: int, entries: list[dict]) -> int:
     fake.entries = entries
-    return Reconciler(store, fake, TZ).meter(now, reason)
+    return reconciler.meter(now, "loop")
 
 
 def ts_utc(year, month, day, hour, minute, second=0) -> int:
@@ -95,7 +95,8 @@ def test_one_query_charges_one_bucket(store, fake):
         group = add_group(conn)
         db.set_setting(conn, "meter_last_ts", str(now - 30))
 
-    charged = settle(store, fake, now, [entry(now - 5)])
+    reconciler = Reconciler(store, fake, TZ)
+    charged = settle(reconciler, fake, now, [entry(now - 5)])
 
     assert charged == 1
     with store as conn:
@@ -108,10 +109,11 @@ def test_same_bucket_across_two_ticks_charged_once(store, fake):
         group = add_group(conn)
         db.set_setting(conn, "meter_last_ts", str(now - 20))
 
-    assert settle(store, fake, now, [entry(now - 5)]) == 1
+    reconciler = Reconciler(store, fake, TZ)
+    assert settle(reconciler, fake, now, [entry(now - 5)]) == 1
     with store as conn:
         db.set_setting(conn, "meter_last_ts", str(now - 20))  # as if a tick lost the cursor
-    assert settle(store, fake, now, [entry(now - 5)]) == 0
+    assert settle(reconciler, fake, now, [entry(now - 5)]) == 0
 
     with store as conn:
         assert budget.metered_seconds(conn, group.id, budget.day_str(now, TZ)) == BUCKET
@@ -123,13 +125,14 @@ def test_short_window_keeps_the_cursor(store, fake):
         group = add_group(conn)
         db.set_setting(conn, "meter_last_ts", str(base))
 
+    reconciler = Reconciler(store, fake, TZ)
     # an admin action two seconds later must not drop the window
-    assert settle(store, fake, base + 3, []) == 0
+    assert settle(reconciler, fake, base + 3, []) == 0
     with store as conn:
         assert int(db.get_setting(conn, "meter_last_ts") or 0) == base + 3
 
     # a hit 20 s after the first tick is still charged
-    assert settle(store, fake, base + 30, [entry(base + 20)]) == 1
+    assert settle(reconciler, fake, base + 30, [entry(base + 20)]) == 1
     with store as conn:
         assert budget.metered_seconds(conn, group.id, budget.day_str(base, TZ)) == BUCKET
 
@@ -140,7 +143,8 @@ def test_gap_up_to_30_minutes_is_charged(store, fake):
         group = add_group(conn)
         db.set_setting(conn, "meter_last_ts", str(base))
 
-    assert settle(store, fake, base + 600, [entry(base + 300)]) == 1
+    reconciler = Reconciler(store, fake, TZ)
+    assert settle(reconciler, fake, base + 600, [entry(base + 300)]) == 1
     with store as conn:
         assert budget.metered_seconds(conn, group.id, budget.day_str(base, TZ)) == BUCKET
 
@@ -153,7 +157,7 @@ def test_pagination_reads_all_pages(store, fake):
         db.set_setting(conn, "meter_last_ts", str(start))
 
     entries = [entry(start + offset) for offset in range(1100)]
-    settle(store, fake, now, entries)
+    settle(Reconciler(store, fake, TZ), fake, now, entries)
 
     pages = [call for call in fake.calls if call[0] == "querylog_page"]
     assert len(pages) == 3
@@ -169,7 +173,7 @@ def test_midnight_window_splits_across_days(store, fake):
         group = add_group(conn)
         db.set_setting(conn, "meter_last_ts", str(base))
 
-    settle(store, fake, now, [entry(base + 10), entry(base + 30)])
+    settle(Reconciler(store, fake, TZ), fake, now, [entry(base + 10), entry(base + 30)])
 
     first_day = budget.day_str(base + 10, TZ)
     second_day = budget.day_str(base + 30, TZ)
@@ -191,7 +195,7 @@ def test_blocked_answers_are_not_usage(store, fake):
         db.set_setting(conn, "meter_last_ts", str(now - 30))
 
     settle(
-        store,
+        Reconciler(store, fake, TZ),
         fake,
         now,
         [
@@ -212,12 +216,12 @@ def test_safe_search_rewrites_are_usage(store, fake):
         db.set_setting(conn, "meter_last_ts", str(now - 30))
 
     settle(
-        store,
+        Reconciler(store, fake, TZ),
         fake,
         now,
         [
             entry(now - 20, reason="FilteredSafeSearch"),
-            entry(now - 5, reason="Rewrite"),
+            entry(now - 19, reason="Rewrite"),  # same bucket: charged once
         ],
     )
 
@@ -232,7 +236,7 @@ def test_free_allow_is_not_metered(store, fake):
         db.set_setting(conn, "meter_last_ts", str(now - 30))
         budget.set_free_until(conn, group.id, now + 3600)
 
-    assert settle(store, fake, now, [entry(now - 5)]) == 0
+    assert settle(Reconciler(store, fake, TZ), fake, now, [entry(now - 5)]) == 0
     with store as conn:
         assert budget.metered_seconds(conn, group.id, budget.day_str(now, TZ)) == 0
 
@@ -244,7 +248,7 @@ def test_restart_catches_up_within_limit(store, fake):
         db.set_setting(conn, "meter_last_ts", str(now - 4000))
 
     # a fresh reconciler has no in-memory bucket memory, like after a restart
-    charged = settle(store, fake, now, [entry(now - 100), entry(now - 2000)])
+    charged = settle(Reconciler(store, fake, TZ), fake, now, [entry(now - 100), entry(now - 2000)])
 
     assert charged == 1
     with store as conn:
