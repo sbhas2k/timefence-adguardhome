@@ -29,7 +29,7 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 - **Schema v5.** The database adds `group_windows` and `alerts_sent`; the v5
   step is plain DDL, so `timefence passwd` can upgrade a v4 database without
-  starting the server. F2 added no further migration.
+  starting the server.
 - **One verified backup per upgrade.** A `migrate()` call now writes exactly one
   verified copy before its first schema change, named
   `timefence.db.pre-v<schema>.bak` for the highest schema it reaches
