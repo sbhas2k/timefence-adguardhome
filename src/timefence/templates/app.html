@@ -43,10 +43,7 @@
         <label for="discover-client">{{ t("discover.client") }}</label>
         <select id="discover-client"><option value="">{{ t("discover.all_clients") }}</option></select>
       </div>
-      <div>
-        <label for="discover-showall">{{ t("discover.show_all") }}</label>
-        <input type="checkbox" id="discover-showall">
-      </div>
+      <label class="check" for="discover-showall"><input type="checkbox" id="discover-showall"> {{ t("discover.show_all") }}</label>
       <button class="btn primary" id="discover-run">{{ t("discover.run") }}</button>
     </div>
     <div id="discover-results" class="mt"></div>
@@ -77,7 +74,7 @@
       <input type="password" id="current-password" autocomplete="current-password" placeholder="{{ t('account.current') }}" aria-label="{{ t('account.current') }}" required>
       <input type="password" id="account-new-password" autocomplete="new-password" placeholder="{{ t('account.new') }}" aria-label="{{ t('account.new') }}" required>
       <input type="password" id="account-repeat-password" autocomplete="new-password" placeholder="{{ t('account.repeat') }}" aria-label="{{ t('account.repeat') }}" required>
-      <button class="btn primary" type="submit">{{ t("common.save") }}</button>
+      <button class="btn primary" type="submit">{{ t("account.save") }}</button>
       <p class="sub">{{ t("account.password_hint") }}</p>
     </form>
   </div>
@@ -94,7 +91,7 @@
             <option value="webhook">{{ t("alerts.channel_webhook") }}</option>
           </select>
         </div>
-        <label class="row tight"><input type="checkbox" id="alerts-enabled"> {{ t("alerts.enabled") }}</label>
+        <label class="check"><input type="checkbox" id="alerts-enabled"> {{ t("alerts.enabled") }}</label>
       </div>
       <div id="alerts-ntfy" class="stack hidden">
         <div>
@@ -120,16 +117,16 @@
       </div>
       <fieldset id="alerts-events">
         <legend>{{ t("alerts.events") }}</legend>
-        <label class="row tight"><input type="checkbox" data-event="group_low"> {{ t("alerts.event.group_low") }}</label>
-        <label class="row tight"><input type="checkbox" data-event="group_exhausted"> {{ t("alerts.event.group_exhausted") }}</label>
-        <label class="row tight"><input type="checkbox" data-event="bedtime_started"> {{ t("alerts.event.bedtime_started") }}</label>
-        <label class="row tight"><input type="checkbox" data-event="sync_failing"> {{ t("alerts.event.sync_failing") }}</label>
-        <label class="row tight"><input type="checkbox" data-event="sync_recovered"> {{ t("alerts.event.sync_recovered") }}</label>
-        <label class="row tight"><input type="checkbox" data-event="weekly_summary"> {{ t("alerts.event.weekly_summary") }}</label>
+        <label class="check"><input type="checkbox" data-event="group_low"> {{ t("alerts.event.group_low") }}</label>
+        <label class="check"><input type="checkbox" data-event="group_exhausted"> {{ t("alerts.event.group_exhausted") }}</label>
+        <label class="check"><input type="checkbox" data-event="bedtime_started"> {{ t("alerts.event.bedtime_started") }}</label>
+        <label class="check"><input type="checkbox" data-event="sync_failing"> {{ t("alerts.event.sync_failing") }}</label>
+        <label class="check"><input type="checkbox" data-event="sync_recovered"> {{ t("alerts.event.sync_recovered") }}</label>
+        <label class="check"><input type="checkbox" data-event="weekly_summary"> {{ t("alerts.event.weekly_summary") }}</label>
       </fieldset>
       <p class="sub">{{ t("alerts.keep_hint") }}</p>
       <div class="row">
-        <button class="btn primary" type="submit">{{ t("common.save") }}</button>
+        <button class="btn primary" type="submit">{{ t("alerts.save") }}</button>
         <button class="btn" type="button" id="alerts-test">{{ t("alerts.test") }}</button>
       </div>
       <p class="alert warn hidden" id="alerts-warning" role="status"></p>

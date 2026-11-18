@@ -707,7 +707,7 @@
         '<textarea id="g-domains" placeholder="example.com">' +
         esc((group.domains || []).join("\n")) + "</textarea>" +
         '<p class="sub">' + esc(t("groups.domains_help")) + "</p></div>" +
-        '<label class="row tight"><input type="checkbox" id="g-paused"' +
+        '<label class="check"><input type="checkbox" id="g-paused"' +
         (group.paused ? " checked" : "") + "> " + esc(t("groups.paused")) + "</label>" +
         '<div class="row"><button class="btn primary" type="submit">' +
         esc(t("common.save")) + "</button>" +
@@ -944,6 +944,27 @@
     return false;
   }
 
+  function alertReason(category) {
+    var text = String(category || "");
+    if (text === "dns" || text === "connect") { return t("alerts.reason_connect"); }
+    if (text === "timeout") { return t("alerts.reason_timeout"); }
+    if (text === "config") { return t("alerts.reason_config"); }
+    if (text === "rate_limited") { return t("alerts.reason_limited"); }
+    if (text.indexOf("http_") === 0) { return t("alerts.reason_http"); }
+    return t("alerts.reason_other");
+  }
+
+  function alertResultText(data) {
+    if (!data.last_result || !data.last_result_ts) { return ""; }
+    if (data.last_result === "ok") {
+      return t("alerts.result_ok", { time: clock(data.last_result_ts) });
+    }
+    return t("alerts.result_failed", {
+      reason: alertReason(data.last_result),
+      time: clock(data.last_result_ts)
+    });
+  }
+
   function paintAlerts(data) {
     alertsConfig = data || null;
     if (!data) { return; }
@@ -952,14 +973,16 @@
     $("#alerts-enabled").checked = data.enabled !== false;
     $("#alerts-ntfy-base").placeholder = data.ntfy.base_host || "https://ntfy.sh";
     $("#alerts-ntfy-topic").placeholder = data.ntfy.topic_tail
-      ? t("alerts.configured", { tail: data.ntfy.topic_tail })
+      ? t("alerts.saved_tail", { tail: data.ntfy.topic_tail })
       : t("alerts.topic");
     $("#alerts-ntfy-token").placeholder = data.ntfy.token_configured
-      ? t("alerts.configured_plain")
+      ? t("alerts.saved_plain")
       : t("alerts.token");
-    $("#alerts-webhook-url").placeholder = data.webhook.host
-      ? data.webhook.host + "/…" + data.webhook.path_tail
-      : "https://example/hook";
+    $("#alerts-webhook-url").placeholder = !data.webhook.host
+      ? "https://example/hook"
+      : data.webhook.path_tail
+        ? t("alerts.saved_tail", { tail: data.webhook.path_tail })
+        : t("alerts.saved_plain");
     $$("#alerts-events input[data-event]").forEach(function (box) {
       box.checked = Boolean(data.events && data.events[box.dataset.event]);
     });
@@ -976,10 +999,7 @@
     var warning = $("#alerts-warning");
     warning.textContent = needsToken ? t("alerts.token_warning") : "";
     warning.classList.toggle("hidden", !needsToken);
-    var result = $("#alerts-result");
-    result.textContent = data.last_result && data.last_result_ts
-      ? t("alerts.last_result", { result: data.last_result, time: clock(data.last_result_ts) })
-      : t("alerts.never");
+    $("#alerts-result").textContent = alertResultText(data);
   }
 
   function loadAlerts() {
@@ -1258,7 +1278,7 @@
       api("POST", "/api/alerts/test", {}).then(function (data) {
         $("#alerts-result").textContent = data.ok
           ? t("alerts.test_ok")
-          : t("alerts.test_failed", { result: data.category });
+          : t("alerts.test_failed", { reason: alertReason(data.category) });
       }).catch(function (error) {
         $("#alerts-result").textContent = error.message;
       }).then(function () { alertsTest.disabled = false; });

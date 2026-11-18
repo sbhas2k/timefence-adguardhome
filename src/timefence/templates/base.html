@@ -15,7 +15,7 @@
 </head>
 <body data-base="{{ base }}" data-csrf="{{ csrf }}" data-page="{% block page %}{% endblock %}" data-version="{{ version }}">
   <header class="topbar">
-    <div class="brand"><span class="logo" aria-hidden="true">⏳</span> {{ app_name }}</div>
+    <div class="brand"><span class="logo" aria-hidden="true">⏳</span> <span class="brand-full">{{ app_name }}</span><span class="brand-short">{{ t("app.header_short") }}</span></div>
     <span class="spacer"></span>
     {% block topbar %}{% endblock %}
   </header>
