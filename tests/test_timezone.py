@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import importlib.resources
+import zoneinfo
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from timefence import i18n
+from timefence import config, i18n
 from timefence.api import create_app
 from timefence.config import ConfigError, Settings, detect_timezone
 
@@ -251,3 +253,145 @@ def test_startup_logs_where_the_timezone_came_from(tmp_path, caplog):
     ):
         pass
     assert "Timezone: Europe/Berlin (from TZ)" in caplog.text
+
+
+# --------------------------------------------------------------------------- #
+# /etc/localtime as a regular file (a Docker bind mount)
+# --------------------------------------------------------------------------- #
+
+
+def read_zone_bytes(name: str) -> bytes:
+    """Real TZif data for a zone, from TZPATH or the tzdata package."""
+    for root in zoneinfo.TZPATH:
+        path = Path(root) / name
+        if path.is_file():
+            return path.read_bytes()
+    try:
+        return (importlib.resources.files("tzdata.zoneinfo") / name).read_bytes()
+    except Exception as exc:  # noqa: BLE001 - a test helper must fail loudly
+        raise AssertionError(f"cannot read TZif data for {name}: {exc}") from exc
+
+
+def zone_tree(root: Path, zones: dict[str, bytes], tab: str | None = None) -> Path:
+    tree = root / "zoneinfo"
+    for name, data in zones.items():
+        path = tree / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    if tab is not None:
+        (tree / "zone1970.tab").write_text(tab, encoding="utf-8")
+    return tree
+
+
+def localtime_file(root: Path, data: bytes) -> Path:
+    path = root / "localtime"
+    path.write_bytes(data)
+    return path
+
+
+LONDON = read_zone_bytes("Europe/London")
+TOKYO = read_zone_bytes("Asia/Tokyo")
+TAB = "# country\tcoordinates\tTZ\nGB\t+513030-0000731\tEurope/London\n"
+
+
+def test_localtime_content_is_matched_when_the_path_has_no_key(tmp_path, monkeypatch):
+    tree = zone_tree(
+        tmp_path,
+        {"Europe/London": LONDON, "Europe/Jersey": LONDON, "GB": LONDON},
+        tab=TAB,
+    )
+    monkeypatch.setattr(config.zoneinfo, "TZPATH", (str(tree),))
+    localtime = localtime_file(tmp_path, LONDON)
+
+    assert detect_timezone(None, timezone_file=tmp_path / "none", localtime_file=localtime) == (
+        "Europe/London",
+        "system",
+    )
+
+
+def test_content_match_accepts_injected_zoneinfo_dirs(tmp_path):
+    tree = zone_tree(tmp_path, {"Europe/London": LONDON, "GB": LONDON})
+    localtime = localtime_file(tmp_path, LONDON)
+
+    assert detect_timezone(
+        None,
+        timezone_file=tmp_path / "none",
+        localtime_file=localtime,
+        zoneinfo_dirs=(tree,),
+    ) == ("Europe/London", "system")
+
+
+def test_an_identical_alias_is_returned_when_it_is_all_there_is(tmp_path):
+    tree = zone_tree(tmp_path, {"GB": LONDON})
+    localtime = localtime_file(tmp_path, LONDON)
+
+    assert detect_timezone(
+        None,
+        timezone_file=tmp_path / "none",
+        localtime_file=localtime,
+        zoneinfo_dirs=(tree,),
+    ) == ("GB", "system")
+
+
+def test_reserved_zone_names_are_skipped(tmp_path):
+    tree = zone_tree(
+        tmp_path,
+        {"localtime": LONDON, "posixrules": LONDON, "Factory": LONDON, "GB": LONDON},
+    )
+    localtime = localtime_file(tmp_path, LONDON)
+
+    assert detect_timezone(
+        None,
+        timezone_file=tmp_path / "none",
+        localtime_file=localtime,
+        zoneinfo_dirs=(tree,),
+    ) == ("GB", "system")
+
+
+def test_a_garbage_localtime_file_is_ignored(tmp_path):
+    tree = zone_tree(tmp_path, {"Europe/London": LONDON})
+    localtime = localtime_file(tmp_path, b"not a tzif file")
+
+    assert detect_timezone(
+        None,
+        timezone_file=tmp_path / "none",
+        localtime_file=localtime,
+        zoneinfo_dirs=(tree,),
+    ) == ("UTC", "default")
+
+
+def test_a_huge_localtime_file_is_ignored(tmp_path):
+    # the same over-sized bytes exist in the tree: only the size cap can ignore it
+    huge = b"TZif" + b"x" * (64 * 1024)
+    tree = zone_tree(tmp_path, {"Europe/London": huge})
+    localtime = localtime_file(tmp_path, huge)
+
+    assert detect_timezone(
+        None,
+        timezone_file=tmp_path / "none",
+        localtime_file=localtime,
+        zoneinfo_dirs=(tree,),
+    ) == ("UTC", "default")
+
+
+def test_the_zoneinfo_path_wins_over_the_content(tmp_path):
+    tree = zone_tree(
+        tmp_path,
+        {"Europe/Berlin": TOKYO, "Asia/Tokyo": TOKYO},
+        tab="JP\t+353916+1394441\tAsia/Tokyo\n",
+    )
+    target = tree / "Europe" / "Berlin"
+    link = tmp_path / "localtime"
+    try:
+        link.symlink_to(target)
+        localtime = link
+    except OSError:
+        localtime = target
+
+    # the path names Berlin, while the bytes also match the canonical Tokyo
+    assert detect_timezone(
+        None,
+        timezone_file=tmp_path / "none",
+        localtime_file=localtime,
+        zoneinfo_dirs=(tree,),
+    ) == ("Europe/Berlin", "system")
