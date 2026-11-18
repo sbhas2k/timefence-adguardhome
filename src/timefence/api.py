@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -63,6 +64,7 @@ def create_app(
     settings: Settings | None = None,
     adguard: AdGuardClient | None = None,
 ) -> FastAPI:
+    os.umask(0o077)  # the database, WAL files and the session secret are private
     settings = settings or Settings.from_env()
     settings.validate()
     logging.getLogger("timefence").setLevel(settings.log_level)

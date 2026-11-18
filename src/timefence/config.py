@@ -129,7 +129,11 @@ class Settings:
         if self.log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             problems.append("LOG_LEVEL must be DEBUG/INFO/WARNING/ERROR/CRITICAL")
         try:
-            self.data_dir.mkdir(parents=True, exist_ok=True)
+            self.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            try:  # best effort: an existing directory keeps its mode otherwise
+                os.chmod(self.data_dir, 0o700)
+            except OSError as exc:
+                log.warning("could not set mode 0700 on %s: %s", self.data_dir, exc)
         except OSError as exc:
             problems.append(f"DATA_DIR {self.data_dir} is not usable: {exc}")
         if problems:

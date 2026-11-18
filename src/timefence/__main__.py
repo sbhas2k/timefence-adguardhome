@@ -14,8 +14,14 @@ from . import __version__
 
 def _prompt_secret(role: str) -> str:
     label = "New admin password" if role == "admin" else "New user password"
-    first = getpass.getpass(f"{label}: ")
-    second = getpass.getpass(f"Repeat {label.lower()}: ")
+    if sys.stdin.isatty():
+        first = getpass.getpass(f"{label}: ")
+        second = getpass.getpass(f"Repeat {label.lower()}: ")
+    else:  # piped input: getpass would ignore it (and wait forever on Windows)
+        first = sys.stdin.readline().rstrip("\r\n")
+        second = sys.stdin.readline().rstrip("\r\n")
+    if not first:
+        raise SystemExit("no password given")
     if first != second:
         raise SystemExit("the two values do not match")
     return first
@@ -87,6 +93,7 @@ def _release(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    os.umask(0o077)  # whatever this run creates stays private
     parser = argparse.ArgumentParser(prog="timefence", description="TimeFence for AdGuard Home")
     parser.add_argument("--version", action="version", version=f"timefence {__version__}")
     sub = parser.add_subparsers(dest="command")
@@ -131,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 2
         print(f"password for {args.username!r} ({args.role}) updated in {path}")
-        print("Sign in with the new password; existing sessions stay valid.")
+        print("All sessions of this account are signed out.")
         return 0
 
     if command == "release":
