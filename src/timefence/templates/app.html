@@ -72,6 +72,60 @@
     </form>
   </div>
   <div class="card">
+    <h2>{{ t("alerts.heading") }}</h2>
+    <p class="sub">{{ t("alerts.note") }}</p>
+    <form id="alerts-form" class="stack mt" autocomplete="off">
+      <div class="row">
+        <div class="grow1">
+          <label for="alerts-channel">{{ t("alerts.channel") }}</label>
+          <select id="alerts-channel">
+            <option value="">{{ t("alerts.channel_none") }}</option>
+            <option value="ntfy">{{ t("alerts.channel_ntfy") }}</option>
+            <option value="webhook">{{ t("alerts.channel_webhook") }}</option>
+          </select>
+        </div>
+        <label class="row tight"><input type="checkbox" id="alerts-enabled"> {{ t("alerts.enabled") }}</label>
+      </div>
+      <div id="alerts-ntfy" class="stack hidden">
+        <div>
+          <label for="alerts-ntfy-base">{{ t("alerts.ntfy_base") }}</label>
+          <input type="text" id="alerts-ntfy-base" placeholder="https://ntfy.sh" autocomplete="off" spellcheck="false">
+        </div>
+        <div>
+          <label for="alerts-ntfy-topic">{{ t("alerts.topic") }}</label>
+          <input type="text" id="alerts-ntfy-topic" placeholder="{{ t('alerts.topic') }}" autocomplete="off" spellcheck="false">
+        </div>
+        <div>
+          <label for="alerts-ntfy-token">{{ t("alerts.token") }}</label>
+          <input type="password" id="alerts-ntfy-token" placeholder="{{ t('alerts.token') }}" autocomplete="new-password">
+        </div>
+      </div>
+      <div id="alerts-webhook" class="stack hidden">
+        <div>
+          <label for="alerts-webhook-url">{{ t("alerts.webhook_url") }}</label>
+          <input type="text" id="alerts-webhook-url" placeholder="https://example/hook" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+      <fieldset id="alerts-events">
+        <legend>{{ t("alerts.events") }}</legend>
+        <label class="row tight"><input type="checkbox" data-event="group_low"> {{ t("alerts.event.group_low") }}</label>
+        <label class="row tight"><input type="checkbox" data-event="group_exhausted"> {{ t("alerts.event.group_exhausted") }}</label>
+        <label class="row tight"><input type="checkbox" data-event="bedtime_started"> {{ t("alerts.event.bedtime_started") }}</label>
+        <label class="row tight"><input type="checkbox" data-event="sync_failing"> {{ t("alerts.event.sync_failing") }}</label>
+        <label class="row tight"><input type="checkbox" data-event="sync_recovered"> {{ t("alerts.event.sync_recovered") }}</label>
+        <label class="row tight"><input type="checkbox" data-event="weekly_summary"> {{ t("alerts.event.weekly_summary") }}</label>
+      </fieldset>
+      <p class="sub">{{ t("alerts.keep_hint") }}</p>
+      <div class="row">
+        <button class="btn primary" type="submit">{{ t("common.save") }}</button>
+        <button class="btn" type="button" id="alerts-test">{{ t("alerts.test") }}</button>
+      </div>
+      <p class="alert warn hidden" id="alerts-warning" role="status"></p>
+      <p class="sub" id="alerts-result"></p>
+    </form>
+  </div>
+
+  <div class="card">
     <h2>{{ t("admin.adguard_title") }}</h2>
     <button class="btn mt" id="adguard-test">{{ t("admin.adguard_test") }}</button>
     <p class="sub mt" id="adguard-result"></p>

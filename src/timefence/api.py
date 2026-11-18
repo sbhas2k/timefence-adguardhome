@@ -18,7 +18,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from . import APP_TITLE, __version__, budget, credentials, db, i18n, security
+from . import APP_TITLE, __version__, alerts, budget, credentials, db, i18n, security
 from .adguard import AdGuardClient, AdGuardError
 from .config import Settings
 from .discover import PublicSuffixList, SuffixList, aggregate, humanize_age, recent_clients
@@ -432,6 +432,10 @@ def create_app(
             log.error("AdGuard Home connection FAILED: %s", detail)
         log.info("configuration: %s", settings.redacted())
         app.state.setup_done = read_setup_flag()
+        worker = alerts.AlertWorker(store, settings)
+        app.state.alerts = worker
+        reconciler.alert_worker = worker
+        worker.start()
         reconciler.run("startup")
         stop = asyncio.Event()
 
@@ -458,6 +462,15 @@ def create_app(
             done, _ = await asyncio.wait({task}, timeout=8)
             if task not in done:
                 log.warning("reconciler loop did not stop within 8 s; continuing shutdown")
+            # The alert worker must be drained and joined before the store
+            # closes: its bookkeeping writes go through the same lock.
+            reconciler.alert_worker = None
+            worker.stop.set()
+            worker.wake()
+            worker.join(2.5)
+            if worker.is_alive():
+                log.warning("alert worker did not stop within 2.5 s; continuing shutdown")
+            app.state.alerts = None
             await asyncio.to_thread(reconciler.block_all)
             store.close()
 
@@ -474,6 +487,7 @@ def create_app(
     app.state.store = store
     app.state.conn = store.conn
     app.state.setup_done = setup_done
+    app.state.alerts = None  # the lifespan starts the worker; create_app does not
     app.state.adguard = agh
     app.state.reconciler = reconciler
 
@@ -1096,6 +1110,45 @@ def create_app(
             )
         reconcile("discover_add")
         return {"ok": True, "group": group_payload(group, int(time.time())), "added": domains}
+
+    # ---------------------------------------------------------------- alerts
+    def alerts_payload() -> dict:
+        with store as conn:
+            return alerts.public_config(conn, int(time.time()))
+
+    @app.get(f"{base}/api/alerts")
+    def api_alerts(request: Request):
+        require("admin", request)
+        response = JSONResponse(alerts_payload())
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.put(f"{base}/api/alerts")
+    def api_alerts_update(request: Request, data: dict = Depends(json_body)):
+        require("admin", request)
+        with store as conn:
+            try:
+                alerts.write_config(conn, data)
+            except alerts.TopicError:
+                return json_error(400, i18n.t("error.alerts_topic"), "invalid")
+            except budget.ValidationError:
+                return json_error(400, i18n.t("error.alerts_invalid"), "invalid")
+        response = JSONResponse(alerts_payload())
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.post(f"{base}/api/alerts/test")
+    def api_alerts_test(request: Request):
+        require("admin", request)
+        if not alerts.TEST_LOCK.acquire(blocking=False):
+            return json_error(429, i18n.t("alerts.busy"), "busy")
+        try:
+            category = alerts.send_test(store, settings)
+        finally:
+            alerts.TEST_LOCK.release()
+        if category == "ok":
+            return {"ok": True}
+        return {"ok": False, "category": category}
 
     # --------------------------------------------------------------- account
     @app.post(f"{base}/api/account/password")

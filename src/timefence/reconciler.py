@@ -127,6 +127,8 @@ class Reconciler:
         self.last_error: str | None = None
         self.last_result: dict = {}
         self.last_ok_ts: float | None = None
+        self.last_ok_mono: float | None = None
+        self.alert_worker = None  # set by the app lifespan, never by create_app
         self.warnings: set[str] = set()
         self.stopping = threading.Event()
         self.closed = False
@@ -384,6 +386,8 @@ class Reconciler:
                 log.exception("metering failed")
                 result["errors"].append(f"internal error: {type(exc).__name__}")
         if not self.stopping.is_set():
+            self._probe_alerts(now)
+        if not self.stopping.is_set():
             try:
                 changed_services = self.sync_services(now)
                 if changed_services:
@@ -410,9 +414,17 @@ class Reconciler:
                 synced = False
         if synced and not self.stopping.is_set():
             self.last_ok_ts = time.time()
+            self.last_ok_mono = time.monotonic()
         self.last_error = result["errors"][0] if result["errors"] else None
         self.last_result = result
         return result
+
+    def _probe_alerts(self, now: int) -> None:
+        """Hand the cheap per-group facts to the alert worker (never raises)."""
+        worker = self.alert_worker
+        if worker is None:
+            return
+        worker.probe(now, self.last_ok_ts, self.last_ok_mono)
 
     # -- hands-on paths: shutdown blocking and release -------------------
     def block_all(self) -> dict:

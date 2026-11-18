@@ -14,6 +14,8 @@
   var timezone = "UTC";
   var servicesCache = null;
   var discoverData = null;
+  var alertsConfig = null;
+  var alertsTabLoaded = false;
   var sequence = 0;
   var applied = 0;
   var renderedSignature = null;
@@ -423,7 +425,10 @@
     renderToday();
     if (isAdmin && tab === "groups") { renderGroupList(); }
     if (isAdmin && tab === "history") { renderHistory(); }
-    if (isAdmin && tab === "settings") { loadUsers(); }
+    if (isAdmin && tab === "settings") {
+      loadUsers();
+      if (!alertsTabLoaded) { alertsTabLoaded = true; loadAlerts(); }
+    }
     alertBox();
     restoreFocus(focus);
   }
@@ -864,6 +869,85 @@
     }).catch(function (error) { toast(error.message); });
   }
 
+  // ----------------------------------------------------------------- alerts
+  function alertHost(host) {
+    var text = String(host || "");
+    if (!text) { return ""; }
+    if (text.charAt(0) === "[") { return text.slice(1).split("]")[0].toLowerCase(); }
+    return text.split(":")[0].toLowerCase();
+  }
+
+  function alertHostIsLocal(host) {
+    var name = alertHost(host);
+    if (!name) { return false; }
+    if (name === "localhost" || name === "::1" || name === "0.0.0.0") { return true; }
+    if (/^127\./.test(name) || /^10\./.test(name) || /^192\.168\./.test(name)) { return true; }
+    var private172 = name.match(/^172\.(\d+)\./);
+    if (private172 && Number(private172[1]) >= 16 && Number(private172[1]) <= 31) { return true; }
+    if (/^f[cd][0-9a-f]{2}:/.test(name) || /^fe80:/.test(name)) { return true; }
+    return false;
+  }
+
+  function paintAlerts(data) {
+    alertsConfig = data || null;
+    if (!data) { return; }
+    var channel = data.channel || "";
+    $("#alerts-channel").value = channel;
+    $("#alerts-enabled").checked = data.enabled !== false;
+    $("#alerts-ntfy-base").placeholder = data.ntfy.base_host || "https://ntfy.sh";
+    $("#alerts-ntfy-topic").placeholder = data.ntfy.topic_tail
+      ? t("alerts.configured", { tail: data.ntfy.topic_tail })
+      : t("alerts.topic");
+    $("#alerts-ntfy-token").placeholder = data.ntfy.token_configured
+      ? t("alerts.configured_plain")
+      : t("alerts.token");
+    $("#alerts-webhook-url").placeholder = data.webhook.host
+      ? data.webhook.host + "/…" + data.webhook.path_tail
+      : "https://example/hook";
+    $$("#alerts-events input[data-event]").forEach(function (box) {
+      box.checked = Boolean(data.events && data.events[box.dataset.event]);
+    });
+    $("#alerts-ntfy").classList.toggle("hidden", channel !== "ntfy");
+    $("#alerts-webhook").classList.toggle("hidden", channel !== "webhook");
+    var needsToken = channel === "ntfy" && !data.ntfy.token_configured &&
+      !alertHostIsLocal(data.ntfy.base_host);
+    var warning = $("#alerts-warning");
+    warning.textContent = needsToken ? t("alerts.token_warning") : "";
+    warning.classList.toggle("hidden", !needsToken);
+    var result = $("#alerts-result");
+    result.textContent = data.last_result && data.last_result_ts
+      ? t("alerts.last_result", { result: data.last_result, time: clock(data.last_result_ts) })
+      : t("alerts.never");
+  }
+
+  function loadAlerts() {
+    return api("GET", "/api/alerts")
+      .then(paintAlerts)
+      .catch(function (error) { toast(error.message); });
+  }
+
+  function alertsPayload() {
+    var payload = {
+      channel: $("#alerts-channel").value,
+      enabled: $("#alerts-enabled").checked,
+      events: {}
+    };
+    $$("#alerts-events input[data-event]").forEach(function (box) {
+      payload.events[box.dataset.event] = box.checked;
+    });
+    [
+      ["ntfy_base", "#alerts-ntfy-base"],
+      ["ntfy_topic", "#alerts-ntfy-topic"],
+      ["ntfy_token", "#alerts-ntfy-token"],
+      ["webhook_url", "#alerts-webhook-url"]
+    ].forEach(function (field) {
+      var input = $(field[1]);
+      var value = input ? input.value.trim() : "";
+      if (value) { payload[field[0]] = value; }
+    });
+    return payload;
+  }
+
   // --------------------------------------------------------------- discover
   function renderDiscover(data) {
     discoverData = data;
@@ -1026,7 +1110,11 @@
   });
 
   $$("#admin-tabs .tab").forEach(function (button) {
-    button.addEventListener("click", function () { tab = button.dataset.tab; render(); });
+    button.addEventListener("click", function () {
+      if (button.dataset.tab !== tab) { alertsTabLoaded = false; }
+      tab = button.dataset.tab;
+      render();
+    });
   });
 
   var newGroupButton = $("#new-group");
@@ -1061,6 +1149,35 @@
         accountForm.reset();
         toast(t("toast.password"));
       }).catch(function (error) { toast(error.message); });
+    });
+  }
+
+  var alertsForm = $("#alerts-form");
+  if (alertsForm) {
+    alertsForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      api("PUT", "/api/alerts", alertsPayload()).then(function (data) {
+        ["#alerts-ntfy-base", "#alerts-ntfy-topic", "#alerts-ntfy-token", "#alerts-webhook-url"]
+          .forEach(function (selector) { var input = $(selector); if (input) { input.value = ""; } });
+        paintAlerts(data);
+        toast(t("common.saved"));
+      }).catch(function (error) { toast(error.message); });
+    });
+    var channelSelect = $("#alerts-channel");
+    channelSelect.addEventListener("change", function () {
+      $("#alerts-ntfy").classList.toggle("hidden", channelSelect.value !== "ntfy");
+      $("#alerts-webhook").classList.toggle("hidden", channelSelect.value !== "webhook");
+    });
+    var alertsTest = $("#alerts-test");
+    alertsTest.addEventListener("click", function () {
+      alertsTest.disabled = true;
+      api("POST", "/api/alerts/test", {}).then(function (data) {
+        $("#alerts-result").textContent = data.ok
+          ? t("alerts.test_ok")
+          : t("alerts.test_failed", { result: data.category });
+      }).catch(function (error) {
+        $("#alerts-result").textContent = error.message;
+      }).then(function () { alertsTest.disabled = false; });
     });
   }
 
