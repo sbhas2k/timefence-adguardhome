@@ -4,25 +4,29 @@ TimeFence blocks at the DNS level. That is cheap, works for every device on the
 network without installing anything, and cannot be bypassed by "just using
 another browser" — but it has honest limits.
 
-## Budgets are household-wide
+## Budgets are per group, not per device
 
-One set of budgets applies to the whole network. There is no per-device or
-per-child accounting in 0.1.0. Workaround: give each child their own group
-(e.g. "Games – Anna"), which is per-site, not per-person.
+One set of budgets applies per group, and a group is network-wide. There is no
+per-device accounting. Workaround: give each child their own group owned by
+their account (e.g. "Games – Anna"); that is per-group, not per-person-per-device.
 
 ## Metering is approximate
 
-In *auto* mode TimeFence charges time based on DNS activity in AdGuard's query
+TimeFence charges 15-second buckets of real DNS activity from AdGuard's query
 log. It cannot see the screen: a device that keeps streaming on cached IPs, or
-that uses Private DNS/DoH, a VPN or mobile data, will use less (or no) budget.
-If you need close accounting, prefer *session* mode (explicit start/stop) — or
-fix the device/router so all DNS goes through AdGuard Home.
+that uses Private DNS/DoH, a VPN or mobile data, will use less (or no) budget;
+background API calls may add a few buckets that are not "watching". Blocked
+answers and free-allow windows are not charged. For close accounting, make sure
+all DNS on the device and router goes through AdGuard Home, and keep AdGuard's
+query log enabled (a retention of at least an hour is recommended; TimeFence
+warns when it is shorter).
 
 ## DNS caching adds a delay
 
-A block/unblock can take up to ~1 minute to reach a device (TimeFence caps
-AdGuard's `cache_ttl_max` at 60 s). Browsers and OS resolvers may cache longer;
-a reload or reconnect usually helps.
+A block/unblock can take a while to reach a device: AdGuard caches answers, and
+browsers and OS resolvers may cache longer. TimeFence does not change AdGuard's
+DNS settings; lowering AdGuard's maximum cache TTL under *Settings → DNS
+settings* makes changes land sooner. A reload or reconnect usually helps.
 
 ## Running games/apps may continue for a while
 
@@ -36,7 +40,8 @@ Same for video that is already buffered.
   iOS/macOS "encrypted DNS" profiles, browser "secure DNS", Firefox DoH).
   Disable those, or point them at your AdGuard Home.
 - **VPNs** — traffic leaves through the tunnel; DNS may be resolved elsewhere.
-- **Mobile data** — leaving Wi-Fi leaves the AdGuard Home entirely.
+- **Mobile data** — leaving Wi-Fi leaves your own AdGuard Home (unless you run
+  one reachable from the internet; see [remote-vm.md](remote-vm.md)).
 - **Hard-coded IP addresses** — apps that talk to an IP without a DNS lookup are
   not affected by DNS blocking.
 - **A second DNS server** configured manually on a device.
@@ -61,5 +66,12 @@ has more options (Safe Search, parental filters) — use those alongside.
 ## AdGuard Home must be reachable
 
 If AdGuard goes down, blocking stops (DNS falls back to whatever the device
-uses). TimeFence keeps retrying and reports the error in the UI, but it cannot
-enforce anything by itself.
+uses). TimeFence keeps retrying and reports the problem in the admin banner and
+`/healthz`, but it cannot enforce anything by itself.
+
+## Shutdown blocks everything on purpose
+
+Stopping TimeFence cleanly blocks every managed group, so children cannot
+freebrowse while the controller is down. Use `timefence release` if you stop it
+on purpose and want the blocks lifted; a crash cannot block, and AdGuard keeps
+the last written state until TimeFence starts again.

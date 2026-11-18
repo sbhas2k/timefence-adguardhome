@@ -42,8 +42,17 @@ If the proxy terminates TLS on the same host, add `127.0.0.1/32` to
 TRUSTED_PROXIES=127.0.0.1/32
 ```
 
-`TRUSTED_PROXIES` only affects rate limiting; it is never used for
-authentication.
+TimeFence reads `X-Forwarded-For` itself: it joins every header line, walks the
+hops from the right and uses the first address that is not in
+`TRUSTED_PROXIES`. Uvicorn's own proxy-header handling is disabled (the CLI, the
+systemd unit and the container entrypoint all pass `--no-proxy-headers`), so the
+header is interpreted in exactly one place. A malformed hop falls back to the
+direct peer address. `TRUSTED_PROXIES` only affects rate limiting and the login
+event log; it is never used for authentication.
+
+If your proxy **replaces** rather than appends `X-Forwarded-For`, list the
+proxy's own address in `TRUSTED_PROXIES`; TimeFence then uses the right-most
+untrusted hop, which is the client.
 
 ## Caddy
 
@@ -55,5 +64,8 @@ with `BASE_PATH=/`.
 ## Cookies and HTTPS
 
 Session cookies are `Secure` by default. For plain-HTTP development set
-`SECURE_COOKIES=false` (never in production). The cookie path is `BASE_PATH`, so
-TimeFence and another app on the same hostname cannot see each other's session.
+`SECURE_COOKIES=false` (never in production). The login page shows a note when
+it is opened over plain HTTP, and after a successful sign-in over HTTP without
+HTTPS the browser silently drops the cookie — the page then says the cookie was
+not stored instead of looping. The cookie path is `BASE_PATH`, so TimeFence and
+another app on the same hostname cannot see each other's session.

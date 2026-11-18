@@ -4,43 +4,50 @@
 
 TimeFence is a small companion app for [AdGuard Home](https://adguard.com/adguard-home/overview.html).
 You group the apps and sites you want to ration (YouTube, Roblox, "the whole
-Play Store"...) and give each group a daily number of minutes. Everything is
-**blocked by default**; a child taps **15 / 30 / 60 min**, the group is
-unblocked at the DNS level for that long, and it re-blocks automatically when
-the time is up.
+Play Store"...) and give each group a daily number of minutes. A group is
+**allowed until its daily minutes are used up**; TimeFence meters real DNS
+activity from AdGuard's query log and blocks the group at the DNS level until
+local midnight once the budget is gone.
 
 > **Unofficial community project, not affiliated with or endorsed by AdGuard.**
 
-**Screenshots:** _placeholders — add `today.png`, `groups.png` and
-`discover.png` in [`docs/screenshots/`](docs/screenshots/) (see the note there)._
+**Screenshots:** _placeholders — add `kid-390.png`, `kid-1280.png`,
+`admin-today-390.png` and `admin-today-1280.png` in
+[`docs/screenshots/`](docs/screenshots/) (see the note there)._
 
 ## Features
 
 - **Unlimited groups.** Each group has a name, an emoji, weekday/weekend
   minutes, any number of AdGuard *blocked services* and any number of custom
   domains.
-- **Allowed by default (auto mode).** Nothing is blocked until a group's daily
-  minutes are used up — usage is metered from AdGuard's query log — then the
-  group is blocked until local midnight. An optional `session` mode keeps the
-  stricter "blocked unless a session is running" behaviour.
-- **Multiple accounts, per-account budgets.** Admins manage everything; normal
-  users only see their own groups (plus shared ones) and can start/stop
-  sessions. A group can be assigned to a user, so each child has their own
-  budget. Both levels use username + password.
+- **Allowed until the budget runs out.** Nothing is blocked up front. Usage is
+  metered from the query log in 15-second activity buckets; when the daily
+  minutes are gone the group is blocked until local midnight.
+- **Read-only kid accounts with their own screen.** Admins manage everything; a
+  `user` account sees only its own groups (plus shared ones) and gets one calm
+  phone-first screen: minutes left, a progress bar, "time's up, back tomorrow".
+  It cannot change anything, and the server enforces that on every route.
+- **Per-account budgets.** A group can be owned by a user, so each child has
+  their own budget. Both roles use username + password (no PIN).
 - **Adjust in both directions.** `+15`, `−15` or any custom amount on the Today
-  card, and a `Reset today` action that clears today's usage and bonus.
-- **Live countdown**, progress bar, "40 of 60 min left", and a big Stop button.
-  Stop bills only the seconds actually used.
+  card, plus `Block now`, `Allow freely until HH:MM`, pause and `Reset today`.
+  Every action is applied once (double taps are ignored while in flight) and
+  confirmed with a toast.
 - **Reconciler** every 30 seconds: AdGuard is only written to when the desired
   state differs, and it preserves services/rules that TimeFence does not own.
-- **Admin tools**: bonus minutes for today, "allow freely until HH:MM" (no
-  budget), "block now", pause a group, edit minutes, **Discover** recent
-  domains from the AdGuard query log, and a per-group rule **Test**.
+- **Admin tools**: edit minutes and targets, **Discover** recent domains from
+  the AdGuard query log, a per-group rule **Test**, user management, and a
+  password card that actually changes your own password.
 - **Shared/critical-domain guard** with a plain-language warning
   ("Blocking apps.apple.com blocks the whole App Store, not one app.").
-- **History**: last 7 days per group plus today's session list.
-- **Two logins**: a shared user PIN (start/stop sessions only) and an admin
-  password (everything). Argon2 hashing, login lockout, CSRF, CSP.
+- **History**: the last 7 days per group, with dates that stay correct across
+  daylight-saving changes.
+- **Accounts that end sessions.** Disabling, deleting, demoting or changing the
+  password of an account signs its existing sessions out on the next request.
+  Login is JSON-only, rate limited per account+address and per address, and
+  always runs a hash so unknown users cannot be timed.
+- **Honest health check** for container supervisors, and a safe shutdown that
+  blocks every managed group (see [Fail-safety](docs/how-it-works.md#fail-safety)).
 - Mobile-first UI, light/dark, no CDN, no frontend build step.
 
 ## Quick start
@@ -74,17 +81,17 @@ and the `timefence.service` unit.
 
 ### First login
 
-> ⚠️ **The fresh install uses `admin` / `admin`.** The first admin login forces
-> you to choose a new password (at least 10 characters, not `admin`). Until you
-> do that, every API call except login/setup/logout is rejected.
+> ⚠️ **A fresh install uses `admin` / `admin`.** That login lands on the
+> first-run screen and forces a new admin password (at least 10 characters, not
+> `admin`). Until setup is complete every other API call is rejected. The
+> default login hint is only shown while setup is incomplete.
 
 Accounts are username + password. Create one per child/family member in
-**Settings → Users** and pick the role: `admin` (everything) or `user` (status,
-plus start/stop for session-mode groups). A `user` password needs 8 characters,
-an `admin` password 10.
+**Settings → Users** and pick the role: `admin` (everything) or `user`
+(read-only, own screen). A `user` password needs 8 characters, an `admin`
+password 10.
 
-Open `http://127.0.0.1:8099/` (or your reverse-proxied URL) and sign in as
-**Admin**.
+Open `http://127.0.0.1:8099/` (or your reverse-proxied URL) and sign in.
 
 ## Configuration
 
@@ -98,14 +105,17 @@ local runs). `install.sh` writes `/etc/timefence/timefence.env` (mode 600).
 | `ADGUARD_PASSWORD` | – | AdGuard Home password (inline) |
 | `ADGUARD_PASSWORD_FILE` | – | File containing the password (wins over the inline value) |
 | `BASE_PATH` | `/` | URL prefix the app is served under, e.g. `/timer` |
-| `TZ` | `UTC` | IANA timezone for budgets and the midnight reset |
-| `LISTEN_HOST` | `127.0.0.1` | Bind address |
+| `TZ` | `UTC` | IANA timezone for budgets and the midnight reset (**set yours**) |
+| `LISTEN_HOST` | `127.0.0.1` | Bind address (the image and `install.sh` keep it on loopback) |
 | `LISTEN_PORT` | `8099` | Bind port |
-| `DATA_DIR` | `/var/lib/timefence` | SQLite database + session secret |
+| `DATA_DIR` | `/var/lib/timefence` | SQLite database + session secret (mode 0700 / 0600) |
 | `TRUSTED_PROXIES` | *(empty)* | Comma separated CIDRs whose `X-Forwarded-For` is trusted |
 | `RECONCILE_INTERVAL` | `30` | Seconds between reconciler passes (min 5) |
 | `SECURE_COOKIES` | `true` | `false` only for plain-HTTP development |
 | `LOG_LEVEL` | `INFO` | `DEBUG`/`INFO`/`WARNING`/`ERROR` |
+
+`TZ` defaults to `UTC`; TimeFence logs a warning and shows an admin banner until
+you set your IANA timezone.
 
 `timefence check` validates the configuration and prints the AdGuard connection
 result without starting the web server.
@@ -116,12 +126,12 @@ Admin → **Groups** → **New group**:
 
 1. Name + emoji (e.g. `Games` 🎮).
 2. Weekday minutes, and weekend minutes if they differ.
-3. **Mode**: *Allowed until the daily minutes run out* (default, nothing is
-   blocked up front) or *Blocked unless a session is running*.
-4. Pick AdGuard **services** with the searchable picker (these are the official
+3. Pick AdGuard **services** with the searchable picker (these are the official
    AdGuard "blocked services" ids), and/or paste **domains**, one per line.
    Pasted URLs are reduced to their hostname; each becomes `||domain^`, which
    also covers subdomains. A domain or service can belong to only one group.
+4. Optionally assign an **owner** (a user account) so the group shows up on that
+   child's screen.
 5. If a domain is shared/critical (App Store, iCloud, Google, Akamai, ...),
    TimeFence asks for explicit confirmation and explains what else breaks.
 
@@ -135,13 +145,22 @@ registrable domain, hides OS/telemetry noise and already-managed domains, and
 lets you tick domains and add them to a group. See
 [docs/discover.md](docs/discover.md) for a worked example.
 
-## Why `cache_ttl_max = 60`?
+## DNS caching and how fast a block lands
 
-AdGuard Home caches DNS answers. With a long TTL, a device that has just been
-unblocked (or re-blocked) keeps using the old answer until the cache entry
-expires. TimeFence sets AdGuard's `cache_ttl_max` to 60 seconds so changes take
-effect within about a minute — a deliberate trade-off between responsiveness
-and cache efficiency. TimeFence does not touch any other AdGuard setting.
+AdGuard Home caches DNS answers, so a device that has just lost access may keep
+using a cached answer until that entry expires. TimeFence does **not** change
+any of AdGuard's DNS settings (including its maximum cache TTL). If you want
+changes to land faster, lower AdGuard's maximum cache TTL yourself under
+*Settings → DNS settings*; how long devices keep answers also depends on the
+TTLs the sites publish and on browser/OS resolver caches.
+
+## Running on a remote VM
+
+TimeFence can serve a home network from a VM with a public address. Only DNS
+(port 53, TCP and UDP) should be reachable from the internet, only from the home
+connection, and the home address changes with consumer ISPs. The full guide —
+firewall rules, an SSH tunnel for the UI, and a helper that re-resolves a DDNS
+name every five minutes — is in [docs/remote-vm.md](docs/remote-vm.md).
 
 ## Recovering access
 
@@ -155,19 +174,33 @@ sudo -u timefence env DATA_DIR=/var/lib/timefence \
 
 Add `--username NAME` to reset another account (`--role admin|user`). Rules:
 admin password ≥ 10 characters and not `admin`; user password ≥ 8 characters.
+Changing a password signs that account out everywhere.
 
-Five failed sign-ins lock that client IP for 15 minutes. The lockout is held in
-memory, so `sudo systemctl restart timefence` clears it immediately.
+Sign-in failures are counted per account+address (5 in 15 minutes) and per
+address (20 in 15 minutes). The counters are held in memory, so
+`sudo systemctl restart timefence` clears them immediately.
+
+`timefence release` removes TimeFence's blocks from AdGuard Home (the managed
+rules section and the services it took over) while keeping everything else. A
+clean stop of TimeFence blocks every managed group, so use `release` whenever
+you stop TimeFence on purpose — for example before `uninstall.sh`, which calls
+it for you:
+
+```bash
+docker compose stop timefence && \
+  docker compose run --rm --no-deps --entrypoint timefence timefence release
+```
 
 ## Documentation
 
-- [How it works](docs/how-it-works.md) — reconciler, ownership, fail-safety
+- [How it works](docs/how-it-works.md) — metering, reconciler, ownership, fail-safety
 - [Reverse proxy](docs/reverse-proxy.md) — nginx (root and sub-path), Caddy
 - [Limitations](docs/limitations.md) — what DNS-level time limits cannot do
 - [Discover workflow](docs/discover.md) — worked example
 - [Backup & restore](docs/backup-restore.md)
 - [Upgrading](docs/upgrading.md)
 - [Running in Docker](docs/docker.md)
+- [Running on a remote VM](docs/remote-vm.md)
 
 ## FAQ
 
@@ -176,11 +209,12 @@ memory, so `sudo systemctl restart timefence` clears it immediately.
 **Does it need the AdGuard Home add-on/Pro?** No, the free AdGuard Home has the
 control API it uses.
 
-**How is "used" time measured?** In *auto* mode TimeFence charges the seconds
-between reconcile ticks when the group's domains were resolved through AdGuard.
-It ignores its own loopback lookups. Apps that keep streaming on cached IPs (or
-bypass DNS with DoH/VPN/mobile data) can therefore under-report — see
-[limitations](docs/limitations.md).
+**How is "used" time measured?** Every 15-second bucket in which one of the
+group's domains was actually resolved through AdGuard counts once. Blocked
+answers (ad filters, parental filters, blocked services) and free-allow windows
+do not count, and TimeFence ignores its own loopback lookups. Devices that keep
+streaming on cached IPs or bypass DNS with DoH/VPN/mobile data therefore
+under-report — see [limitations](docs/limitations.md).
 
 **I forgot the admin password.** See [Recovering access](#recovering-access).
 
@@ -188,22 +222,28 @@ bypass DNS with DoH/VPN/mobile data) can therefore under-report — see
 the `# timefence:begin … # timefence:end` block and the services belonging to
 its groups. Everything else is preserved verbatim.
 
-**Can different devices have different budgets?** Not in 0.1.0 — budgets are
-household-wide and enforced network-wide. See the roadmap.
+**Can different devices have different budgets?** Not yet — budgets are per
+group/account, not per device. Give each child their own group (owned by their
+account) for per-child budgets.
 
 **Do I need HTTPS?** For anything but localhost, yes: session cookies are
-`Secure` by default. Put it behind nginx/Caddy.
+`Secure` by default. Put it behind nginx/Caddy. On a plain-HTTP LAN the login
+page says so and sign-in will appear to fail unless you set
+`SECURE_COOKIES=false` (development only).
 
-**How do I add a second child?** You cannot yet; there is one shared user PIN.
-Use groups per child as a workaround (e.g. "Child A – games").
+**How do I add a second child?** Create a second `user` account and one group
+per child, owned by that account. Each child signs in and sees only their
+groups.
 
-## Roadmap (not in 0.1.0)
+**Can I run it on a server with a changing home IP?** Yes — see
+[Running on a remote VM](docs/remote-vm.md).
 
-- Per-device budgets and multiple user profiles
-- Auto mode: count usage from the query log instead of timed sessions
+## Roadmap
+
+- Per-device budgets and a 7-day usage export
+- Notifications (e.g. "5 minutes left") and bedtime windows
 - YouTube restricted mode as an alternative to blocking
 - Pi-hole support
-- Notifications (e.g. "5 minutes left")
 - Multiple AdGuard instances
 - Translations (the UI strings already live in `src/timefence/i18n.py`)
 
@@ -213,10 +253,12 @@ Use groups per child as a workaround (e.g. "Child A – games").
 python3 -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 pytest
-ruff check src tests && ruff format --check src tests
+ruff check src tests scripts && ruff format --check src tests scripts
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+The runtime dependencies are pinned in `requirements.lock` (with hashes); the
+image installs from it. See [CONTRIBUTING.md](CONTRIBUTING.md) and
+[SECURITY.md](SECURITY.md).
 
 ## License
 
