@@ -38,6 +38,11 @@ local midnight once the budget is gone.
   card, plus `Block now`, `Allow freely until HH:MM`, pause and `Reset today`.
   Every action is applied once (double taps are ignored while in flight) and
   confirmed with a toast.
+- **Alerts when it matters.** One ntfy topic or one webhook (no accounts, no
+  third-party service): "10 minutes left", "budget used up", an optional bedtime
+  notice, an optional Monday summary, and a warning when AdGuard Home stops
+  answering plus a recovery message. Messages carry a group name and numbers
+  only; de-duplication and an hourly cap keep them from turning into noise.
 - **Reconciler** every 30 seconds: AdGuard is only written to when the desired
   state differs, and it preserves services/rules that TimeFence does not own.
 - **Admin tools**: edit minutes and targets, **Discover** recent domains from

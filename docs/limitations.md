@@ -86,6 +86,28 @@ If AdGuard goes down, blocking stops (DNS falls back to whatever the device
 uses). TimeFence keeps retrying and reports the problem in the admin banner and
 `/healthz`, but it cannot enforce anything by itself.
 
+## Alerts are best effort
+
+Alerts are a convenience, not a guarantee. There is **one** channel at a time
+(ntfy or one webhook), each message is tried **once** (no retry), and at most 20
+messages go out per rolling hour (with the exhausted and outage messages
+protected). A message carries only a group name, numbers and a time — no
+domains, client addresses or usernames — so treat it as a nudge, not a log.
+
+Delivery runs in one background thread with a bounded queue (50): while a slow
+server holds it, newer messages are dropped (the oldest of the same kind first)
+and the drop counter in the alert settings goes up. Redirects are not followed,
+environment proxies are ignored, and the timeouts are per socket operation (3 s
+connect, 2 s read), not a hard total deadline. Private/LAN targets are allowed
+on purpose, because a self-hosted ntfy is the normal setup.
+
+"AdGuard unreachable" needs three reconcile runs in a row without a successful
+sync (three times `RECONCILE_INTERVAL`, 90 s by default); any success in between
+resets it, so a flapping connection may never alert. A clock that jumps
+backwards can suppress a duplicate message and a jump forwards can skip a day;
+both are accepted for a household tool. The topic, token and webhook path are
+stored in plain text in the database, so they are in every backup.
+
 ## Shutdown blocks everything on purpose
 
 Stopping TimeFence cleanly blocks every managed group, so children cannot

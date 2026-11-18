@@ -193,6 +193,55 @@ not report why: the reason is in the admin banner and the logs. An
 auto-restart tool that acts on the health check will restart TimeFence whenever
 AdGuard Home is unreachable; that does not help and is not recommended.
 
+## Alerts
+
+One channel at a time: **ntfy** (a server base URL, a topic and an optional
+access token) or a generic **webhook**. The configuration lives in the settings
+table; the topic, token and webhook path are write-only through the API (reads
+return a boolean and the last two characters only). `alerts_sent` is both the
+de-duplication record and the rate-limit log, pruned after 14 days.
+
+Each reconcile run calls a cheap **alert probe** after metering and before the
+AdGuard phases. It takes the store lock once, builds the per-group facts,
+classifies the events and enqueues them; its own errors are logged once and
+never touch the run result or the event log. Delivery happens in a separate
+daemon thread, so no request, reconcile run or shutdown waits for it.
+
+| event | fires | default | de-duplicated by |
+|---|---|---|---|
+| `group_low` | `0 < remaining ≤ 10 min` | on | `low:<group>:<local day>` |
+| `group_exhausted` | the run that reaches 0 minutes | on | `ex:<group>:<local day>` |
+| `bedtime_started` | the first run inside a bedtime window | off | `bedtime:<group>:<local day>` |
+| `sync_failing` | three runs in a row without a successful AdGuard sync | on | the outage start |
+| `sync_recovered` | the first run after that outage | on | the outage start |
+| `weekly_summary` | Monday, local 08:00 or later | off | `weekly:<local Monday>` |
+
+- A group that is paused, free, force-blocked or in a bedtime window never
+  produces `group_low` or `group_exhausted`. Exhausted supersedes low, and a
+  top-up after an exhausted message does not send a second one (the parent knows
+  they topped up).
+- An outage needs three consecutive stale runs; any success resets the count, so
+  a flapping AdGuard never alerts. The outage start is persisted, so a restart
+  during an outage does not repeat the message. Durations use the monotonic
+  clock; the persisted stamps use wall time.
+- The weekly summary is one message: the 7 local dates ending yesterday, one
+  line per non-deleted group with `round(seconds / 60, 1)` minutes. If Monday
+  was missed, the next run records the key without sending and logs one line.
+- Everything uses local dates and the local wall clock (`TZ`): no `86400`
+  arithmetic, so a week with a daylight-saving change totals the same seconds.
+- At most 20 messages go out per rolling hour. `group_exhausted` and
+  `sync_failing` are protected: they are dropped only when the hour already
+  holds 20 messages of their own class. A full queue drops the oldest message of
+  the incoming class (or the newcomer). Drops increment a counter that survives
+  restarts and is shown in the alert settings.
+- One attempt, no retry, no redirects; the queue holds 50 messages; the response
+  body is never logged. Test messages go through the same limits.
+- Webhooks receive JSON with `event`, `time` (ISO-8601 with the local offset)
+  and `message`, plus `group`/`minutes_left`, `group`, `outage_seconds` or
+  `days`/`groups` depending on the event. ntfy receives a plain-text body with
+  `Title`, `Priority` and `Tags` headers. A message only ever contains a group
+  name, numbers and a time — never a domain, client address or username.
+
 ## Fail-safety
 
 - **Clean stop blocks every managed group.** On shutdown the loop stops, then

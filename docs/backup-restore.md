@@ -9,7 +9,8 @@ Everything TimeFence knows is in one SQLite file plus two small files.
 | `/etc/timefence/timefence.env` | configuration (mode 600; contains the AdGuard password if inline) |
 
 The data directory is mode 0700, the database and secret 0600. Keep backups at
-the same mode (they contain password hashes).
+the same mode: they contain password hashes and, once alerts are configured, the
+ntfy topic/token and the webhook URL in plain text.
 
 Each schema upgrade first writes one verified copy next to the database, named
 `timefence.db.pre-v<schema>.bak` (for example `timefence.db.pre-v5.bak`). Those

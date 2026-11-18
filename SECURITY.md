@@ -82,6 +82,30 @@ is **not** hardened against a hostile multi-tenant deployment.
   `/etc/timefence/timefence.env` or the password file you mount. Give it a
   dedicated AdGuard Home user with admin rights if you do not want to share the
   main one.
+- **Outbound alert requests.** The admin supplies the target, so the target is
+  trusted like any other admin input: only `http` and `https` are accepted, URLs
+  with embedded credentials or a fragment are refused, and hosts must parse
+  (IDN and IPv6 literals are allowed). Private and LAN addresses are **allowed
+  on purpose** — a self-hosted ntfy on `192.168.x.x` is the normal setup — so
+  the app is not an SSRF boundary. Redirects are never followed; the HTTP
+  session ignores environment proxies (`trust_env=False`); there is no retry.
+  The connect timeout is 3 s and the read timeout 2 s *per socket operation*,
+  not a hard total deadline, so a slow-dripping server can hold the single alert
+  worker longer; the queue is bounded and the reconciler is independent. At most
+  1 KiB of the response body is read and it is never logged, stored or returned;
+  failures leave the sender only as a category (`dns`, `connect`, `timeout`,
+  `http_<status>`, `config`).
+- **Alert secrets.** The ntfy topic, the optional access token and the webhook
+  path are stored in plain text in SQLite (mode 0600) and therefore in every
+  backup and every copy of `timefence.db` — see
+  [backup-restore](docs/backup-restore.md) and [upgrading](docs/upgrading.md).
+  The API never reads them back: `GET /api/alerts` shows a boolean and the last
+  two characters of a tail only, and no value is written to the event log. If a
+  copy leaks, rotate the token, change the topic, or change the hook path. An
+  ntfy topic without an access token is readable by anyone who learns it, and
+  `https://ntfy.sh` sees those messages; prefer a self-hosted ntfy. The settings
+  card warns when ntfy has no token and the host is neither localhost nor a
+  private address.
 - **Break-glass.** Anyone who can run commands as root or as the `timefence`
   service user can reset any password with `timefence passwd`; that is
   deliberate local recovery, not a remote feature.

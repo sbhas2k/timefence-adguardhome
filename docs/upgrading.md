@@ -20,6 +20,9 @@ be reconfigured and existing sign-ins keep working.
   again after the upgrade. Change that password before upgrading if you would
   rather not see it.
 - **Sessions stay signed in**; no cookie changes in this release.
+- **Alerts are new and off by default.** Configure one channel under Settings →
+  Alerts. The topic, token and webhook path are stored in the database and
+  therefore in your backups, so keep those copies private.
 
 ### Backup first
 
