@@ -18,9 +18,14 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "deploy" / "ddns-allowlist.sh"
 BASH = shutil.which("bash")
 
-pytestmark = pytest.mark.skipif(
-    BASH is None, reason="needs a POSIX shell (bash) to execute the helper"
-)
+
+@pytest.fixture()
+def shell() -> str:
+    """The shell that runs the helper; the static checks do not need one."""
+    if BASH is None:
+        pytest.skip("needs a POSIX shell (bash) to execute the helper")
+    return BASH
+
 
 ALLOW_UDP = "ufw allow from 203.0.113.9 to any port 53 proto udp comment timefence-ddns"
 ALLOW_TCP = "ufw allow from 203.0.113.9 to any port 53 proto tcp comment timefence-ddns"
@@ -34,12 +39,14 @@ def _stub(path: Path, body: str) -> None:
 class Harness:
     def __init__(
         self,
+        shell: str,
         tmp_path: Path,
         *,
         ip: str = "203.0.113.9",
         getent_exit: int = 0,
         ufw_exit: int = 0,
     ) -> None:
+        self.shell = shell
         self.tmp = tmp_path
         self.calls_file = tmp_path / "calls.log"
         self.calls_file.write_text("", encoding="utf-8")
@@ -70,7 +77,7 @@ class Harness:
         env["TF_GETENT_EXIT"] = str(self.getent_exit)
         env["TF_UFW_EXIT"] = str(self.ufw_exit)
         return subprocess.run(
-            [BASH or "bash", SCRIPT.as_posix(), *args],
+            [self.shell, SCRIPT.as_posix(), *args],
             cwd=str(self.tmp),
             env=env,
             capture_output=True,
@@ -94,8 +101,8 @@ class Harness:
         (self.state_dir / "ip").write_text(address + "\n", encoding="utf-8")
 
 
-def test_hostname_with_shell_metacharacters_is_rejected(tmp_path: Path) -> None:
-    harness = Harness(tmp_path)
+def test_hostname_with_shell_metacharacters_is_rejected(shell: str, tmp_path: Path) -> None:
+    harness = Harness(shell, tmp_path)
     for bad in ("ddns.example.org; ls", "ddns example.org", "ddns.example.org&&id"):
         proc = harness.run(bad, "--state-dir", harness.state_dir.as_posix())
         assert proc.returncode == 64, (bad, proc.returncode, proc.stderr)
@@ -105,8 +112,8 @@ def test_hostname_with_shell_metacharacters_is_rejected(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "address", ["127.0.0.1", "10.1.2.3", "192.168.1.5", "100.64.0.9", "0.0.0.0"]
 )
-def test_non_public_address_is_refused(tmp_path: Path, address: str) -> None:
-    harness = Harness(tmp_path, ip=address)
+def test_non_public_address_is_refused(shell: str, tmp_path: Path, address: str) -> None:
+    harness = Harness(shell, tmp_path, ip=address)
     harness.set_state("198.51.100.7")
     proc = harness.run("ddns.example.org", "--state-dir", harness.state_dir.as_posix())
     assert proc.returncode == 2, (address, proc.stderr)
@@ -114,16 +121,18 @@ def test_non_public_address_is_refused(tmp_path: Path, address: str) -> None:
     assert harness.state() == "198.51.100.7\n"
 
 
-def test_first_run_allows_both_protocols_and_records_the_address(tmp_path: Path) -> None:
-    harness = Harness(tmp_path)
+def test_first_run_allows_both_protocols_and_records_the_address(
+    shell: str, tmp_path: Path
+) -> None:
+    harness = Harness(shell, tmp_path)
     proc = harness.run("ddns.example.org", "--state-dir", harness.state_dir.as_posix())
     assert proc.returncode == 0, proc.stderr
     assert harness.ufw_calls() == [ALLOW_UDP, ALLOW_TCP]
     assert harness.state() == "203.0.113.9\n"
 
 
-def test_same_address_makes_no_firewall_call(tmp_path: Path) -> None:
-    harness = Harness(tmp_path)
+def test_same_address_makes_no_firewall_call(shell: str, tmp_path: Path) -> None:
+    harness = Harness(shell, tmp_path)
     harness.set_state("203.0.113.9")
     proc = harness.run("ddns.example.org", "--state-dir", harness.state_dir.as_posix())
     assert proc.returncode == 0, proc.stderr
@@ -131,8 +140,8 @@ def test_same_address_makes_no_firewall_call(tmp_path: Path) -> None:
     assert "no firewall change" in proc.stderr
 
 
-def test_new_address_is_added_before_the_old_one_is_removed(tmp_path: Path) -> None:
-    harness = Harness(tmp_path, ip="203.0.113.10")
+def test_new_address_is_added_before_the_old_one_is_removed(shell: str, tmp_path: Path) -> None:
+    harness = Harness(shell, tmp_path, ip="203.0.113.10")
     harness.set_state("203.0.113.9")
     proc = harness.run("ddns.example.org", "--state-dir", harness.state_dir.as_posix())
     assert proc.returncode == 0, proc.stderr
@@ -146,8 +155,8 @@ def test_new_address_is_added_before_the_old_one_is_removed(tmp_path: Path) -> N
     assert harness.state() == "203.0.113.10\n"
 
 
-def test_resolution_failure_keeps_rules_and_state(tmp_path: Path) -> None:
-    harness = Harness(tmp_path, getent_exit=3)
+def test_resolution_failure_keeps_rules_and_state(shell: str, tmp_path: Path) -> None:
+    harness = Harness(shell, tmp_path, getent_exit=3)
     harness.set_state("198.51.100.7")
     proc = harness.run("ddns.example.org", "--state-dir", harness.state_dir.as_posix())
     assert proc.returncode == 1, proc.stderr
@@ -155,8 +164,8 @@ def test_resolution_failure_keeps_rules_and_state(tmp_path: Path) -> None:
     assert harness.state() == "198.51.100.7\n"
 
 
-def test_failed_add_keeps_the_old_rule_and_state(tmp_path: Path) -> None:
-    harness = Harness(tmp_path, ip="203.0.113.10", ufw_exit=1)
+def test_failed_add_keeps_the_old_rule_and_state(shell: str, tmp_path: Path) -> None:
+    harness = Harness(shell, tmp_path, ip="203.0.113.10", ufw_exit=1)
     harness.set_state("203.0.113.9")
     proc = harness.run("ddns.example.org", "--state-dir", harness.state_dir.as_posix())
     assert proc.returncode != 0
@@ -164,8 +173,8 @@ def test_failed_add_keeps_the_old_rule_and_state(tmp_path: Path) -> None:
     assert not any("delete" in call for call in harness.ufw_calls())
 
 
-def test_dry_run_prints_commands_and_changes_nothing(tmp_path: Path) -> None:
-    harness = Harness(tmp_path, ip="203.0.113.10")
+def test_dry_run_prints_commands_and_changes_nothing(shell: str, tmp_path: Path) -> None:
+    harness = Harness(shell, tmp_path, ip="203.0.113.10")
     harness.set_state("203.0.113.9")
     proc = harness.run("ddns.example.org", "--state-dir", harness.state_dir.as_posix(), "--dry-run")
     assert proc.returncode == 0, proc.stderr
