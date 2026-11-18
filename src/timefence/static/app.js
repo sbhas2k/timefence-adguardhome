@@ -16,6 +16,8 @@
   var discoverData = null;
   var sequence = 0;
   var applied = 0;
+  var renderedSignature = null;
+  var modalOpener = null;
   var inflight = {};
   var busy = {};
 
@@ -117,15 +119,81 @@
 
   function openModal(html) {
     var modal = $("#modal");
+    if (modal.classList.contains("hidden")) { modalOpener = document.activeElement; }
     $("#modal-sheet").innerHTML = html;
+    var heading = $("#modal-sheet").querySelector("h2");
+    if (heading) {
+      heading.id = "modal-title";
+      modal.setAttribute("aria-labelledby", heading.id);
+    }
     modal.classList.remove("hidden");
     var focusable = $("#modal-sheet").querySelector("input, textarea, button, select");
     if (focusable) { focusable.focus(); }
   }
 
   function closeModal() {
-    $("#modal").classList.add("hidden");
+    var modal = $("#modal");
+    modal.classList.add("hidden");
+    modal.removeAttribute("aria-labelledby");
     $("#modal-sheet").innerHTML = "";
+    var opener = modalOpener;
+    modalOpener = null;
+    /* Focus goes back to what opened the dialog, not to the top of the page. */
+    if (opener && opener.focus && document.contains(opener)) { opener.focus(); }
+  }
+
+  function modalFocusable() {
+    return $$(
+      "a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), " +
+        "textarea:not([disabled]), [tabindex]:not([tabindex='-1'])",
+      $("#modal-sheet")
+    ).filter(function (el) { return el.getClientRects().length > 0; });
+  }
+
+  /* Identity of the focused control, so a re-render can put focus back. */
+  function focusKey(element) {
+    if (!element || element === document.body || !element.getAttribute) { return ""; }
+    var names = [
+      "id",
+      "data-custom-bonus",
+      "data-free-time",
+      "data-group",
+      "data-action",
+      "data-user",
+      "data-role"
+    ];
+    var selector = "";
+    names.forEach(function (name) {
+      if (element.getAttribute(name) !== null) {
+        selector += "[" + name + '="' + String(element.getAttribute(name)).replace(/"/g, '\\"') + '"]';
+      }
+    });
+    return selector;
+  }
+
+  function captureFocus() {
+    var element = document.activeElement;
+    var selector = focusKey(element);
+    if (!selector) { return null; }
+    var text = "value" in element ? element.value : null;
+    var start = null;
+    var end = null;
+    if (element.selectionStart != null) {
+      start = element.selectionStart;
+      end = element.selectionEnd;
+    }
+    return { selector: selector, value: text, start: start, end: end };
+  }
+
+  function restoreFocus(saved) {
+    if (!saved) { return; }
+    var target = document.querySelector(saved.selector);
+    if (!target) { return; }
+    if (saved.value !== null && "value" in target && !target.value) { target.value = saved.value; }
+    if (document.activeElement !== target) { target.focus(); }
+    if (saved.start != null && target.setSelectionRange) {
+      try { target.setSelectionRange(saved.start, saved.end); } catch (err) { /* not a text field */ }
+    }
   }
 
   function findGroup(groupId) {
@@ -227,7 +295,7 @@
       if (!wanted[card.dataset.cardGroup]) { container.removeChild(card); }
     });
 
-    groups.forEach(function (group) {
+    groups.forEach(function (group, index) {
       var id = String(group.id);
       var card = container.querySelector('[data-card-group="' + id + '"]');
       if (!card) {
@@ -241,9 +309,25 @@
         card.appendChild(live);
         card.appendChild(controls);
       }
-      container.appendChild(card);  /* keeps the order in step with the data */
+      /* Only move the card when the order really changed: re-appending a card
+         that holds the focused input blurs it in every browser. */
+      if (card.parentNode !== container) {
+        container.appendChild(card);
+      } else {
+        var previous = index > 0
+          ? container.querySelector('[data-card-group="' + String(groups[index - 1].id) + '"]')
+          : null;
+        if (card.previousElementSibling !== previous) {
+          container.insertBefore(card, previous ? previous.nextSibling : container.firstChild);
+        }
+      }
 
-      card.querySelector("[data-live]").innerHTML = liveHtml(group);
+      var live = card.querySelector("[data-live]");
+      var liveMarkup = liveHtml(group);
+      if (live.dataset.html !== liveMarkup) {
+        live.innerHTML = liveMarkup;
+        live.dataset.html = liveMarkup;
+      }
 
       var controls = card.querySelector("[data-controls]");
       var input = controls.querySelector("[data-custom-bonus]");
@@ -300,8 +384,28 @@
     $("#history-table").innerHTML = head + "<tbody>" + rows + "</tbody>";
   }
 
+  /* Everything the DOM shows, minus the ever-changing app.now: a poll that
+     changes nothing must not touch the DOM at all. */
+  function viewSignature() {
+    if (!state) { return ""; }
+    var app = state.app || {};
+    return JSON.stringify({
+      role: app.role || "",
+      username: app.username || "",
+      tab: tab,
+      warnings: state.warnings || [],
+      adguard_error: state.adguard_error || "",
+      groups: state.groups || [],
+      history: state.history || []
+    });
+  }
+
   function render() {
     if (!state) { return; }
+    var signature = viewSignature();
+    if (signature === renderedSignature) { return; }
+    renderedSignature = signature;
+    var focus = captureFocus();
     var isAdmin = role === "admin";
     $("#role-badge").textContent = isAdmin ? "admin" : "user";
     $("#admin-tabs").classList.toggle("hidden", !isAdmin);
@@ -318,6 +422,7 @@
     if (isAdmin && tab === "history") { renderHistory(); }
     if (isAdmin && tab === "settings") { loadUsers(); }
     alertBox();
+    restoreFocus(focus);
   }
 
   // ---------------------------------------------------------------- refresh
@@ -817,7 +922,27 @@
   });
 
   document.addEventListener("keydown", function (event) {
-    if (event.key === "Escape" && !$("#modal").classList.contains("hidden")) { closeModal(); }
+    var modal = $("#modal");
+    if (!modal || modal.classList.contains("hidden")) { return; }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeModal();
+      return;
+    }
+    if (event.key !== "Tab") { return; }
+    var items = modalFocusable();
+    if (!items.length) { return; }
+    var first = items[0];
+    var last = items[items.length - 1];
+    var active = document.activeElement;
+    var inside = modal.contains(active);
+    if (event.shiftKey && (active === first || !inside)) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && (active === last || !inside)) {
+      event.preventDefault();
+      first.focus();
+    }
   });
 
   $$("#admin-tabs .tab").forEach(function (button) {

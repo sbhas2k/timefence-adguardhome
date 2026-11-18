@@ -352,3 +352,49 @@ def test_pages_build_urls_for_root_and_prefix(tmp_path, fake, prefix):
 
         assert client.get(api("/static/style.css")).status_code == 200
         assert client.get(api("/login")).status_code == 200
+
+
+def _app_js() -> str:
+    from timefence import api
+
+    return (Path(api.__file__).parent / "static" / "app.js").read_text(encoding="utf-8")
+
+
+def test_poll_refresh_keeps_focus_and_typed_input():
+    """No DOM churn on an unchanged poll, and focus survives a refresh that does change it.
+
+    This cannot observe a real browser; the browser pre-check is the authoritative
+    evidence. It fails if the early return, the focus snapshot, the node-order
+    guard or the live-markup diff is removed.
+    """
+    text = _app_js()
+    required = [
+        "var renderedSignature = null;",
+        "if (signature === renderedSignature) { return; }",
+        "var focus = captureFocus();",
+        "restoreFocus(focus);",
+        "card.previousElementSibling !== previous",
+        "live.dataset.html !== liveMarkup",
+        "target.setSelectionRange(saved.start, saved.end);",
+    ]
+    missing = [token for token in required if token not in text]
+    assert missing == [], missing
+    assert "container.appendChild(card);  /* keeps the order in step with the data */" not in text
+
+
+def test_dialog_traps_focus_and_returns_it_to_the_opener():
+    """The dialog remembers its opener, traps Tab and is labelled by its heading."""
+    text = _app_js()
+    required = [
+        "var modalOpener = null;",
+        'if (modal.classList.contains("hidden")) { modalOpener = document.activeElement; }',
+        'modal.setAttribute("aria-labelledby", heading.id);',
+        "if (opener && opener.focus && document.contains(opener)) { opener.focus(); }",
+        'modal.removeAttribute("aria-labelledby");',
+        "function modalFocusable()",
+        'if (event.key !== "Tab") { return; }',
+        "if (event.shiftKey && (active === first || !inside)) {",
+        "} else if (!event.shiftKey && (active === last || !inside)) {",
+    ]
+    missing = [token for token in required if token not in text]
+    assert missing == [], missing
