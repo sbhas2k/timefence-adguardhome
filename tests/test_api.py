@@ -453,3 +453,48 @@ def test_reset_today_clears_metered_usage(ready, fake):
     assert state["remaining_minutes"] == 10
     assert state["permitted"] is True
     assert fake.ids == []
+
+
+def test_block_now_lasts_until_local_midnight_on_dst_day(tmp_path, fake, monkeypatch):
+    import types
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from timefence import api as api_module
+    from timefence import budget as budget_module
+    from timefence.config import Settings
+
+    ny = ZoneInfo("America/New_York")
+    fixed = int(datetime(2026, 11, 1, 12, 0, tzinfo=ny).timestamp())
+    fake_time = types.SimpleNamespace(time=lambda: fixed)
+    monkeypatch.setattr(api_module, "time", fake_time)
+    monkeypatch.setattr(budget_module, "time", fake_time)
+
+    settings = Settings.from_env(
+        {
+            "ADGUARD_URL": "http://127.0.0.1:3000",
+            "ADGUARD_USER": "admin",
+            "ADGUARD_PASSWORD": "secret",
+            "BASE_PATH": "/",
+            "TZ": "America/New_York",
+            "DATA_DIR": str(tmp_path / "data"),
+            "SECURE_COOKIES": "false",
+            "RECONCILE_INTERVAL": "60",
+            "LOG_LEVEL": "WARNING",
+        }
+    )
+    app = create_app(settings, adguard=fake)
+    with TestClient(app) as client:
+        complete_setup(client)
+        created = client.post(
+            "/api/groups",
+            json={"name": "YouTube", "weekday_minutes": 60, "services": ["youtube"]},
+        )
+        assert created.status_code == 200, created.text
+        group_id = created.json()["group"]["id"]
+        assert client.post(f"/api/groups/{group_id}/block", json={}).status_code == 200
+        groups = client.get("/api/state").json()["groups"]
+
+    blocked_until = [row for row in groups if row["id"] == group_id][0]["force_block_until"]
+    expected = int(datetime(2026, 11, 2, 0, 0, tzinfo=ny).timestamp())
+    assert blocked_until == expected

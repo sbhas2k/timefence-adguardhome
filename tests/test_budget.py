@@ -208,3 +208,94 @@ def test_history_has_seven_days(conn):
     rows = budget.history(conn, TZ, now=now)
     assert len(rows) == 7
     assert all("day" in row for row in rows)
+
+
+# --------------------------------------------------------------------------- #
+# local days across DST, usage caps and server-side status
+# --------------------------------------------------------------------------- #
+
+NY = ZoneInfo("America/New_York")
+
+
+def ts_on_ny(year, month, day, hour, minute=0):
+    return int(datetime(year, month, day, hour, minute, tzinfo=NY).timestamp())
+
+
+def test_next_local_midnight_on_dst_days():
+    spring = ts_on_ny(2026, 3, 8, 12)
+    autumn = ts_on_ny(2026, 11, 1, 12)
+
+    spring_midnight = budget.next_local_midnight(spring, NY)
+    autumn_midnight = budget.next_local_midnight(autumn, NY)
+
+    assert datetime.fromtimestamp(spring_midnight, NY) == datetime(2026, 3, 9, 0, 0, tzinfo=NY)
+    assert datetime.fromtimestamp(autumn_midnight, NY) == datetime(2026, 11, 2, 0, 0, tzinfo=NY)
+    # a 23-hour and a 25-hour day: neither midnight is "now + 86400"
+    assert spring_midnight - spring != 86400
+    assert autumn_midnight - autumn != 86400
+
+
+def test_history_labels_are_consecutive_dates_across_dst(conn):
+    make_group(conn)
+    now = ts_on_ny(2026, 3, 10, 12)
+
+    rows = budget.history(conn, NY, days=7, now=now)
+
+    labels = [row["day"] for row in rows]
+    assert labels == [
+        "2026-03-04",
+        "2026-03-05",
+        "2026-03-06",
+        "2026-03-07",
+        "2026-03-08",
+        "2026-03-09",
+        "2026-03-10",
+    ]
+    assert len(set(labels)) == 7
+
+
+def test_negative_bonus_does_not_erase_usage(conn):
+    group = make_group(conn, minutes=60)
+    now = ts_on_ny(2026, 11, 4, 12)
+    day = budget.day_str(now, NY)
+    budget.add_metered_seconds(conn, group.id, day, 2400)
+    budget.add_bonus(conn, group.id, -30, NY, now)
+    assert budget.bonus_seconds(conn, group.id, day) == -1800
+
+    harsh_cap = group.minutes_for(now, NY) * 60 + budget.bonus_seconds(conn, group.id, day)
+    budget.add_metered_seconds(conn, group.id, day, 15, cap_seconds=harsh_cap)
+    assert budget.metered_seconds(conn, group.id, day) == 2400  # never lowered
+
+    caller_cap = group.minutes_for(now, NY) * 60 + max(0, budget.bonus_seconds(conn, group.id, day))
+    budget.add_metered_seconds(conn, group.id, day, 15, cap_seconds=caller_cap)
+    assert budget.metered_seconds(conn, group.id, day) == 2415
+
+
+def test_status_values(conn):
+    group = make_group(conn, minutes=10)
+    now = ts_on_ny(2026, 11, 4, 12)
+
+    state = budget.group_state(conn, group, NY, now)
+    assert (state["status"], state["blocked_until"]) == ("allowed", None)
+
+    budget.set_force_block(conn, group.id, now + 3600)
+    group = budget.get_group(conn, group.id)
+    state = budget.group_state(conn, group, NY, now)
+    assert (state["status"], state["blocked_until"]) == ("blocked_admin", now + 3600)
+
+    budget.set_free_until(conn, group.id, now + 7200)
+    state = budget.group_state(conn, group, NY, now)
+    assert (state["status"], state["blocked_until"]) == ("free", None)
+
+    budget.clear_free(conn, group.id)
+    budget.clear_force_block(conn, group.id)
+    budget.add_metered_seconds(conn, group.id, budget.day_str(now, NY), 600, cap_seconds=600)
+    group = budget.get_group(conn, group.id)
+    state = budget.group_state(conn, group, NY, now)
+    assert state["status"] == "limit_reached"
+    assert state["blocked_until"] == budget.next_local_midnight(now, NY)
+
+    budget.update_group(conn, group.id, paused=True)
+    group = budget.get_group(conn, group.id)
+    state = budget.group_state(conn, group, NY, now)
+    assert (state["status"], state["blocked_until"]) == ("paused", None)
