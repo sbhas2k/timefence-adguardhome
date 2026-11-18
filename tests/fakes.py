@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import http.server
+import threading
 import time
 from datetime import UTC
 
@@ -133,3 +135,51 @@ def make_entry(host: str, client_ip: str = "192.168.1.20", ago: int = 30) -> dic
 
     stamp = datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H:%M:%S.000000000Z")
     return {"time": stamp, "client": client_ip, "question": {"name": host, "type": "A"}}
+
+
+class StubServer:
+    """A tiny local HTTP server for delivery proofs (never the real network)."""
+
+    def __init__(self, status: int = 200, body: bytes = b"ok", delay: float = 0.0) -> None:
+        self.status = status
+        self.body = body
+        self.delay = delay
+        self.location = ""
+        self.requests: list[dict] = []
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802 - the base class names it
+                length = int(self.headers.get("Content-Length") or 0)
+                payload = self.rfile.read(length) if length else b""
+                if outer.delay:
+                    time.sleep(outer.delay)
+                outer.requests.append(
+                    {"path": self.path, "headers": dict(self.headers), "body": payload}
+                )
+                self.send_response(outer.status)
+                if 300 <= outer.status < 400 and outer.location:
+                    self.send_header("Location", outer.location)
+                self.send_header("Content-Length", str(len(outer.body)))
+                self.end_headers()
+                self.wfile.write(outer.body)
+
+            def log_message(self, *args) -> None:
+                return
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    def __enter__(self) -> StubServer:
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(5)
+
+    @property
+    def url(self) -> str:
+        host, port = self.server.server_address
+        return f"http://{host}:{port}"

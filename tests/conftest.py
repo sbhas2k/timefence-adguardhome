@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -37,6 +39,38 @@ def settings(tmp_path):
 @pytest.fixture()
 def fake():
     return FakeAdGuard()
+
+
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch, request):
+    """No test may reach the network; alert delivery is refused unless opted in."""
+    # The app module imports the sender, so it is always loaded once the app
+    # exists; the guard is inert only while the module itself is absent.
+    alerts = sys.modules.get("timefence.alerts")
+    attempts: list[tuple[object, object]] = []
+    if alerts is None:
+        yield attempts
+        return
+    if "deliveries" in request.fixturenames:
+        yield attempts
+        return
+
+    def _refuse(target, message):
+        attempts.append((target, message))
+        raise AssertionError("a test tried to send an alert")
+
+    monkeypatch.setattr(alerts, "_deliver", _refuse)
+    yield attempts
+    if attempts:
+        pytest.fail("a test sent an alert without the deliveries fixture")
+
+
+@pytest.fixture()
+def deliveries():
+    """Opt a delivery proof out of the network guard (bind a local stub server)."""
+    from timefence import alerts
+
+    return alerts._deliver
 
 
 @pytest.fixture()

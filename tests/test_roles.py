@@ -464,3 +464,20 @@ def test_dialog_traps_focus_and_returns_it_to_the_opener():
     ]
     missing = [token for token in required if token not in text]
     assert missing == [], missing
+
+
+def test_user_cannot_see_or_change_alerts(settings, fake):
+    client = TestClient(create_app(settings, adguard=fake))
+    with client:
+        complete_setup(client)
+        create_kid(client)
+        assert client.get("/api/alerts").status_code == 200
+
+        csrf = sign_in(client, "kid", "kid-password")
+        assert client.get("/api/alerts").status_code == 403
+        put = client.put("/api/alerts", json={"channel": "ntfy"}, headers={"X-CSRF-Token": csrf})
+        assert put.status_code == 403
+        assert put.json()["code"] == "read_only"
+        test = client.post("/api/alerts/test", json={}, headers={"X-CSRF-Token": csrf})
+        assert test.status_code == 403
+        assert test.json()["code"] == "read_only"

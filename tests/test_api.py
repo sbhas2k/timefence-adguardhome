@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
@@ -9,6 +10,7 @@ from fastapi.testclient import TestClient
 from timefence.api import create_app
 
 from .conftest import FakeAdGuard, locked_conn, make_entry
+from .fakes import StubServer
 
 ADMIN = {"username": "admin", "password": "admin"}
 ADMIN2 = {"username": "admin", "password": "correct horse battery"}
@@ -512,3 +514,120 @@ def test_block_now_lasts_until_local_midnight_on_dst_day(tmp_path, fake, monkeyp
     blocked_until = [row for row in groups if row["id"] == group_id][0]["force_block_until"]
     expected = int(datetime(2026, 11, 2, 0, 0, tzinfo=ny).timestamp())
     assert blocked_until == expected
+
+
+# --------------------------------------------------------------------------- #
+# alerts
+# --------------------------------------------------------------------------- #
+
+
+def test_alert_config_is_masked_merged_and_validated(ready):
+    client = ready["client"]
+    response = client.get("/api/alerts")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    shown = response.json()
+    assert shown["channel"] == ""
+    assert shown["enabled"] is True
+    assert shown["events"]["bedtime_started"] is False
+    assert shown["events"]["weekly_summary"] is False
+    assert shown["events"]["group_low"] is True
+
+    topic = "topic-SUPERSECRET"
+    token = "token-THIS-MUST-NOT-LEAK"
+    hook = "http://192.168.1.9:8080/private/hook-SECRET"
+    update = client.put(
+        "/api/alerts",
+        json={
+            "channel": "ntfy",
+            "ntfy_topic": topic,
+            "ntfy_token": token,
+            "webhook_url": hook,
+            "events": {"weekly_summary": True},
+        },
+    )
+    assert update.status_code == 200, update.text
+    assert update.headers["cache-control"] == "no-store"
+    shown = update.json()
+    text = json.dumps(shown)
+    for secret in (topic, token, hook, "/private/hook"):
+        assert secret not in text
+    assert shown["ntfy"]["topic_tail"] == topic[-2:]
+    assert shown["ntfy"]["token_configured"] is True
+    assert shown["webhook"]["path_tail"] == "ET"
+    assert shown["events"]["weekly_summary"] is True
+
+    body = client.get("/api/alerts").text
+    assert topic not in body and token not in body
+
+    # an absent key keeps the stored value, "" clears it
+    kept = client.put("/api/alerts", json={"events": {"group_low": False}}).json()
+    assert kept["channel"] == "ntfy"
+    assert kept["ntfy"]["topic_tail"] == topic[-2:]
+    assert kept["events"]["group_low"] is False
+    cleared = client.put("/api/alerts", json={"ntfy_token": ""}).json()
+    assert cleared["ntfy"]["token_configured"] is False
+
+    # switching the channel keeps the other channel's stored values
+    switched = client.put("/api/alerts", json={"channel": "webhook"}).json()
+    assert switched["channel"] == "webhook"
+    assert switched["ntfy"]["topic_tail"] == topic[-2:]
+
+    # config is never written to the event log
+    with locked_conn(client.app) as conn:
+        details = [row["detail"] or "" for row in conn.execute("SELECT detail FROM events")]
+    assert all("SECRET" not in detail and "TOKEN" not in detail for detail in details)
+
+    for bad in (
+        {"channel": "email"},
+        {"ntfy_topic": "bad topic!"},
+        {"ntfy_base": "ftp://ntfy.example"},
+        {"ntfy_token": "token with a space"},
+        {"webhook_url": "http://u:p@host/hook"},
+        {"events": []},
+        {"events": {"group_low": "maybe"}},
+    ):
+        response = client.put("/api/alerts", json=bad)
+        assert response.status_code == 400, (bad, response.text)
+
+
+def test_alert_test_endpoint_reports_categories(ready, deliveries):
+    from timefence import alerts
+
+    client = ready["client"]
+    assert client.post("/api/alerts/test", json={}).json() == {"ok": False, "category": "config"}
+
+    assert alerts.TEST_LOCK.acquire(blocking=False)
+    try:
+        busy = client.post("/api/alerts/test", json={})
+    finally:
+        alerts.TEST_LOCK.release()
+    assert busy.status_code == 429
+    assert busy.json()["code"] == "busy"
+
+    with StubServer(status=500) as stub:
+        client.put("/api/alerts", json={"channel": "webhook", "webhook_url": stub.url + "/hook"})
+        assert client.post("/api/alerts/test", json={}).json() == {
+            "ok": False,
+            "category": "http_500",
+        }
+
+    with StubServer(status=302) as stub:
+        stub.location = stub.url + "/elsewhere"
+        client.put("/api/alerts", json={"channel": "webhook", "webhook_url": stub.url + "/hook"})
+        assert client.post("/api/alerts/test", json={}).json() == {
+            "ok": False,
+            "category": "http_3xx",
+        }
+        assert len(stub.requests) == 1
+
+    with StubServer() as stub:
+        client.put("/api/alerts", json={"channel": "webhook", "webhook_url": stub.url + "/hook"})
+        answer = client.post("/api/alerts/test", json={})
+    assert answer.status_code == 200
+    assert answer.json() == {"ok": True}
+    assert len(stub.requests) == 1
+    # the test result is remembered without any body or path
+    shown = client.get("/api/alerts").json()
+    assert shown["last_result"] == "ok"
+    assert shown["last_result_ts"]

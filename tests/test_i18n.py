@@ -25,3 +25,25 @@ def test_i18n_keys_used_by_templates_and_scripts_exist():
             if key not in i18n.STRINGS["en"]:
                 missing.append((path.name, key))
     assert missing == []
+
+
+def test_alert_messages_come_from_i18n():
+    required = {
+        "alert.low",
+        "alert.exhausted",
+        "alert.bedtime_started",
+        "alert.sync_failing",
+        "alert.sync_recovered",
+        "alert.weekly",
+        "alert.weekly_line",
+        "alert.test",
+    }
+    assert required <= set(i18n.STRINGS["en"])
+    from timefence import alerts
+
+    text = Path(alerts.__file__).read_text(encoding="utf-8")
+    matches = list(re.finditer(r'"alert\.[a-z_]+"', text))
+    assert matches
+    for match in matches:
+        before = text[max(0, match.start() - len("i18n.t(")) : match.start()]
+        assert before == "i18n.t(", match.group(0)
