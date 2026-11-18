@@ -13,11 +13,9 @@ from pathlib import Path
 
 from . import db, security
 
-PIN_RE = re.compile(r"^\d{4,8}$")
 USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$")
 
 DEFAULT_ADMIN_PASSWORD = "admin"
-DEFAULT_USER_PIN = "0000"
 ROLES = ("admin", "user")
 
 
@@ -37,12 +35,6 @@ def validate_admin_password(value: str) -> str | None:
         return "The admin password must be at least 10 characters long."
     if value == DEFAULT_ADMIN_PASSWORD:
         return "The admin password must not be 'admin'."
-    return None
-
-
-def validate_user_pin(value: str) -> str | None:
-    if not PIN_RE.match(value or "") or value == DEFAULT_USER_PIN:
-        return "The PIN must be 4-8 digits and must not be 0000."
     return None
 
 

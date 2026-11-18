@@ -24,13 +24,6 @@ def test_admin_password_rules():
     assert credentials.validate_admin_password("a good long password") is None
 
 
-def test_user_pin_rules():
-    for bad in ("0000", "123", "123456789", "abcd", ""):
-        assert credentials.validate_user_pin(bad) is not None
-    assert credentials.validate_user_pin("1234") is None
-    assert credentials.validate_user_pin("12345678") is None
-
-
 def test_set_and_verify_roundtrip(conn):
     stored = security.hash_secret("a good long password")
     conn.execute(

@@ -58,7 +58,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "kid.empty": "No time limits are set for this account yet.",
         "kid.logout": "Log out",
         "setup.heading": "First-run setup",
-        "setup.intro": "Choose a new admin password and a user PIN before using the app.",
+        "setup.intro": "Choose a new admin password before using the app.",
         "setup.admin_label": "New admin password (at least 10 characters)",
         "setup.admin_repeat": "Repeat admin password",
         "setup.note": "You will be able to create more users (admins and normal users) in Settings → Users.",

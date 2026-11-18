@@ -239,7 +239,7 @@ def create_app(
         return sess
 
     def guard_forbidden(request: Request) -> JSONResponse | None:
-        """Pre-setup: user PIN disabled and every API call blocked."""
+        """Pre-setup: every API call except login, setup and logout is blocked."""
         if setup_complete():
             return None
         path = request.url.path
