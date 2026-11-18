@@ -1,5 +1,24 @@
 # Upgrading
 
+## 0.5.0 → 0.5.1
+
+0.5.1 changes how the timezone is chosen. No schema change, no migration and no
+backup to restore.
+
+- `TZ` still wins when you set it. Otherwise TimeFence uses the host's
+  `/etc/timezone`, then the resolved `/etc/localtime`, and only falls back to
+  UTC when neither is available — that fallback is now the only case with the
+  admin warning.
+- **Docker users:** the image and the examples no longer force `TZ=UTC`. Pin a
+  zone with `TZ: Europe/London`, or follow the host by mounting
+  `/etc/localtime:/etc/localtime:ro` (and optionally
+  `/etc/timezone:/etc/timezone:ro`). Without either the container stays on UTC
+  and the banner says so.
+- **Heads-up:** if you relied on the implicit UTC default and your host runs a
+  non-UTC timezone, budgets now reset at local midnight. Set `TZ=UTC` to keep
+  the old behaviour; existing usage rows keep the dates they were recorded
+  under.
+
 ## 0.4 → 0.5
 
 0.5.0 adds bedtime windows and moves the database to schema v5. Nothing has to

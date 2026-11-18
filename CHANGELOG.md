@@ -4,6 +4,27 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] - 2026-11-18
+
+### Changed
+
+- **The timezone now follows the host by default.** The effective zone is `TZ`
+  when set (validated; `:Area/City` and zoneinfo paths accepted), otherwise the
+  host's `/etc/timezone` or the resolved `/etc/localtime`, and only then UTC.
+  The admin warning (and one startup log line naming the source) appears only
+  for that UTC fallback: an explicit `TZ=UTC`, or a system timezone that is UTC,
+  is a deliberate choice and no longer warns.
+- **Docker and compose no longer force `TZ=UTC`.** Set `TZ` to pin a zone, or
+  mount `/etc/localtime` (and optionally `/etc/timezone`) read-only to follow
+  the host. The image already ships the tz database.
+
+### Notes
+
+- If you relied on the implicit UTC default while your host is not UTC, budgets
+  now reset at **local** midnight instead of UTC midnight. Set `TZ=UTC`
+  explicitly to keep the old behaviour. Existing usage rows keep the dates they
+  were recorded under.
+
 ## [0.5.0] - 2026-11-18
 
 ### Added
