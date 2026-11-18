@@ -247,3 +247,44 @@ def test_forwarded_for_header_lines_are_joined(settings, fake, monkeypatch):
             ],
         )
     assert seen == ["6.6.6.6,203.0.113.9"]
+
+
+def test_login_sheds_load_when_busy(settings, fake, monkeypatch):
+    import threading
+
+    from timefence import security
+
+    inside = threading.Semaphore(0)
+    release = threading.Event()
+    real = security.verify_secret
+
+    def slow(stored: str, secret: str) -> bool:
+        inside.release()
+        release.wait(10)
+        return real(stored, secret)
+
+    app = create_app(settings, adguard=fake)
+    with TestClient(app) as client:
+        complete_setup(client)
+        monkeypatch.setattr(security, "verify_secret", slow)
+        results: list[int] = []
+
+        def attempt() -> None:
+            response = client.post("/api/login", json={"username": "admin", "password": "nope"})
+            results.append(response.status_code)
+
+        threads = [threading.Thread(target=attempt) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for _ in range(4):
+            assert inside.acquire(timeout=10)
+
+        busy = client.post("/api/login", json={"username": "admin", "password": "nope"})
+        assert busy.status_code == 429
+        assert busy.json()["code"] == "busy"
+
+        release.set()
+        for thread in threads:
+            thread.join(20)
+
+    assert results == [401] * 4

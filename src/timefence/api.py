@@ -7,6 +7,7 @@ import contextlib
 import logging
 import os
 import secrets
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,9 @@ from .reconciler import Reconciler
 log = logging.getLogger("timefence.web")
 
 DATA = Path(__file__).parent / "data"
+
+# How many sign-ins may run a key derivation at the same time.
+LOGIN_SLOTS = threading.BoundedSemaphore(4)
 
 # What a user (kid) account may see; the admin payload is a superset.
 USER_APP_KEYS = (
@@ -509,82 +513,93 @@ def create_app(
             != "application/json"
         ):
             return json_error(415, i18n.t("login.json_required"), "unsupported_media_type")
-        ip = client_ip(request, settings)
-        ip_key = f"ip:{ip}"
-        locked = limiter.locked_for(ip_key)
-        if locked:  # locked addresses do no work at all: no hash, no event
-            return json_error(
-                429, i18n.t("login.locked", minutes=max(1, locked // 60 + 1)), "locked"
-            )
-        username = str(data.get("username", "")).strip()
-        password = str(data.get("password", ""))
-        if not username or not password:
-            return json_error(400, i18n.t("login.missing"), "bad_request")
-        if not credentials.USERNAME_RE.match(username):
-            limiter.record_failure(ip_key)
-            security.verify_secret(dummy_hash, password)
-            remaining = limiter.locked_for(ip_key)
-            if remaining:
+        # Sign-in runs a key derivation: bound how many run at once so a
+        # burst cannot exhaust the box.
+        if not LOGIN_SLOTS.acquire(blocking=False):
+            return json_error(429, i18n.t("login.busy"), "busy")
+        try:
+            ip = client_ip(request, settings)
+            ip_key = f"ip:{ip}"
+            locked = limiter.locked_for(ip_key)
+            if locked:  # locked addresses do no work at all: no hash, no event
                 return json_error(
-                    429, i18n.t("login.locked", minutes=max(1, remaining // 60 + 1)), "locked"
+                    429, i18n.t("login.locked", minutes=max(1, locked // 60 + 1)), "locked"
                 )
-            return json_error(401, i18n.t("login.wrong"), "bad_credentials")
-        pair_key = f"pair:{ip}|{username.lower()}"
-        locked = limiter.locked_for(pair_key)
-        if locked:
-            return json_error(
-                429, i18n.t("login.locked", minutes=max(1, locked // 60 + 1)), "locked"
-            )
-        with store as conn:
-            row = conn.execute(
-                "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (username,)
-            ).fetchone()
-        # hashing is slow: never while holding the store lock
-        if row and not row["disabled"]:
-            ok = security.verify_secret(row["hash"], password)
-        else:
-            security.verify_secret(dummy_hash, password)
-            ok = False
-        if ok and row["role"] != "admin" and not setup_complete():
-            return json_error(403, i18n.t("error.setup_required"), "setup_required")
-        if not ok:
-            limiter.record_failure(pair_key)
-            limiter.record_failure(ip_key)
+            username = str(data.get("username", "")).strip()
+            password = str(data.get("password", ""))
+            if not username or not password:
+                return json_error(400, i18n.t("login.missing"), "bad_request")
+            if not credentials.USERNAME_RE.match(username):
+                limiter.record_failure(ip_key)
+                security.verify_secret(dummy_hash, password)
+                remaining = limiter.locked_for(ip_key)
+                if remaining:
+                    return json_error(
+                        429, i18n.t("login.locked", minutes=max(1, remaining // 60 + 1)), "locked"
+                    )
+                return json_error(401, i18n.t("login.wrong"), "bad_credentials")
+            pair_key = f"pair:{ip}|{username.lower()}"
+            locked = limiter.locked_for(pair_key)
+            if locked:
+                return json_error(
+                    429, i18n.t("login.locked", minutes=max(1, locked // 60 + 1)), "locked"
+                )
             with store as conn:
-                budget.log_event(conn, "login_failed", {"username": username[:40], "ip": ip})
-            remaining = max(limiter.locked_for(pair_key), limiter.locked_for(ip_key))
-            if remaining:
-                return json_error(
-                    429, i18n.t("login.locked", minutes=max(1, remaining // 60 + 1)), "locked"
-                )
-            return json_error(401, i18n.t("login.wrong"), "bad_credentials")
-        limiter.reset(pair_key)  # only this pair, never the address
-        new_hash = security.hash_secret(password) if security.needs_rehash(row["hash"]) else None
-        with store as conn:
-            if new_hash:
-                conn.execute(
-                    "UPDATE users SET hash=?, updated_at=? WHERE id=?",
-                    (new_hash, int(time.time()), row["id"]),
-                )
-            conn.execute("UPDATE users SET last_login=? WHERE id=?", (int(time.time()), row["id"]))
-            conn.commit()
-            budget.log_event(
-                conn, "login", {"username": row["username"], "role": row["role"], "ip": ip}
+                row = conn.execute(
+                    "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (username,)
+                ).fetchone()
+            # hashing is slow: never while holding the store lock
+            if row and not row["disabled"]:
+                ok = security.verify_secret(row["hash"], password)
+            else:
+                security.verify_secret(dummy_hash, password)
+                ok = False
+            if ok and row["role"] != "admin" and not setup_complete():
+                return json_error(403, i18n.t("error.setup_required"), "setup_required")
+            if not ok:
+                limiter.record_failure(pair_key)
+                limiter.record_failure(ip_key)
+                with store as conn:
+                    budget.log_event(conn, "login_failed", {"username": username[:40], "ip": ip})
+                remaining = max(limiter.locked_for(pair_key), limiter.locked_for(ip_key))
+                if remaining:
+                    return json_error(
+                        429, i18n.t("login.locked", minutes=max(1, remaining // 60 + 1)), "locked"
+                    )
+                return json_error(401, i18n.t("login.wrong"), "bad_credentials")
+            limiter.reset(pair_key)  # only this pair, never the address
+            new_hash = (
+                security.hash_secret(password) if security.needs_rehash(row["hash"]) else None
             )
-        token, csrf = session_manager.issue(
-            row["role"], row["username"], row["id"], int(row["session_epoch"])
-        )
-        response = JSONResponse(
-            {
-                "ok": True,
-                "role": row["role"],
-                "username": row["username"],
-                "csrf": csrf,
-                "setup_complete": setup_complete(),
-            }
-        )
-        set_session_cookie(response, token)
-        return response
+            with store as conn:
+                if new_hash:
+                    conn.execute(
+                        "UPDATE users SET hash=?, updated_at=? WHERE id=?",
+                        (new_hash, int(time.time()), row["id"]),
+                    )
+                conn.execute(
+                    "UPDATE users SET last_login=? WHERE id=?", (int(time.time()), row["id"])
+                )
+                conn.commit()
+                budget.log_event(
+                    conn, "login", {"username": row["username"], "role": row["role"], "ip": ip}
+                )
+            token, csrf = session_manager.issue(
+                row["role"], row["username"], row["id"], int(row["session_epoch"])
+            )
+            response = JSONResponse(
+                {
+                    "ok": True,
+                    "role": row["role"],
+                    "username": row["username"],
+                    "csrf": csrf,
+                    "setup_complete": setup_complete(),
+                }
+            )
+            set_session_cookie(response, token)
+            return response
+        finally:
+            LOGIN_SLOTS.release()
 
     @app.post(f"{base}/api/logout")
     def api_logout():
