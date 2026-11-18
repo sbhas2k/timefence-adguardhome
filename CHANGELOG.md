@@ -4,6 +4,57 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-11-18
+
+### Added
+
+- **Bedtime windows.** A group can carry up to four daily no-go windows
+  (start/end, every day, weekdays or weekends), including windows that cross
+  midnight. A group in a window is blocked even if minutes are left and no
+  minutes are used up; the kid screen shows "Bedtime until 07:00". An admin's
+  "Allow freely until" still overrides a window.
+- **Alerts.** One ntfy topic or one webhook, configured under Settings →
+  Alerts: budget low (10 minutes left), budget used up, bedtime started
+  (default off), AdGuard Home unreachable and reachable again, and a weekly
+  summary (default off, Monday morning). Messages carry a group name and
+  numbers only; per-day de-duplication and a 20-per-hour cap keep them quiet,
+  and delivery failures are reduced to a category before they leave the sender.
+- **Usage summary and CSV export.** The History tab shows 7, 14 or 30 days per
+  group from a dedicated endpoint (two queries regardless of groups and days),
+  with metered minutes, bonus minutes and the minutes allowed that day, plus a
+  "Download CSV" link (`group,date,used_minutes,bonus_minutes`, formula-safe).
+  `/api/state.history` keeps its existing 7-day shape.
+
+### Changed
+
+- **Schema v5.** The database adds `group_windows` and `alerts_sent`; the v5
+  step is plain DDL, so `timefence passwd` can upgrade a v4 database without
+  starting the server. F2 added no further migration.
+- **One verified backup per upgrade.** A `migrate()` call now writes exactly one
+  verified copy before its first schema change, named
+  `timefence.db.pre-v<schema>.bak` for the highest schema it reaches
+  (`pre-v5.bak` for 0.4 → 0.5, `pre-v4.bak` for a 0.3 → 0.4 run). A fresh
+  install writes none; `TIMEFENCE_SKIP_MIGRATION_BACKUP=1` still skips it.
+- **The default-password check runs once per schema version.** If an admin
+  account still uses `admin`, first-run setup is required again after the
+  upgrade.
+- **Read-only users** still see only their own and shared groups; the usage and
+  alert endpoints are admin-only (`403` for `user` accounts).
+
+### Notes
+
+- **Alert secrets live in the database.** The ntfy topic and token and the
+  webhook URL are stored in plain text in SQLite and therefore in every backup;
+  `GET /api/alerts` only returns a boolean and the last two characters of a
+  tail.
+- **Outbound requests.** Only `http`/`https`, never following redirects, no
+  environment proxies, one attempt, a 3 s connect and 2 s read timeout per
+  socket operation, and at most 1 KiB of the response body is read and
+  discarded. Private/LAN targets are allowed on purpose.
+- **Bedtime windows block house-wide.** AdGuard's blocked-services list is
+  global, so a window on a group that owns a service takes that service away
+  from every device for the window.
+
 ## [0.4.0] - 2026-11-18
 
 ### Breaking
