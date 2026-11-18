@@ -123,6 +123,8 @@ if [ "$DRY_RUN" -eq 0 ]; then
             log "$HOSTNAME_ARG is still $ip; no firewall change"
             exit 0
         fi
+    else
+        log "notice: flock not found (util-linux); running without the state lock"
     fi
 fi
 

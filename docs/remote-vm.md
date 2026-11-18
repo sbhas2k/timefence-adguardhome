@@ -103,6 +103,10 @@ household no longer uses.
 
 ### Install the helper
 
+Prerequisites on the VM: `ufw` (or nftables), `util-linux` (the `flock` that
+serialises runs), `systemd` and `getent` (glibc, usually present). Without
+`flock` the helper still works but logs a notice and runs unserialised.
+
 ```bash
 sudo install -m 755 deploy/ddns-allowlist.sh /usr/local/bin/ddns-allowlist.sh
 sudo ddns-allowlist.sh ddns.example.org --dry-run    # prints the commands
