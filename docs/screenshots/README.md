@@ -17,7 +17,7 @@ in any capture.
 | `groups-1280.png` | the Groups tab: budgets, targets, owners and the AdGuard services picker |
 | `bedtime-editor-390.png` | the group editor on a phone, with the bedtime windows |
 | `alerts-1280.png` | Settings → Alerts: one ntfy or webhook channel and the event toggles |
-| `history-1280.png` | History: usage per group over 30 days, with the CSV download |
+| `history-1280.png` | History: minutes used per group over the last 7 days (7, 14 or 30 selectable), with the CSV download |
 
 ## Regenerating them
 

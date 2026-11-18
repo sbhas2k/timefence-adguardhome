@@ -28,7 +28,7 @@ regenerate it are in [`docs/screenshots/`](docs/screenshots/).
 
 <img src="docs/screenshots/alerts-1280.png" alt="Settings, Alerts card: one ntfy or webhook channel and the event toggles">
 
-<img src="docs/screenshots/history-1280.png" alt="History tab: usage per group over 30 days and the CSV download">
+<img src="docs/screenshots/history-1280.png" alt="History tab: minutes used per group over the last 7 days (7, 14 or 30 selectable) and the CSV download">
 
 
 ## Features
