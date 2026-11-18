@@ -135,6 +135,8 @@ class SessionData:
     role: str
     csrf: str
     username: str = ""
+    uid: int = 0
+    epoch: int = 0
 
 
 class SessionManager:
@@ -146,10 +148,26 @@ class SessionManager:
         self.serializer = URLSafeTimedSerializer(secret, salt="timefence-session")
         self.max_age = max_age
 
-    def issue(self, role: str, username: str = "") -> tuple[str, str]:
-        csrf = secrets.token_urlsafe(24)
-        token = self.serializer.dumps({"role": role, "csrf": csrf, "username": username})
-        return token, csrf
+    def issue(
+        self,
+        role: str,
+        username: str = "",
+        uid: int = 0,
+        epoch: int = 0,
+        csrf: str | None = None,
+    ) -> tuple[str, str]:
+        """Sign a cookie; a re-issued cookie keeps the caller's existing csrf token."""
+        token_csrf = csrf or secrets.token_urlsafe(24)
+        token = self.serializer.dumps(
+            {
+                "role": role,
+                "csrf": token_csrf,
+                "username": username,
+                "uid": uid,
+                "epoch": epoch,
+            }
+        )
+        return token, token_csrf
 
     def read(self, token: str | None) -> SessionData | None:
         if not token:
@@ -162,10 +180,15 @@ class SessionManager:
             return None
         role = payload.get("role")
         csrf = payload.get("csrf")
+        uid = payload.get("uid")
+        epoch = payload.get("epoch")
         if role not in {"admin", "user"} or not isinstance(csrf, str):
             return None
+        # cookies from older releases have no account binding: sign in again
+        if type(uid) is not int or type(epoch) is not int:
+            return None
         username = payload.get("username") or ""
-        return SessionData(role=role, csrf=csrf, username=str(username))
+        return SessionData(role=role, csrf=csrf, username=str(username), uid=uid, epoch=epoch)
 
 
 # --------------------------------------------------------------------------- #

@@ -80,6 +80,11 @@ def verify(conn: sqlite3.Connection, role: str, secret: str) -> bool:
     return True
 
 
+def bump_epoch(conn: sqlite3.Connection, user_id: int) -> None:
+    """Invalidate every cookie issued for this account (committed by the caller)."""
+    conn.execute("UPDATE users SET session_epoch = session_epoch + 1 WHERE id=?", (user_id,))
+
+
 def db_path_for(data_dir: str | Path) -> Path:
     return Path(data_dir) / "timefence.db"
 
@@ -106,6 +111,7 @@ def reset(data_dir: str | Path, role: str, secret: str, username: str = "admin")
             "UPDATE users SET hash=?, updated_at=? WHERE id=?",
             (security.hash_secret(secret), int(time.time()), row["id"]),
         )
+        bump_epoch(conn, row["id"])
         conn.commit()
     finally:
         conn.close()

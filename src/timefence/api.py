@@ -336,6 +336,34 @@ def create_app(
         """Ask the reconciler to converge; a busy loop is retried by the loop."""
         reconciler.run(reason, wait=5)
 
+    def set_session_cookie(response: JSONResponse, token: str) -> None:
+        response.set_cookie(
+            session_manager.COOKIE,
+            token,
+            max_age=settings.session_max_age,
+            path=settings.base_path,
+            httponly=True,
+            samesite="lax",
+            secure=settings.secure_cookies,
+        )
+
+    def reissue_session(response: JSONResponse, sess: security.SessionData, epoch: int) -> None:
+        """Keep the caller signed in after their own account changed."""
+        token, _ = session_manager.issue(sess.role, sess.username, sess.uid, epoch, csrf=sess.csrf)
+        set_session_cookie(response, token)
+
+    def session_is_valid(sess: security.SessionData) -> bool:
+        """A cookie is only good while its account, role, name and epoch agree."""
+        with store as conn:
+            row = conn.execute("SELECT * FROM users WHERE id=?", (sess.uid,)).fetchone()
+        if not row or row["disabled"]:
+            return False
+        return (
+            row["role"] == sess.role
+            and str(row["username"]).lower() == sess.username.lower()
+            and int(row["session_epoch"]) == sess.epoch
+        )
+
     # ------------------------------------------------------------- lifespan
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -396,6 +424,16 @@ def create_app(
     async def middleware(request: Request, call_next):
         request.state.session = session_manager.read(request.cookies.get(session_manager.COOKIE))
         path = request.url.path
+        stale_cookie = False
+        if (
+            request.state.session is not None
+            and not path.startswith(f"{base}/static/")
+            and path != f"{base}/healthz"
+        ):
+            approved = await asyncio.to_thread(session_is_valid, request.state.session)
+            if not approved:
+                request.state.session = None
+                stale_cookie = True
         api_prefix = f"{base}/api/"
         mutating = request.method in {"POST", "PUT", "PATCH", "DELETE"} and path.startswith(
             api_prefix
@@ -413,6 +451,8 @@ def create_app(
         if blocked is not None:
             return blocked
         response = await call_next(request)
+        if stale_cookie:
+            response.delete_cookie(session_manager.COOKIE, path=settings.base_path)
         response.headers.setdefault(
             "Content-Security-Policy",
             "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
@@ -502,7 +542,9 @@ def create_app(
             budget.log_event(
                 conn, "login", {"username": row["username"], "role": row["role"], "ip": ip}
             )
-        token, csrf = session_manager.issue(row["role"], row["username"])
+        token, csrf = session_manager.issue(
+            row["role"], row["username"], row["id"], int(row["session_epoch"])
+        )
         response = JSONResponse(
             {
                 "ok": True,
@@ -512,15 +554,7 @@ def create_app(
                 "setup_complete": setup_complete(),
             }
         )
-        response.set_cookie(
-            session_manager.COOKIE,
-            token,
-            max_age=settings.session_max_age,
-            path=settings.base_path,
-            httponly=True,
-            samesite="lax",
-            secure=settings.secure_cookies,
-        )
+        set_session_cookie(response, token)
         return response
 
     @app.post(f"{base}/api/logout")
@@ -550,12 +584,20 @@ def create_app(
                 conn.execute(
                     "UPDATE users SET hash=?, updated_at=? WHERE role='admin'", (hashed, now)
                 )
+            credentials.bump_epoch(conn, sess.uid)
             conn.commit()
             db.set_bool_setting(conn, "setup_complete", True)
             budget.log_event(conn, "setup_completed", {"username": sess.username})
+            epoch = int(
+                conn.execute("SELECT session_epoch FROM users WHERE id=?", (sess.uid,)).fetchone()[
+                    0
+                ]
+            )
         app.state.setup_done = True
         log.info("first-run setup completed")
-        return JSONResponse({"ok": True})
+        response = JSONResponse({"ok": True})
+        reissue_session(response, sess, epoch)
+        return response
 
     @app.get(f"{base}/api/meta")
     def api_meta(request: Request):
@@ -1021,11 +1063,24 @@ def create_app(
                 "UPDATE users SET hash=?, updated_at=? WHERE id=?",
                 (hashed, int(time.time()), user_id),
             )
+            credentials.bump_epoch(conn, user_id)
             conn.commit()
             budget.log_event(
                 conn, "user_password", {"username": row["username"], "actor": sess.username}
             )
-        return {"ok": True}
+            caller_epoch = (
+                int(
+                    conn.execute(
+                        "SELECT session_epoch FROM users WHERE id=?", (sess.uid,)
+                    ).fetchone()[0]
+                )
+                if sess.uid == user_id
+                else None
+            )
+        response = JSONResponse({"ok": True})
+        if caller_epoch is not None:
+            reissue_session(response, sess, caller_epoch)
+        return response
 
     @app.post(f"{base}/api/users/{{user_id}}/role")
     def api_user_role(user_id: int, request: Request, data: dict = Depends(json_body)):
@@ -1043,13 +1098,26 @@ def create_app(
                 "UPDATE users SET role=?, updated_at=? WHERE id=?",
                 (role, int(time.time()), user_id),
             )
+            credentials.bump_epoch(conn, user_id)
             conn.commit()
             budget.log_event(
                 conn,
                 "user_role",
                 {"username": row["username"], "role": role, "actor": sess.username},
             )
-        return {"ok": True, "user": public_user(user_row(user_id))}
+            caller_epoch = (
+                int(
+                    conn.execute(
+                        "SELECT session_epoch FROM users WHERE id=?", (sess.uid,)
+                    ).fetchone()[0]
+                )
+                if sess.uid == user_id
+                else None
+            )
+        response = JSONResponse({"ok": True, "user": public_user(user_row(user_id))})
+        if caller_epoch is not None:
+            reissue_session(response, sess, caller_epoch)
+        return response
 
     @app.post(f"{base}/api/users/{{user_id}}/disabled")
     def api_user_disabled(user_id: int, request: Request, data: dict = Depends(json_body)):
@@ -1065,6 +1133,8 @@ def create_app(
                 "UPDATE users SET disabled=?, updated_at=? WHERE id=?",
                 (int(disabled), int(time.time()), user_id),
             )
+            if disabled:
+                credentials.bump_epoch(conn, user_id)
             conn.commit()
             budget.log_event(
                 conn,
