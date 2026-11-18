@@ -133,11 +133,11 @@ def test_admin_state_reports_sync_and_warnings(settings, fake):
         sign_in_as_admin(client)
         state = client.get("/api/state").json()
         assert isinstance(state["last_sync"], int)
-        assert state["warnings"] == []
+        assert state["warnings"] == ["tz_utc"]  # the fixture runs with TZ=UTC
 
         app.state.reconciler.warnings.add("rules_section_damaged")
         state = client.get("/api/state").json()
-        assert state["warnings"] == ["rules_section_damaged"]
+        assert state["warnings"] == ["rules_section_damaged", "tz_utc"]
 
 
 def test_restart_restores_true_state_after_shutdown_block(settings, fake):

@@ -123,6 +123,9 @@ def create_app(
         autoescape=select_autoescape(["html"]),
     )
 
+    if settings.tz in {"UTC", "Etc/UTC"}:
+        log.warning("TZ is UTC; budgets reset at UTC midnight. Set TZ to your IANA timezone.")
+
     services_cache: dict[str, Any] = {"ts": 0.0, "data": []}
     querylog_cache: dict[str, Any] = {"ts": 0.0, "data": [], "minutes": 0}
 
@@ -307,7 +310,9 @@ def create_app(
             "adguard_error": reconciler.last_error,
             "last_sync": int(reconciler.last_ok_ts) if reconciler.last_ok_ts else None,
             "warnings": sorted(
-                reconciler.warnings | {notice for notice in [migration_notice()] if notice}
+                reconciler.warnings
+                | {notice for notice in [migration_notice()] if notice}
+                | ({"tz_utc"} if settings.tz in {"UTC", "Etc/UTC"} else set())
             ),
         }
         return payload
