@@ -36,6 +36,12 @@ def local_midnight(ts: int, tz: ZoneInfo) -> int:
     return int(datetime(d.year, d.month, d.day, tzinfo=tz).timestamp())
 
 
+def next_local_midnight(ts: int, tz: ZoneInfo) -> int:
+    """Start of the next local day; never `ts + 86400` (DST days are 23 or 25 hours)."""
+    following = datetime.fromtimestamp(ts, tz).date() + timedelta(days=1)
+    return int(datetime(following.year, following.month, following.day, tzinfo=tz).timestamp())
+
+
 def is_weekend(ts: int, tz: ZoneInfo) -> bool:
     return datetime.fromtimestamp(ts, tz).weekday() >= 5
 
@@ -384,12 +390,18 @@ def metered_seconds(conn: sqlite3.Connection, gid: int, day: str) -> int:
 def add_metered_seconds(
     conn: sqlite3.Connection, gid: int, day: str, seconds: int, cap_seconds: int | None = None
 ) -> int:
-    """Add measured usage, never exceeding the cap (the group's budget)."""
+    """Add measured usage, never exceeding the cap and never lowering what is stored.
+
+    A negative bonus can make the cap smaller than the usage already recorded;
+    that must not erase real usage.
+    """
+    current = metered_seconds(conn, gid, day)
     if seconds <= 0:
-        return metered_seconds(conn, gid, day)
-    new = metered_seconds(conn, gid, day) + int(seconds)
+        return current
+    new = current + int(seconds)
     if cap_seconds is not None:
         new = min(new, int(cap_seconds))
+    new = max(new, current)
     conn.execute(
         "INSERT INTO usage_seconds(day, group_id, seconds) VALUES(?,?,?) "
         "ON CONFLICT(day, group_id) DO UPDATE SET seconds=excluded.seconds",
@@ -410,6 +422,15 @@ def budget_seconds(
     now = now or int(time.time())
     day = day_str(now, tz)
     return group.minutes_for(now, tz) * 60 + bonus_seconds(conn, group.id, day)
+
+
+def cap_seconds(
+    conn: sqlite3.Connection, group: Group, tz: ZoneInfo, now: int | None = None
+) -> int:
+    """The most usage that may be recorded today: the minutes plus positive bonus."""
+    now = now or int(time.time())
+    day = day_str(now, tz)
+    return group.minutes_for(now, tz) * 60 + max(0, bonus_seconds(conn, group.id, day))
 
 
 def remaining_seconds(
@@ -501,11 +522,11 @@ def history(
     group_ids: set[int] | None = None,
 ) -> list[dict]:
     now = now or int(time.time())
-    start = local_midnight(now, tz) - (days - 1) * 86400
+    today = datetime.fromtimestamp(now, tz).date()
     groups = [g.id for g in list_groups(conn, include_deleted=True)]
     out = []
-    for offset in range(days):
-        day = day_str(start + offset * 86400, tz)
+    for offset in range(days - 1, -1, -1):
+        day = (today - timedelta(days=offset)).strftime("%Y-%m-%d")
         entry: dict[str, float | str] = {"day": day}
         for gid in groups:
             if group_ids is not None and gid not in group_ids:
@@ -523,6 +544,23 @@ def log_event(conn: sqlite3.Connection, kind: str, detail: dict | str = "") -> N
     conn.commit()
 
 
+def group_status(
+    conn: sqlite3.Connection, group: Group, tz: ZoneInfo, now: int | None = None
+) -> tuple[str, int | None]:
+    """One status per group, with the same precedence as `is_permitted`."""
+    now = now or int(time.time())
+    if group.paused or group.deleted:
+        return "paused", None
+    until = free_until(conn, group.id)
+    if until and until > now:
+        return "free", None
+    if group.force_block_until and group.force_block_until > now:
+        return "blocked_admin", group.force_block_until
+    if remaining_seconds(conn, group, tz, now) > 0:
+        return "allowed", None
+    return "limit_reached", next_local_midnight(now, tz)
+
+
 def group_state(
     conn: sqlite3.Connection, group: Group, tz: ZoneInfo, now: int | None = None
 ) -> dict:
@@ -530,6 +568,7 @@ def group_state(
     day = day_str(now, tz)
     until = free_until(conn, group.id)
     permitted = is_permitted(conn, group, tz, now)
+    status, blocked_until = group_status(conn, group, tz, now)
     return {
         "id": group.id,
         "name": group.name,
@@ -546,6 +585,8 @@ def group_state(
         "used_minutes": round(used_seconds(conn, group, day) / 60, 1),
         "remaining_minutes": round(remaining_seconds(conn, group, tz, now) / 60, 1),
         "permitted": permitted,
+        "status": status,
+        "blocked_until": blocked_until,
         "free_until": until if until and until > now else None,
     }
 

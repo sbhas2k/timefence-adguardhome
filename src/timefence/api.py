@@ -744,7 +744,7 @@ def create_app(
                 return json_error(404, i18n.t("error.not_found"), "not_found")
             budget.clear_free(conn, group_id)
             budget.set_force_block(
-                conn, group_id, budget.local_midnight(int(time.time()), settings.zone) + 86400
+                conn, group_id, budget.next_local_midnight(int(time.time()), settings.zone)
             )
             budget.log_event(conn, "admin_block", {"group": group.name, "actor": sess.role})
         reconcile("admin_block")
