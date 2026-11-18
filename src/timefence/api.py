@@ -503,6 +503,10 @@ def create_app(
         sess = current_session(request)
         if not sess:
             return RedirectResponse(f"{base}/login")
+        if sess.role != "admin":
+            return page("kid.html", request)
+        if not setup_complete():
+            return RedirectResponse(f"{base}/setup")
         return page("app.html", request)
 
     if base:
@@ -520,8 +524,10 @@ def create_app(
     @app.get(f"{base}/setup", response_class=HTMLResponse)
     def setup_page(request: Request):
         sess = current_session(request)
-        if not sess or sess.role != "admin":
+        if not sess:
             return RedirectResponse(f"{base}/login")
+        if sess.role != "admin":
+            return RedirectResponse(base + "/")
         if setup_complete():
             return RedirectResponse(base + "/")
         return page("setup.html", request)

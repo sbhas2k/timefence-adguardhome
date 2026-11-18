@@ -212,9 +212,7 @@ def test_landing_respects_base_path(tmp_path, fake):
         assert anonymous.status_code in {302, 303, 307}
         assert anonymous.headers["location"].endswith("/timer/login")
 
-        login = client.post(
-            "/timer/api/login", json={"username": "admin", "password": "admin"}
-        )
+        login = client.post("/timer/api/login", json={"username": "admin", "password": "admin"})
         assert login.status_code == 200, login.text
         before_setup = client.get("/timer/", follow_redirects=False)
         assert before_setup.headers["location"].endswith("/timer/setup")

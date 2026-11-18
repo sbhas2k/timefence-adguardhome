@@ -30,13 +30,10 @@
     .then(function (d) { i18n = d || {}; })
     .catch(function () {});
 
-  fetch(base + "/api/meta", { credentials: "same-origin" })
-    .then(function (r) { return r.json(); })
-    .then(function (meta) {
-      var hint = $("#setup-hint");
-      if (!meta.setup_complete && hint) { hint.classList.remove("hidden"); }
-    })
-    .catch(function () {});
+  var httpWarning = $("#http-warning");
+  if (httpWarning && window.location.protocol === "http:") {
+    httpWarning.classList.remove("hidden");
+  }
 
   if (page === "login") {
     var form = $("#login-form");
@@ -49,11 +46,20 @@
           username: ($("#username").value || "").trim(),
           password: $("#password").value || ""
         }).then(function (data) {
-          if (!data.setup_complete && data.role === "admin") {
-            window.location.href = base + "/setup";
-            return;
-          }
-          window.location.href = base + "/";
+          return fetch(base + "/api/meta", { credentials: "same-origin" })
+            .then(function (r) { return r.json().catch(function () { return {}; }); })
+            .then(function (meta) {
+              if (!meta || !meta.role) {
+                show(error, i18n["login.cookie_not_stored"] ||
+                  "The browser did not keep the session cookie.");
+                return;
+              }
+              if (!data.setup_complete && data.role === "admin") {
+                window.location.href = base + "/setup";
+                return;
+              }
+              window.location.href = base + "/";
+            });
         }).catch(function (err) {
           show(error, err.message || (i18n["login.wrong"] || "Wrong username or password"));
           var password = $("#password");

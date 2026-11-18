@@ -21,7 +21,7 @@ RUN pip install . && rm -rf /app/src && chmod 755 /usr/local/bin/timefence-entry
 USER timefence:timefence
 ENV DATA_DIR=/data \
     BASE_PATH=/ \
-    LISTEN_HOST=0.0.0.0 \
+    LISTEN_HOST=127.0.0.1 \
     LISTEN_PORT=8099 \
     SECURE_COOKIES=false \
     TZ=UTC \

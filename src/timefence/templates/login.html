@@ -19,7 +19,10 @@
       <button class="btn primary wide" type="submit">{{ t("login.button") }}</button>
       <p class="alert bad hidden" id="login-error" role="alert"></p>
     </form>
-    <p class="alert warn mt hidden" id="setup-hint">{{ t("login.setup_needed") }}</p>
+    <p id="http-warning" class="alert warn mt hidden" role="status">{{ t("login.http_warning") }}</p>
+    {% if not setup_complete %}
+    <p class="alert warn mt" id="setup-hint">{{ t("login.setup_needed") }}</p>
+    {% endif %}
   </div>
 </div>
 {% endblock %}
