@@ -38,7 +38,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - timefence-data:/data
-      # - /etc/localtime:/etc/localtime:ro   # follow the host timezone
+      # - /etc/localtime:/etc/localtime:ro   # follow the host timezone (this alone is enough)
     ports:
       - "127.0.0.1:8099:8099"
     secrets:

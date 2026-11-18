@@ -29,7 +29,7 @@ services:
     volumes:
       - timefence-data:/data
       - /etc/timefence/adguard.pass:/run/secrets/adguard.pass:ro
-      # - /etc/localtime:/etc/localtime:ro   # follow the host timezone
+      # - /etc/localtime:/etc/localtime:ro   # follow the host timezone (this alone is enough)
     logging:
       driver: journald
       options:

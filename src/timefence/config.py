@@ -5,6 +5,9 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
+import time
+import zoneinfo
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -60,12 +63,96 @@ def _file_zone(path: Path) -> str | None:
     return _normalise_zone(lines[0]) or None
 
 
-def _localtime_zone(path: Path) -> str | None:
+LOCALTIME_MAX_BYTES = 64 * 1024
+ZONE_SCAN_FILE_LIMIT = 2000
+ZONE_SCAN_SECONDS = 5.0
+SKIPPED_ZONE_DIRS = frozenset({"posix", "right"})
+SKIPPED_ZONE_FILES = frozenset({"posixrules", "Factory", "localtime"})
+TAB_FILES = ("zone1970.tab", "zone.tab")
+
+
+def _zoneinfo_dirs(dirs: Iterable[Path] | None) -> tuple[Path, ...]:
+    if dirs is not None:
+        return tuple(Path(entry) for entry in dirs)
+    return tuple(Path(entry) for entry in zoneinfo.TZPATH)
+
+
+def _canonical_names(dirs: tuple[Path, ...]) -> set[str]:
+    """The TZ names counted as canonical, from zone1970.tab or zone.tab."""
+    for filename in TAB_FILES:
+        names: set[str] = set()
+        for root in dirs:
+            try:
+                text = (root / filename).read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            for line in text.splitlines():
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) >= 3 and parts[2].strip():
+                    names.add(parts[2].strip())
+        if names:
+            return names
+    return set()
+
+
+def _pick_zone(names: list[str], canonical: set[str]) -> str | None:
+    valid = [name for name in names if _valid_zone(name)]
+    if not valid:
+        return None
+    preferred = [name for name in valid if name in canonical] or valid
+    area_city = [name for name in preferred if "/" in name]
+    return sorted(area_city or preferred)[0]
+
+
+def _content_zone(path: Path, dirs: tuple[Path, ...]) -> str | None:
+    """Match a localtime copy against the zoneinfo files by content."""
+    try:
+        with path.open("rb") as handle:
+            data = handle.read(LOCALTIME_MAX_BYTES + 1)
+    except OSError:
+        return None
+    if len(data) > LOCALTIME_MAX_BYTES or not data.startswith(b"TZif"):
+        return None
+    canonical = _canonical_names(dirs)
+    names: list[str] = []
+    files = 0
+    deadline = time.monotonic() + ZONE_SCAN_SECONDS
+    for root in dirs:
+        if not root.is_dir():
+            continue
+        for current, subdirs, filenames in os.walk(root):
+            subdirs[:] = sorted(name for name in subdirs if name not in SKIPPED_ZONE_DIRS)
+            for filename in sorted(filenames):
+                relative = Path(current, filename).relative_to(root).as_posix()
+                if relative in SKIPPED_ZONE_FILES:
+                    continue
+                files += 1
+                if files > ZONE_SCAN_FILE_LIMIT or time.monotonic() > deadline:
+                    return _pick_zone(names, canonical)
+                candidate = Path(current, filename)
+                try:
+                    if not candidate.is_file() or candidate.stat().st_size != len(data):
+                        continue
+                    with candidate.open("rb") as handle:
+                        if handle.read(len(data) + 1) != data:
+                            continue
+                except OSError:
+                    continue
+                names.append(relative)
+    return _pick_zone(names, canonical)
+
+
+def _localtime_zone(path: Path, dirs: tuple[Path, ...]) -> str | None:
     try:
         resolved = path.resolve()
     except OSError:
         return None
-    return _zoneinfo_key(resolved)
+    key = _zoneinfo_key(resolved)
+    if key:
+        return key
+    return _content_zone(resolved, dirs)
 
 
 def detect_timezone(
@@ -73,19 +160,23 @@ def detect_timezone(
     *,
     timezone_file: Path = TIMEZONE_FILE,
     localtime_file: Path = LOCALTIME_FILE,
+    zoneinfo_dirs: Iterable[Path] | None = None,
 ) -> tuple[str, str]:
     """Return (IANA name, source), source being 'env', 'system' or 'default'.
 
     An explicit TZ always wins (and an unknown one is an error). Otherwise the
-    host's `/etc/timezone` and then the resolved `/etc/localtime` are tried, and
-    only a name the local zoneinfo database knows is accepted.
+    host's `/etc/timezone`, then the resolved `/etc/localtime` (its path or, for
+    a regular file such as a Docker bind mount, its content matched against the
+    system zone database) are tried, and only a name the local zoneinfo
+    database knows is accepted.
     """
     if value is not None and str(value).strip():
         name = _normalise_zone(str(value))
         if not _valid_zone(name):
             raise ConfigError(f"TZ: unknown timezone {value!r}")
         return name, "env"
-    for candidate in (_file_zone(timezone_file), _localtime_zone(localtime_file)):
+    dirs = _zoneinfo_dirs(zoneinfo_dirs)
+    for candidate in (_file_zone(timezone_file), _localtime_zone(localtime_file, dirs)):
         if candidate and _valid_zone(candidate):
             return candidate, "system"
     return "UTC", "default"
@@ -159,12 +250,14 @@ class Settings:
         *,
         timezone_file: Path | None = None,
         localtime_file: Path | None = None,
+        zoneinfo_dirs: Iterable[Path] | None = None,
     ) -> Settings:
         e = dict(os.environ if env is None else env)
         tz_name, tz_source = detect_timezone(
             e.get("TZ"),
             timezone_file=TIMEZONE_FILE if timezone_file is None else timezone_file,
             localtime_file=LOCALTIME_FILE if localtime_file is None else localtime_file,
+            zoneinfo_dirs=zoneinfo_dirs,
         )
 
         password = e.get("ADGUARD_PASSWORD", "")

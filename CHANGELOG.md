@@ -15,8 +15,13 @@ and the project uses [Semantic Versioning](https://semver.org/).
   for that UTC fallback: an explicit `TZ=UTC`, or a system timezone that is UTC,
   is a deliberate choice and no longer warns.
 - **Docker and compose no longer force `TZ=UTC`.** Set `TZ` to pin a zone, or
-  mount `/etc/localtime` (and optionally `/etc/timezone`) read-only to follow
-  the host. The image already ships the tz database.
+  mount `/etc/localtime` read-only to follow the host; `/etc/timezone` is an
+  optional bonus. The image already ships the tz database.
+- **A bind-mounted `/etc/localtime` is understood.** Docker turns the host's
+  symlink into a regular file inside the container, so the zone is identified by
+  matching that file's contents against the system zone database, preferring the
+  canonical names listed in `zone1970.tab`/`zone.tab`. Mounting `/etc/localtime`
+  alone is enough on hosts without `/etc/timezone`.
 
 ### Notes
 

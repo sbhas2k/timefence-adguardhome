@@ -114,6 +114,13 @@ upstreams, cache settings) lives in those two directories, so it comes along.
 
   Without either, the container falls back to UTC and the admin banner says so.
   The image installs the tz database, so IANA names resolve inside it.
+
+  `/etc/localtime` **alone is enough**: Docker turns the host's symlink into a
+  regular file inside the container, and TimeFence identifies the zone by
+  matching that file's bytes against the image's zone database (it prefers the
+  canonical names listed in `zone1970.tab`). Mounting `/etc/timezone` as well is
+  a bonus for hosts that have it (Debian/Ubuntu); hosts that do not (RHEL,
+  Fedora, Arch, Alpine) are fine with just the one mount.
 - **Loopback binding** is not the same inside a container: `127.0.0.1` in a
   bridge container is the container itself. Use `host.docker.internal` +
   `extra_hosts` only if AdGuard listens on a non-loopback address.
