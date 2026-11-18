@@ -323,23 +323,15 @@ def test_admin_can_change_own_password(settings, fake):
         other.close()
 
 
-def test_old_settings_endpoint_cannot_leave_old_password_working(settings, fake):
+def test_admin_credentials_route_is_gone(settings, fake):
     app = create_app(settings, adguard=fake)
     with TestClient(app) as admin:
         complete_setup(admin)
-        other = TestClient(app)
-
-        legacy = admin.post(
+        response = admin.post(
             "/api/admin/credentials",
             json={"role": "admin", "secret": "a completely new password"},
         )
-        assert legacy.status_code in {200, 404, 405}
-
-        still_works = other.post(
-            "/api/login", json={"username": "admin", "password": ADMIN2["password"]}
-        )
-        assert still_works.status_code == 401
-        other.close()
+        assert response.status_code in {404, 405}
 
 
 def test_wrong_current_password_is_rejected(settings, fake):

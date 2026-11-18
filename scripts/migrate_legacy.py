@@ -3,17 +3,21 @@
 
 The old app (0.0.x) managed exactly one site ("youtube"/"testdom"), stored its
 state in /var/lib/screentime/state.db and hashed its credentials with Werkzeug.
-TimeFence verifies those hashes natively, so they are copied as-is and the
-first-run setup is marked as completed.
+TimeFence verifies those hashes natively, so they are copied into the account
+records as-is; first-run setup only counts as complete when the imported admin
+password is not the default one. Session time is carried over as daily usage.
 
 Usage:
     sudo -u timefence /opt/timefence/venv/bin/python \
         scripts/migrate_legacy.py \
         --legacy /var/lib/screentime/state.db \
-        --target /var/lib/timefence/timefence.db
+        --target /var/lib/timefence/timefence.db \
+        --tz Europe/London
 
-Run it before starting the service (or stop the service first): on startup
-TimeFence closes open sessions and reconciles AdGuard to the imported state.
+--tz is required: it decides which local day each old session belongs to.
+
+Run it before starting the service (or stop the service first); TimeFence then
+reconciles AdGuard to the imported state.
 """
 
 from __future__ import annotations
@@ -22,7 +26,9 @@ import argparse
 import sqlite3
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # a few friendly defaults for the old site names
 DISPLAY = {"youtube": ("YouTube", "▶️", "youtube")}
@@ -35,14 +41,23 @@ def connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--legacy", default="/var/lib/screentime/state.db")
     parser.add_argument("--target", default="/var/lib/timefence/timefence.db")
+    parser.add_argument(
+        "--tz", required=True, help="IANA timezone of the old data, e.g. Europe/London"
+    )
     parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    from timefence import budget, db
+    from timefence import budget, credentials, db, security
+
+    try:
+        tz = ZoneInfo(args.tz)
+    except (ZoneInfoNotFoundError, ValueError):
+        print(f"unknown timezone: {args.tz}", file=sys.stderr)
+        return 2
 
     legacy_path = Path(args.legacy)
     target_path = Path(args.target)
@@ -55,7 +70,7 @@ def main() -> int:
     print(f"legacy tables: {sorted(tables)}")
 
     target = db.connect(target_path)
-    db.migrate(target)
+    db.migrate(target, tz)
 
     # -- sites -> groups ---------------------------------------------------
     sites: dict[str, int] = {}
@@ -108,51 +123,51 @@ def main() -> int:
         target.commit()
         print(f"created group {name!r} (id {gid}): {service}, {minutes} min/day")
 
-    # -- credentials -------------------------------------------------------
+    # -- accounts ----------------------------------------------------------
+    admin_hash = None
     if "credentials" in tables:
         copied = 0
         for row in legacy.execute("SELECT role, hash, updated_at FROM credentials"):
+            role = row["role"]
+            if role not in ("admin", "user"):
+                continue
+            username = "admin" if role == "admin" else "user"
             target.execute(
-                "INSERT OR REPLACE INTO credentials(role, hash, updated_at) VALUES(?,?,?)",
-                (row["role"], row["hash"], row["updated_at"] or now),
+                "INSERT INTO users(username, role, hash, created_at, updated_at) "
+                "VALUES(?,?,?,?,?) "
+                "ON CONFLICT(username) DO UPDATE SET hash=excluded.hash, "
+                "updated_at=excluded.updated_at",
+                (username, role, row["hash"], row["updated_at"] or now, row["updated_at"] or now),
             )
+            if role == "admin":
+                admin_hash = row["hash"]
             copied += 1
         target.commit()
-        db.set_bool_setting(target, "setup_complete", copied > 0)
-        print(f"copied {copied} credential hash(es); setup marked complete")
+        safe = bool(admin_hash) and not security.verify_secret(
+            admin_hash, credentials.DEFAULT_ADMIN_PASSWORD
+        )
+        db.set_bool_setting(target, "setup_complete", safe)
+        state = "complete" if safe else "left open (the admin password is the default)"
+        print(f"imported {copied} account hash(es); first-run setup is {state}")
 
-    # -- sessions ----------------------------------------------------------
+    # -- session time -> daily usage --------------------------------------
     if "sessions" in tables:
         count = 0
-        for row in legacy.execute(
-            "SELECT id, site, planned_seconds, started_at, ended_at, used_seconds, "
-            "end_reason, actor FROM sessions ORDER BY id"
-        ):
+        rows = legacy.execute("SELECT site, started_at, used_seconds FROM sessions ORDER BY id")
+        for row in rows:
             gid = sites.get(row["site"])
             if not gid:
                 continue
-            exists = target.execute(
-                "SELECT id FROM sessions WHERE group_id=? AND started_at=?",
-                (gid, row["started_at"]),
-            ).fetchone()
-            if exists:
-                continue
+            day = datetime.fromtimestamp(int(row["started_at"]), tz).strftime("%Y-%m-%d")
             target.execute(
-                "INSERT INTO sessions(group_id, planned_seconds, started_at, ended_at, "
-                "used_seconds, end_reason, actor) VALUES(?,?,?,?,?,?,?)",
-                (
-                    gid,
-                    row["planned_seconds"],
-                    row["started_at"],
-                    row["ended_at"],
-                    row["used_seconds"],
-                    row["end_reason"],
-                    row["actor"],
-                ),
+                "INSERT INTO usage_seconds(day, group_id, seconds) VALUES(?,?,?) "
+                "ON CONFLICT(day, group_id) DO UPDATE "
+                "SET seconds = usage_seconds.seconds + excluded.seconds",
+                (day, gid, int(row["used_seconds"] or 0)),
             )
             count += 1
         target.commit()
-        print(f"copied {count} session(s)")
+        print(f"carried {count} session(s) over as daily usage")
 
     # -- bonus + free allow ------------------------------------------------
     if "bonus" in tables:

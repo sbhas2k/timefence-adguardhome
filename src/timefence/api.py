@@ -76,7 +76,6 @@ def client_ip(request: Request, settings: Settings) -> str:
 
 
 validate_password = credentials.validate_admin_password
-validate_pin = credentials.validate_user_pin
 
 
 def sets_removed_mode(data: dict) -> bool:
@@ -148,6 +147,35 @@ def create_app(
         with store as conn:
             return db.get_bool_setting(conn, "setup_complete", False)
 
+    def heal_default_password() -> None:
+        """Re-open first-run setup once per schema version if an admin is unsafe."""
+        with store as conn:
+            if db.get_setting(conn, "default_pw_checked") == str(db.SCHEMA_VERSION):
+                return
+            admins = [
+                row
+                for row in conn.execute(
+                    "SELECT id, username, hash FROM users WHERE role='admin' AND disabled=0"
+                )
+            ]
+            enabled = db.get_bool_setting(conn, "setup_complete", False)
+        unsafe = [
+            row
+            for row in admins
+            if security.verify_secret(row["hash"], credentials.DEFAULT_ADMIN_PASSWORD)
+        ]
+        with store as conn:
+            if unsafe and enabled:
+                db.set_bool_setting(conn, "setup_complete", False)
+                app.state.setup_done = False
+                budget.log_event(
+                    conn, "setup_reopened", {"usernames": [row["username"] for row in unsafe]}
+                )
+            db.set_setting(conn, "default_pw_checked", str(db.SCHEMA_VERSION))
+            conn.commit()
+        if unsafe and enabled:
+            log.warning("an admin still uses the default password; first-run setup is required")
+
     def users_count(role: str | None = None) -> int:
         with store as conn:
             if role:
@@ -162,14 +190,6 @@ def create_app(
 
     def setup_complete() -> bool:
         return bool(app.state.setup_done)
-
-    def verify(role: str, secret: str) -> bool:
-        with store as conn:
-            return credentials.verify(conn, role, secret)
-
-    def set_credential(role: str, secret: str) -> None:
-        with store as conn:
-            credentials.set_secret(conn, role, secret)
 
     def current_session(request: Request) -> security.SessionData | None:
         return getattr(request.state, "session", None)
@@ -374,6 +394,7 @@ def create_app(
     @contextlib.asynccontextmanager
     async def lifespan(_: FastAPI):
         seed_users()
+        heal_default_password()
         ok, detail = agh.test_connection()
         if ok:
             log.info("AdGuard Home connection OK: %s", detail)
@@ -617,21 +638,39 @@ def create_app(
         if problem:
             return json_error(400, problem, "invalid")
         hashed = security.hash_secret(admin_password)
-        now = int(time.time())
         with store as conn:
-            conn.execute(
-                "UPDATE users SET hash=?, updated_at=? "
-                "WHERE role='admin' AND username=? COLLATE NOCASE",
-                (hashed, now, sess.username or "admin"),
-            )
-            if conn.total_changes == 0:
-                conn.execute(
-                    "UPDATE users SET hash=?, updated_at=? WHERE role='admin'", (hashed, now)
+            credentials.store_password(conn, sess.uid, hashed)
+            others = [
+                row
+                for row in conn.execute(
+                    "SELECT id, username, hash FROM users "
+                    "WHERE role='admin' AND disabled=0 AND id IS NOT ?",
+                    (sess.uid,),
                 )
-            credentials.bump_epoch(conn, sess.uid)
-            conn.commit()
+            ]
+        # other admins still on the default password are a first-run risk
+        unsafe = [
+            row
+            for row in others
+            if security.verify_secret(row["hash"], credentials.DEFAULT_ADMIN_PASSWORD)
+        ]
+        disabled_accounts: list[str] = []
+        with store as conn:
+            for row in unsafe:
+                conn.execute(
+                    "UPDATE users SET disabled=1, updated_at=? WHERE id=?",
+                    (int(time.time()), row["id"]),
+                )
+                credentials.bump_epoch(conn, row["id"])
+                budget.log_event(
+                    conn,
+                    "default_password_account_disabled",
+                    {"username": row["username"], "actor": sess.username},
+                )
+                disabled_accounts.append(row["username"])
             db.set_bool_setting(conn, "setup_complete", True)
             budget.log_event(conn, "setup_completed", {"username": sess.username})
+            conn.commit()
             epoch = int(
                 conn.execute("SELECT session_epoch FROM users WHERE id=?", (sess.uid,)).fetchone()[
                     0
@@ -639,7 +678,7 @@ def create_app(
             )
         app.state.setup_done = True
         log.info("first-run setup completed")
-        response = JSONResponse({"ok": True})
+        response = JSONResponse({"ok": True, "disabled_accounts": disabled_accounts})
         reissue_session(response, sess, epoch)
         return response
 
@@ -1017,32 +1056,42 @@ def create_app(
         reconcile("discover_add")
         return {"ok": True, "group": group_payload(group, int(time.time())), "added": domains}
 
-    # -------------------------------------------------------------- admin-ish
-    @app.post(f"{base}/api/admin/credentials")
-    def api_admin_credentials(request: Request, data: dict = Depends(json_body)):
+    # --------------------------------------------------------------- account
+    @app.post(f"{base}/api/account/password")
+    def api_account_password(request: Request, data: dict = Depends(json_body)):
         sess = require("admin", request)
-        role = str(data.get("role", ""))
-        secret = str(data.get("secret", ""))
-        if role == "admin":
-            problem = validate_password(secret)
-        elif role == "user":
-            problem = validate_pin(secret)
-        else:
-            return json_error(400, "bad role", "bad_role")
+        ip = client_ip(request, settings)
+        pair_key = f"pair:{ip}|{(sess.username or '').lower()}"
+        locked = limiter.locked_for(pair_key)
+        if locked:
+            return json_error(
+                429, i18n.t("login.locked", minutes=max(1, locked // 60 + 1)), "locked"
+            )
+        current = str(data.get("current_password", ""))
+        new = str(data.get("new_password", ""))
+        with store as conn:
+            row = conn.execute("SELECT * FROM users WHERE id=?", (sess.uid,)).fetchone()
+        if not row or not security.verify_secret(row["hash"], current):
+            limiter.record_failure(pair_key)
+            return json_error(400, i18n.t("error.wrong_password"), "wrong_password")
+        problem = credentials.validate(row["role"], new)
         if problem:
             return json_error(400, problem, "invalid")
-        # hashing happens outside the store lock; the write is one statement
-        hashed = security.hash_secret(secret)
+        hashed = security.hash_secret(new)
         with store as conn:
-            conn.execute(
-                "INSERT INTO credentials(role, hash, updated_at) VALUES(?,?,?) "
-                "ON CONFLICT(role) DO UPDATE SET hash=excluded.hash, "
-                "updated_at=excluded.updated_at",
-                (role, hashed, int(time.time())),
-            )
+            credentials.store_password(conn, sess.uid, hashed)
             conn.commit()
-            budget.log_event(conn, "credentials_changed", {"role": role, "actor": sess.role})
-        return {"ok": True}
+            budget.log_event(
+                conn, "password_changed", {"username": sess.username, "actor": sess.username}
+            )
+            epoch = int(
+                conn.execute("SELECT session_epoch FROM users WHERE id=?", (sess.uid,)).fetchone()[
+                    0
+                ]
+            )
+        response = JSONResponse({"ok": True})
+        reissue_session(response, sess, epoch)
+        return response
 
     # --------------------------------------------------------------- users
     def public_user(row) -> dict:
@@ -1103,11 +1152,7 @@ def create_app(
             return json_error(400, problem, "invalid")
         hashed = security.hash_secret(password)
         with store as conn:
-            conn.execute(
-                "UPDATE users SET hash=?, updated_at=? WHERE id=?",
-                (hashed, int(time.time()), user_id),
-            )
-            credentials.bump_epoch(conn, user_id)
+            credentials.store_password(conn, user_id, hashed)
             conn.commit()
             budget.log_event(
                 conn, "user_password", {"username": row["username"], "actor": sess.username}

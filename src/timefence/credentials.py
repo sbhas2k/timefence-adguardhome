@@ -56,33 +56,21 @@ def validate(role: str, secret: str) -> str | None:
     return f"unknown role {role!r}"
 
 
-def get_hash(conn: sqlite3.Connection, role: str) -> str | None:
-    row = conn.execute("SELECT hash FROM credentials WHERE role=?", (role,)).fetchone()
-    return row["hash"] if row else None
-
-
-def set_secret(conn: sqlite3.Connection, role: str, secret: str) -> None:
-    conn.execute(
-        "INSERT INTO credentials(role, hash, updated_at) VALUES(?,?,?) "
-        "ON CONFLICT(role) DO UPDATE SET hash=excluded.hash, updated_at=excluded.updated_at",
-        (role, security.hash_secret(secret), int(time.time())),
-    )
-    conn.commit()
-
-
-def verify(conn: sqlite3.Connection, role: str, secret: str) -> bool:
-    """Check a secret and transparently upgrade legacy hash formats."""
-    stored = get_hash(conn, role)
-    if not stored or not security.verify_secret(stored, secret):
-        return False
-    if security.needs_rehash(stored):
-        set_secret(conn, role, secret)
-    return True
-
-
 def bump_epoch(conn: sqlite3.Connection, user_id: int) -> None:
     """Invalidate every cookie issued for this account (committed by the caller)."""
     conn.execute("UPDATE users SET session_epoch = session_epoch + 1 WHERE id=?", (user_id,))
+
+
+def store_password(conn: sqlite3.Connection, user_id: int, new_hash: str) -> None:
+    """Write an already-hashed password and sign the account out everywhere.
+
+    The caller hashes outside the store lock and commits.
+    """
+    conn.execute(
+        "UPDATE users SET hash=?, updated_at=? WHERE id=?",
+        (new_hash, int(time.time()), user_id),
+    )
+    bump_epoch(conn, user_id)
 
 
 def db_path_for(data_dir: str | Path) -> Path:
@@ -101,17 +89,16 @@ def reset(data_dir: str | Path, role: str, secret: str, username: str = "admin")
         raise CredentialError(f"database not found: {path}")
     conn = db.connect(path)
     try:
-        db.migrate(conn)
+        try:
+            db.migrate(conn, allow_data_migration=False)
+        except db.DataMigrationRequired as exc:
+            raise CredentialError(str(exc)) from exc
         row = conn.execute(
             "SELECT id FROM users WHERE username = ? COLLATE NOCASE", (username,)
         ).fetchone()
         if not row:
             raise CredentialError(f"no account called {username!r}")
-        conn.execute(
-            "UPDATE users SET hash=?, updated_at=? WHERE id=?",
-            (security.hash_secret(secret), int(time.time()), row["id"]),
-        )
-        bump_epoch(conn, row["id"])
+        store_password(conn, row["id"], security.hash_secret(secret))
         conn.commit()
     finally:
         conn.close()
