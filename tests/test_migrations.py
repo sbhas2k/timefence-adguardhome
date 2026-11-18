@@ -34,8 +34,14 @@ def add_session(conn, group_id, started_at, used_seconds, planned=900, ended=Tru
     conn.execute(
         "INSERT INTO sessions(group_id, planned_seconds, started_at, ended_at, used_seconds, "
         "end_reason) VALUES(?,?,?,?,?,?)",
-        (group_id, planned, started_at, started_at + used_seconds if ended else None, used_seconds,
-         "stopped" if ended else None),
+        (
+            group_id,
+            planned,
+            started_at,
+            started_at + used_seconds if ended else None,
+            used_seconds,
+            "stopped" if ended else None,
+        ),
     )
 
 
@@ -87,7 +93,9 @@ def test_open_sessions_are_closed_and_billed_elapsed(tmp_path):
     db.migrate(conn, TZ)
 
     rows = list(
-        conn.execute("SELECT started_at, ended_at, used_seconds, end_reason FROM sessions ORDER BY id")
+        conn.execute(
+            "SELECT started_at, ended_at, used_seconds, end_reason FROM sessions ORDER BY id"
+        )
     )
     assert rows[0]["used_seconds"] == 600
     assert rows[0]["ended_at"] == rows[0]["started_at"] + 600
@@ -116,7 +124,8 @@ def test_v4_adds_session_epoch_and_logs_event(tmp_path):
     group = add_group(conn, "Sessions")
     add_session(conn, group, local_ts("2026-11-10"), 300)
     conn.execute(
-        "INSERT INTO users(username, role, hash, created_at, updated_at) VALUES('admin','admin','x',0,0)"
+        "INSERT INTO users(username, role, hash, created_at, updated_at) "
+        "VALUES('admin','admin','x',0,0)"
     )
     conn.commit()
 

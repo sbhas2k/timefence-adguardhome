@@ -1,11 +1,23 @@
-"""SQLite storage with simple versioned migrations."""
+"""SQLite storage with versioned, atomic migrations."""
 
 from __future__ import annotations
 
+import contextlib
+import json
+import logging
+import os
 import sqlite3
+import time
+from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-SCHEMA_VERSION = 3
+log = logging.getLogger("timefence.db")
+
+SCHEMA_VERSION = 4
+BACKUP_SUFFIX = ".pre-v4.bak"
+SKIP_BACKUP_ENV = "TIMEFENCE_SKIP_MIGRATION_BACKUP"
 
 MIGRATION_1 = """
 CREATE TABLE settings (
@@ -120,7 +132,153 @@ MIGRATION_3 = """
 ALTER TABLE groups ADD COLUMN owner_id INTEGER REFERENCES users(id);
 """
 
-MIGRATIONS: dict[int, str] = {1: MIGRATION_1, 2: MIGRATION_2, 3: MIGRATION_3}
+
+class DataMigrationRequired(RuntimeError):
+    """A pending migration rewrites data and the caller may not run it."""
+
+
+def _default_zone() -> ZoneInfo:
+    name = os.environ.get("TZ") or "UTC"
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError):
+        return ZoneInfo("UTC")
+
+
+def _close_open_sessions(conn: sqlite3.Connection, now: int) -> int:
+    """Bill elapsed time for sessions a previous run left open."""
+    closed = 0
+    rows = conn.execute(
+        "SELECT id, started_at, planned_seconds FROM sessions WHERE ended_at IS NULL"
+    ).fetchall()
+    for row in rows:
+        used = max(0, min(int(row["planned_seconds"]), now - int(row["started_at"])))
+        conn.execute(
+            "UPDATE sessions SET ended_at=?, used_seconds=?, end_reason='migrated' WHERE id=?",
+            (int(row["started_at"]) + used, used, row["id"]),
+        )
+        closed += 1
+    return closed
+
+
+def _backfill_session_usage(conn: sqlite3.Connection, tz: ZoneInfo) -> int:
+    """Carry session billing into daily usage for the groups that used sessions."""
+    session_groups = {
+        int(row["id"]) for row in conn.execute("SELECT id FROM groups WHERE mode = 'session'")
+    }
+    totals: dict[tuple[str, int], int] = {}
+    for row in conn.execute("SELECT group_id, started_at, used_seconds FROM sessions"):
+        gid = int(row["group_id"])
+        if gid not in session_groups:
+            continue
+        day = datetime.fromtimestamp(int(row["started_at"]), tz).strftime("%Y-%m-%d")
+        key = (day, gid)
+        totals[key] = totals.get(key, 0) + int(row["used_seconds"])
+    for (day, gid), seconds in totals.items():
+        conn.execute(
+            "INSERT INTO usage_seconds(day, group_id, seconds) VALUES(?,?,?) "
+            "ON CONFLICT(day, group_id) DO UPDATE "
+            "SET seconds = usage_seconds.seconds + excluded.seconds",
+            (day, gid, seconds),
+        )
+    return len(totals)
+
+
+def _migration_4(conn: sqlite3.Connection, tz: ZoneInfo) -> None:
+    """Session mode is gone: convert groups, keep their usage, add the epoch."""
+    now = int(time.time())
+    closed = _close_open_sessions(conn, now)
+    backfilled = _backfill_session_usage(conn, tz)
+    converted = conn.execute("UPDATE groups SET mode = 'auto' WHERE mode <> 'auto'").rowcount
+    conn.execute("ALTER TABLE users ADD COLUMN session_epoch INTEGER NOT NULL DEFAULT 0")
+    detail = json.dumps(
+        {
+            "to": 4,
+            "closed_sessions": closed,
+            "backfilled_rows": backfilled,
+            "converted_groups": converted,
+        }
+    )
+    conn.execute("INSERT INTO events(ts, kind, detail) VALUES(?,?,?)", (now, "migration", detail))
+
+
+MIGRATIONS: dict[int, str | Callable[[sqlite3.Connection, ZoneInfo], None]] = {
+    1: MIGRATION_1,
+    2: MIGRATION_2,
+    3: MIGRATION_3,
+    4: _migration_4,
+}
+
+
+def _main_path(conn: sqlite3.Connection) -> str:
+    for row in conn.execute("PRAGMA database_list"):
+        if row[1] == "main":
+            return str(row[2] or "")
+    return ""
+
+
+def _backup_before_v4(conn: sqlite3.Connection, version: int) -> None:
+    """Write a verified copy of the database next to it, before v4 rewrites data."""
+    source = _main_path(conn)
+    if not source or source == ":memory:":
+        return
+    if os.environ.get(SKIP_BACKUP_ENV) == "1":
+        log.warning("pre-upgrade backup skipped because %s=1", SKIP_BACKUP_ENV)
+        return
+    dest = Path(source + BACKUP_SUFFIX)
+    temporary = Path(source + BACKUP_SUFFIX + ".tmp")
+    conn.commit()  # the copy must not race the caller's pending writes
+    try:
+        temporary.unlink(missing_ok=True)
+        with contextlib.closing(sqlite3.connect(temporary)) as copy:
+            conn.backup(copy)
+        with contextlib.closing(sqlite3.connect(temporary)) as check:
+            if check.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise RuntimeError("the copy failed its integrity check")
+            copied = int(check.execute("PRAGMA user_version").fetchone()[0])
+            if copied != version:
+                raise RuntimeError(f"the copy reports schema v{copied}, expected v{version}")
+        with contextlib.suppress(OSError):
+            os.chmod(temporary, 0o600)
+        os.replace(temporary, dest)
+    except Exception as exc:
+        with contextlib.suppress(OSError):
+            temporary.unlink()
+        raise RuntimeError(
+            f"cannot write the pre-upgrade backup {dest}: {exc}; "
+            f"fix the cause or set {SKIP_BACKUP_ENV}=1"
+        ) from exc
+
+
+def _apply_script(conn: sqlite3.Connection, sql: str, target: int) -> None:
+    conn.commit()
+    try:
+        conn.executescript(f"BEGIN IMMEDIATE;\n{sql}\nPRAGMA user_version={target};\nCOMMIT;")
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+
+
+def _apply_callable(
+    conn: sqlite3.Connection,
+    step: Callable[[sqlite3.Connection, ZoneInfo], None],
+    target: int,
+    tz: ZoneInfo,
+) -> None:
+    conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if current_version(conn) >= target:
+            conn.rollback()
+            return
+        step(conn, tz)
+        conn.execute(f"PRAGMA user_version={target}")
+        conn.commit()
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
 
 
 def connect(path: Path | str) -> sqlite3.Connection:
@@ -141,20 +299,38 @@ def current_version(conn: sqlite3.Connection) -> int:
     return int(conn.execute("PRAGMA user_version").fetchone()[0])
 
 
-def migrate(conn: sqlite3.Connection) -> int:
+def migrate(
+    conn: sqlite3.Connection,
+    tz: ZoneInfo | None = None,
+    target: int | None = None,
+    allow_data_migration: bool = True,
+) -> int:
     """Apply every migration the database is missing. Returns the new version."""
     version = current_version(conn)
     if version > SCHEMA_VERSION:
         raise RuntimeError(
             f"database schema v{version} is newer than this build (v{SCHEMA_VERSION})"
         )
-    for target in sorted(MIGRATIONS):
-        if target <= version:
-            continue
-        conn.executescript(MIGRATIONS[target])
-        conn.execute(f"PRAGMA user_version={target}")
-        conn.commit()
-        version = target
+    tz = tz or _default_zone()
+    goal = SCHEMA_VERSION if target is None else int(target)
+    initial = version
+    pending = [step for step in sorted(MIGRATIONS) if version < step <= goal]
+    if not allow_data_migration and any(callable(MIGRATIONS[step]) for step in pending):
+        raise DataMigrationRequired(
+            f"database is at schema v{version}; start TimeFence once to upgrade it, "
+            "then run this command again"
+        )
+    backed_up = False
+    for step in pending:
+        if not backed_up and 1 <= initial < 4 <= step:
+            _backup_before_v4(conn, initial)
+            backed_up = True
+        migration = MIGRATIONS[step]
+        if callable(migration):
+            _apply_callable(conn, migration, step, tz)
+        else:
+            _apply_script(conn, migration, step)
+        version = step
     return version
 
 
