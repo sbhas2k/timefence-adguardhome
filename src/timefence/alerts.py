@@ -20,6 +20,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
+from datetime import time as dtime
 from typing import Any
 from urllib.parse import quote, urlsplit
 from zoneinfo import ZoneInfo
@@ -770,19 +771,15 @@ class AlertWorker:
             log.info("missed weekly summary")
 
     def _weekly_totals(self, conn: sqlite3.Connection, today: Any) -> list[tuple[str, float]]:
-        days = [(today - timedelta(days=offset)).isoformat() for offset in range(7, 0, -1)]
-        placeholders = ",".join("?" for _ in days)
-        totals = {
-            int(row["group_id"]): int(row["seconds"] or 0)
-            for row in conn.execute(
-                f"SELECT group_id, SUM(seconds) AS seconds FROM usage_seconds "
-                f"WHERE day IN ({placeholders}) GROUP BY group_id",
-                days,
-            )
-        }
-        return [
-            (group.name, round(totals.get(group.id, 0) / 60, 1)) for group in probe_groups(conn)
-        ]
+        yesterday = today - timedelta(days=1)
+        anchor = int(
+            datetime.combine(yesterday, dtime(12, 0), tzinfo=self.settings.zone).timestamp()
+        )
+        rows = budget.usage_range(conn, self.settings.zone, 7, anchor)
+        totals: dict[str, int] = {}
+        for row in rows:
+            totals[row["group"]] = totals.get(row["group"], 0) + int(row["used_seconds"])
+        return [(name, round(seconds / 60, 1)) for name, seconds in totals.items()]
 
     # -- delivery --------------------------------------------------------
     def _deliver_message(self, message: Message) -> bool:

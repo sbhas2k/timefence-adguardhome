@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import csv
+import io
 import json
 import logging
 import os
@@ -14,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -30,6 +32,8 @@ DATA = Path(__file__).parent / "data"
 
 # How many sign-ins may run a key derivation at the same time.
 LOGIN_SLOTS = threading.BoundedSemaphore(4)
+
+USAGE_DAYS = ("7", "14", "30")
 
 # What a user (kid) account may see; the admin payload is a superset.
 USER_APP_KEYS = (
@@ -1111,6 +1115,45 @@ def create_app(
         reconcile("discover_add")
         return {"ok": True, "group": group_payload(group, int(time.time())), "added": domains}
 
+    # ----------------------------------------------------------------- usage
+    def usage_rows(days: str) -> tuple[list[dict], JSONResponse | None]:
+        if days not in USAGE_DAYS:
+            return [], json_error(400, i18n.t("error.usage_days"), "invalid")
+        now = int(time.time())
+        with store as conn:
+            return budget.usage_range(conn, settings.zone, int(days), now), None
+
+    @app.get(f"{base}/api/usage")
+    def api_usage(request: Request, days: str = "7"):
+        require("admin", request)
+        rows, problem = usage_rows(days)
+        if problem is not None:
+            return problem
+        response = JSONResponse({"days": int(days), "rows": rows})
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    @app.get(f"{base}/api/usage.csv")
+    def api_usage_csv(request: Request, days: str = "7"):
+        require("admin", request)
+        rows, problem = usage_rows(days)
+        if problem is not None:
+            return problem
+        buffer = io.StringIO()
+        writer = csv.writer(buffer, lineterminator="\n")
+        writer.writerow(["group", "date", "used_minutes", "bonus_minutes"])
+        for row in rows:
+            writer.writerow(
+                [csv_cell(row["group"]), row["day"], row["used_minutes"], row["bonus_minutes"]]
+            )
+        response = Response(
+            content=buffer.getvalue().encode("utf-8"),
+            media_type="text/csv; charset=utf-8",
+        )
+        response.headers["Content-Disposition"] = 'attachment; filename="timefence-usage.csv"'
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
     # ---------------------------------------------------------------- alerts
     def alerts_payload() -> dict:
         with store as conn:
@@ -1393,6 +1436,15 @@ def create_app(
 
     app.mount(f"{base}/static", StaticFiles(directory=str(STATIC)), name="static")
     return app
+
+
+def csv_cell(value: object) -> str:
+    """A spreadsheet cell that cannot run as a formula."""
+    text = "".join(character for character in str(value or "") if ord(character) >= 32)
+    text = text.strip()
+    if text[:1] in {"=", "+", "-", "@", "'"}:
+        text = "'" + text
+    return text
 
 
 def _constant_eq(a: str, b: str) -> bool:

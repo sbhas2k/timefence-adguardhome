@@ -16,6 +16,9 @@
   var discoverData = null;
   var alertsConfig = null;
   var alertsTabLoaded = false;
+  var usageDays = 7;
+  var usageData = null;
+  var usageLoading = false;
   var sequence = 0;
   var applied = 0;
   var renderedSignature = null;
@@ -373,20 +376,65 @@
     }).join("");
   }
 
+  function usageGroups() {
+    var seen = {};
+    var out = [];
+    ((usageData && usageData.rows) || []).forEach(function (row) {
+      var key = String(row.group_id);
+      if (seen[key]) { return; }
+      seen[key] = true;
+      out.push({ id: row.group_id, name: row.group });
+    });
+    return out;
+  }
+
   function renderHistory() {
-    if (!state) { return; }
+    var table = $("#history-table");
+    if (!table) { return; }
+    var select = $("#history-days");
+    if (select) { select.value = String(usageDays); }
+    var link = $("#history-csv");
+    if (link) { link.href = base + "/api/usage.csv?days=" + usageDays; }
+    if (!usageData) {
+      table.innerHTML = '<tbody><tr><td class="muted small">' + esc(t("common.loading")) +
+        "</td></tr></tbody>";
+      return;
+    }
+    var groups = usageGroups();
+    if (!groups.length) {
+      table.innerHTML = '<tbody><tr><td class="muted small">' + esc(t("history.none")) +
+        "</td></tr></tbody>";
+      return;
+    }
+    var order = [];
+    var byDay = {};
+    usageData.rows.forEach(function (row) {
+      if (!byDay[row.day]) { byDay[row.day] = {}; order.push(row.day); }
+      byDay[row.day][String(row.group_id)] = row;
+    });
     var head = '<thead><tr><th>' + esc(t("history.day")) + "</th>" +
-      state.groups.map(function (g) {
-        return "<th>" + esc((g.emoji ? g.emoji + " " : "") + g.name) + "</th>";
+      groups.map(function (group) {
+        return "<th>" + esc(group.name) + "</th>";
       }).join("") + "</tr></thead>";
-    var rows = state.history.map(function (day) {
-      return "<tr><td>" + esc(day.day) + "</td>" +
-        state.groups.map(function (g) {
-          var value = day[String(g.id)] || 0;
-          return '<td>' + (value ? fmtMinutes(value) : "–") + "</td>";
-        }).join("") + "</tr>";
+    var rows = order.map(function (day) {
+      return "<tr><td>" + esc(day) + "</td>" + groups.map(function (group) {
+        var row = byDay[day][String(group.id)];
+        var value = row ? Number(row.used_minutes) || 0 : 0;
+        return "<td>" + (value ? fmtMinutes(value) : "–") + "</td>";
+      }).join("") + "</tr>";
     }).join("");
-    $("#history-table").innerHTML = head + "<tbody>" + rows + "</tbody>";
+    table.innerHTML = head + "<tbody>" + rows + "</tbody>";
+  }
+
+  function loadUsage() {
+    if (usageLoading) { return Promise.resolve(); }
+    usageLoading = true;
+    return api("GET", "/api/usage?days=" + usageDays).then(function (data) {
+      usageData = data || { days: usageDays, rows: [] };
+      renderHistory();
+    }).catch(function (error) {
+      toast(error.message);
+    }).then(function () { usageLoading = false; });
   }
 
   /* Everything the DOM shows, minus the ever-changing app.now: a poll that
@@ -401,7 +449,8 @@
       warnings: state.warnings || [],
       adguard_error: state.adguard_error || "",
       groups: state.groups || [],
-      history: state.history || []
+      usage: usageData ? { days: usageData.days, rows: usageData.rows } : null,
+      usageDays: usageDays
     });
   }
 
@@ -424,7 +473,10 @@
     $("#panel-today").classList.toggle("hidden", isAdmin && tab !== "today");
     renderToday();
     if (isAdmin && tab === "groups") { renderGroupList(); }
-    if (isAdmin && tab === "history") { renderHistory(); }
+    if (isAdmin && tab === "history") {
+      renderHistory();
+      if (!usageData) { loadUsage(); }
+    }
     if (isAdmin && tab === "settings") {
       loadUsers();
       if (!alertsTabLoaded) { alertsTabLoaded = true; loadAlerts(); }
@@ -1113,6 +1165,7 @@
     button.addEventListener("click", function () {
       if (button.dataset.tab !== tab) { alertsTabLoaded = false; }
       tab = button.dataset.tab;
+      if (tab === "history") { loadUsage(); }
       render();
     });
   });
@@ -1120,6 +1173,14 @@
   var newGroupButton = $("#new-group");
   if (newGroupButton) {
     newGroupButton.addEventListener("click", function () { openGroupEditor(null); });
+  }
+
+  var historyDaysSelect = $("#history-days");
+  if (historyDaysSelect) {
+    historyDaysSelect.addEventListener("change", function () {
+      usageDays = Number(historyDaysSelect.value) || 7;
+      loadUsage();
+    });
   }
 
   var discoverButton = $("#discover-run");

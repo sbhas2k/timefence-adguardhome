@@ -203,7 +203,11 @@ STRINGS: dict[str, dict[str, str]] = {
         "discover.empty_hint": "If nothing appears, use the app for a bit and try a longer window.",
         "discover.last_seen": "last {ago} ago",
         # --- history ----------------------------------------------------
-        "history.heading": "Last 7 days",
+        "history.heading": "Usage",
+        "history.range": "Range",
+        "history.days": "{days} days",
+        "history.download": "Download CSV",
+        "history.none": "No usage recorded yet.",
         "history.day": "Day",
         "history.total": "Total",
         # --- alerts -----------------------------------------------------
@@ -256,6 +260,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "error.windows_invalid": "Check the bedtime windows: at most four, start and end as HH:MM and different, and days all, weekday or weekend.",
         "error.alerts_invalid": "Check the alert settings: channel, URLs and event toggles.",
         "error.alerts_topic": "A topic may only contain letters, digits, dashes and underscores, 1 to 64 characters.",
+        "error.usage_days": "Choose 7, 14 or 30 days.",
         "error.invalid_group": "{detail}",
     }
 }

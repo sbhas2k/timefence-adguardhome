@@ -678,6 +678,81 @@ def history(
     return out
 
 
+def usage_range(
+    conn: sqlite3.Connection, tz: ZoneInfo, days: int = 7, now: int | None = None
+) -> list[dict]:
+    """Per group per local day: metered and bonus time, and the minutes allowed.
+
+    Exactly two statements whatever the number of groups and days. Dates come
+    from local date arithmetic (never 86400 offsets), and `budget_minutes` is the
+    group's current weekday/weekend setting applied to that date, not history.
+    """
+    now = now or int(time.time())
+    today = datetime.fromtimestamp(now, tz).date()
+    dates = [(today - timedelta(days=offset)).isoformat() for offset in range(days - 1, -1, -1)]
+    first, last = dates[0], dates[-1]
+    groups: dict[int, dict] = {}
+
+    def collect(cursor: sqlite3.Cursor, bucket: str) -> None:
+        for row in cursor:
+            gid = int(row["id"])
+            info = groups.setdefault(
+                gid,
+                {
+                    "group_id": gid,
+                    "group": str(row["name"]),
+                    "weekday_minutes": int(row["weekday_minutes"]),
+                    "weekend_minutes": int(row["weekend_minutes"]),
+                    "used": {},
+                    "bonus": {},
+                },
+            )
+            if row["day"] is not None:
+                info[bucket][str(row["day"])] = int(row["seconds"] or 0)
+
+    collect(
+        conn.execute(
+            "SELECT g.id, g.name, g.weekday_minutes, g.weekend_minutes, u.day, u.seconds "
+            "FROM groups g LEFT JOIN usage_seconds u "
+            "ON u.group_id = g.id AND u.day BETWEEN ? AND ? "
+            "WHERE g.deleted = 0 ORDER BY g.name, u.day",
+            (first, last),
+        ),
+        "used",
+    )
+    collect(
+        conn.execute(
+            "SELECT g.id, g.name, g.weekday_minutes, g.weekend_minutes, b.day, b.seconds "
+            "FROM groups g LEFT JOIN bonus b "
+            "ON b.group_id = g.id AND b.day BETWEEN ? AND ? "
+            "WHERE g.deleted = 0 ORDER BY g.name, b.day",
+            (first, last),
+        ),
+        "bonus",
+    )
+    out: list[dict] = []
+    for info in groups.values():
+        for day in dates:
+            used = info["used"].get(day, 0)
+            bonus = info["bonus"].get(day, 0)
+            weekend = date.fromisoformat(day).weekday() >= 5
+            out.append(
+                {
+                    "group_id": info["group_id"],
+                    "group": info["group"],
+                    "day": day,
+                    "used_seconds": used,
+                    "bonus_seconds": bonus,
+                    "used_minutes": round(used / 60, 1),
+                    "bonus_minutes": round(bonus / 60, 1),
+                    "budget_minutes": info["weekend_minutes"]
+                    if weekend
+                    else info["weekday_minutes"],
+                }
+            )
+    return out
+
+
 def log_event(conn: sqlite3.Connection, kind: str, detail: dict | str = "") -> None:
     conn.execute(
         "INSERT INTO events(ts, kind, detail) VALUES(?,?,?)",

@@ -55,8 +55,18 @@
 
 <section id="panel-history" class="hidden" aria-label="{{ t('history.heading') }}">
   <div class="card">
-    <h2>{{ t("history.heading") }}</h2>
+    <div class="between">
+      <h2>{{ t("history.heading") }}</h2>
+      <select id="history-days" aria-label="{{ t('history.range') }}">
+        <option value="7">{{ t("history.days", days=7) }}</option>
+        <option value="14">{{ t("history.days", days=14) }}</option>
+        <option value="30">{{ t("history.days", days=30) }}</option>
+      </select>
+    </div>
     <div class="table-wrap"><table id="history-table"></table></div>
+    <div class="row mt">
+      <a class="btn" id="history-csv" href="{{ base }}/api/usage.csv?days=7">{{ t("history.download") }}</a>
+    </div>
   </div>
 </section>
 
