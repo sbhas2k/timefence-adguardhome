@@ -46,6 +46,7 @@ HOURLY_LIMIT = 20
 QUEUE_SIZE = 50
 PRUNE_AFTER = 14 * 86400
 BODY_LIMIT = 1024
+DELIVERY_DEADLINE = 5.0  # a whole delivery, headers and body, may take this long
 DEFAULT_NTFY_BASE = "https://ntfy.sh"
 PROTECTED_CLASSES = frozenset({"ex", "sync_failing"})
 TEST_LOCK = threading.Lock()
@@ -462,14 +463,16 @@ def _headers_for(target: Target, message: Message) -> dict[str, str]:
     return headers
 
 
-def _deliver(target: Target, message: Message) -> str:
-    """One attempt; returns a category, never an exception and never the body."""
+def _request_parts(target: Target, message: Message) -> tuple[bytes, dict[str, str]]:
+    """The body and headers for one message, whatever the channel."""
     if target.channel == "ntfy":
-        payload = message_text(message).encode("utf-8")
-        headers = _headers_for(target, message)
-    else:
-        payload = json.dumps(webhook_payload(message), ensure_ascii=False).encode("utf-8")
-        headers = {"Content-Type": "application/json"}
+        return message_text(message).encode("utf-8"), _headers_for(target, message)
+    body = json.dumps(webhook_payload(message), ensure_ascii=False).encode("utf-8")
+    return body, {"Content-Type": "application/json"}
+
+
+def _post(target: Target, payload: bytes, headers: dict[str, str]) -> str:
+    """Send one request; returns a category, never an exception and never the body."""
     try:
         response = SESSION.post(
             target.url,
@@ -497,6 +500,31 @@ def _deliver(target: Target, message: Message) -> str:
     if 300 <= status < 400:
         return "http_3xx"
     return f"http_{status}"
+
+
+def _deliver(target: Target, message: Message) -> str:
+    """One attempt with a hard wall-clock deadline.
+
+    The socket timeouts only bound each read; a server that trickles a body can
+    hold the worker far longer, so the request runs on a helper thread and is
+    abandoned after DELIVERY_DEADLINE. The category is the same shape as
+    before, and the thread never touches the database.
+    """
+    payload, headers = _request_parts(target, message)
+    outcome: list[str] = []
+
+    def run() -> None:
+        try:
+            outcome.append(_post(target, payload, headers))
+        except Exception:  # noqa: BLE001 - a broken transport must never surface
+            outcome.append("connect")
+
+    thread = threading.Thread(target=run, name="timefence-alert-delivery", daemon=True)
+    thread.start()
+    thread.join(DELIVERY_DEADLINE)
+    if thread.is_alive():
+        return "timeout"
+    return outcome[0] if outcome else "connect"
 
 
 def _iso(now: int, tz: ZoneInfo) -> str:
@@ -646,7 +674,10 @@ class AlertWorker:
         tz: ZoneInfo,
     ) -> Message | None:
         if status in budget.PERMITTED_STATUSES:
-            if 0 < remaining <= LOW_SECONDS and config["events"]["group_low"]:
+            # A warning while the group is free would be noise: the free window
+            # is an admin decision, not the budget running out.
+            wanted = config["events"]["group_low"]
+            if status == "allowed" and 0 < remaining <= LOW_SECONDS and wanted:
                 key = f"low:{group.id}:{day}"
                 if _reserve(conn, key, now):
                     minutes = max(1, -(-remaining // 60))
@@ -670,7 +701,10 @@ class AlertWorker:
                     group=group.name,
                 )
         if status == "bedtime" and config["events"]["bedtime_started"]:
-            key = f"bedtime:{group.id}:{day}"
+            # One night, one message: a window that crosses midnight must not
+            # fire again after 00:00, so the key names the window's end.
+            night = blocked_until if blocked_until is not None else day
+            key = f"bedtime:{group.id}:{night}"
             if _reserve(conn, key, now):
                 return Message(
                     event="bedtime_started",

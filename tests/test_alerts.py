@@ -821,3 +821,55 @@ def test_shutdown_waits_for_a_fast_delivery(settings, fake, monkeypatch, caplog)
         assert db.get_setting(conn, "alerts.last_result") == "ok"
     finally:
         conn.close()
+
+
+def test_low_does_not_fire_during_a_free_window(store, tmp_path):
+    settings = settings_for(tmp_path)
+    now = ts_utc(2026, 11, 11, 12)
+    group = make_group(store, minutes=100)
+    ntfy_config(store)
+    with store as conn:
+        budget.set_free_until(conn, group.id, now + 3600)
+    spend(store, group, 5700, "2026-11-11")  # 300 s left, but the group is free
+    assert probe(alerts.AlertWorker(store, settings), now) == []
+
+    # the same budget raises the warning once the free window is over
+    messages = probe(alerts.AlertWorker(store, settings), now + 3601)
+    assert [m.event for m in messages] == ["group_low"]
+    assert messages[0].minutes_left == 5
+
+
+def test_bedtime_alert_is_one_message_per_night(store, tmp_path):
+    settings = settings_for(tmp_path)
+    make_group(store, windows=[{"start": "21:00", "end": "07:00", "days": "all"}])
+    ntfy_config(store)
+    configure(store, events={"bedtime_started": True})
+    worker = alerts.AlertWorker(store, settings)
+
+    first = probe(worker, ts_utc(2026, 11, 9, 21))  # Monday, the window opens
+    assert [m.event for m in first] == ["bedtime_started"]
+    assert first[0].time_text == "07:00"
+    # the same window, just after local midnight, is not a new night
+    assert probe(worker, ts_utc(2026, 11, 10, 0)) == []
+    assert probe(worker, ts_utc(2026, 11, 10, 6, 59)) == []
+
+    second = probe(worker, ts_utc(2026, 11, 10, 21))  # Tuesday evening
+    assert [m.event for m in second] == ["bedtime_started"]
+    assert probe(worker, ts_utc(2026, 11, 11, 0)) == []
+
+
+def test_a_trickling_delivery_ends_as_a_timeout(deliveries):
+    message = alerts.Message(
+        event="weekly_summary",
+        key="weekly:2026-11-11",
+        created_at=ts_utc(2026, 11, 11, 12),
+        time_iso="2026-11-11T12:00:00Z",
+        minutes_left=0,
+    )
+    with StubServer(body=b"x" * 40, trickle=0.5) as stub:
+        target = alerts.parse_target(stub.url + "/hook")
+        started = time.monotonic()
+        category = deliveries(target, message)
+        elapsed = time.monotonic() - started
+    assert category == "timeout"
+    assert elapsed < 7.5, elapsed
