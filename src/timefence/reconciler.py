@@ -137,6 +137,12 @@ class Reconciler:
         self._service_domains_ts = 0.0
         self._last_bucket: dict[int, int] = {}
         self._querylog_checked = 0
+        # A stand-in for AdGuard may need to know which store it serves so it can
+        # insist that no AdGuard call happens under the store lock; the real
+        # client has no such hook and this is a no-op for it.
+        bind = getattr(adguard, "bind", None)
+        if callable(bind):
+            bind(store)
 
     # -- usage metering (auto mode) --------------------------------------
     def service_domains(self) -> dict[str, set[str]]:

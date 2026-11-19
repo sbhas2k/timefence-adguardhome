@@ -41,8 +41,18 @@ class FakeAdGuard(AdGuardClient):
         self.delay = 0.0
         self.url = "fake://adguard"
         self.auth = ("admin", "admin")
+        self.store = None
+
+    def bind(self, store) -> None:
+        """Remember the store so every call can prove the lock is not held."""
+        self.store = store
+
+    def _guard(self) -> None:
+        if self.store is not None and self.store.lock.held_by_current_thread():
+            raise AssertionError("AdGuard was called while the store lock was held")
 
     def _maybe_fail(self) -> None:
+        self._guard()
         if self.fail_all:
             raise AdGuardError("fake failure")
 
@@ -124,6 +134,7 @@ class FakeAdGuard(AdGuardClient):
         return {"version": "v0.107.80-fake"}
 
     def test_connection(self) -> tuple[bool, str]:
+        self._guard()
         if self.fail or self.fail_all:
             return False, "connection refused"
         return True, "AdGuard Home v0.107.80-fake"
@@ -140,10 +151,17 @@ def make_entry(host: str, client_ip: str = "192.168.1.20", ago: int = 30) -> dic
 class StubServer:
     """A tiny local HTTP server for delivery proofs (never the real network)."""
 
-    def __init__(self, status: int = 200, body: bytes = b"ok", delay: float = 0.0) -> None:
+    def __init__(
+        self,
+        status: int = 200,
+        body: bytes = b"ok",
+        delay: float = 0.0,
+        trickle: float = 0.0,
+    ) -> None:
         self.status = status
         self.body = body
         self.delay = delay
+        self.trickle = trickle
         self.location = ""
         self.requests: list[dict] = []
         outer = self
@@ -162,7 +180,13 @@ class StubServer:
                     self.send_header("Location", outer.location)
                 self.send_header("Content-Length", str(len(outer.body)))
                 self.end_headers()
-                self.wfile.write(outer.body)
+                if outer.trickle:
+                    for byte in outer.body:
+                        self.wfile.write(bytes([byte]))
+                        self.wfile.flush()
+                        time.sleep(outer.trickle)
+                else:
+                    self.wfile.write(outer.body)
 
             def log_message(self, *args) -> None:
                 return
