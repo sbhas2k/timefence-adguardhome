@@ -26,7 +26,7 @@ LEGACY_MARKERS = ("budget-app",)  # migrated silently on the first run
 
 BUCKET = 15  # seconds of real DNS activity charged per busy bucket
 MAX_CATCHUP = 1800  # never charge more than this much missed time after downtime
-QUERYLOG_HEALTH_INTERVAL = 600  # seconds between query-log settings checks
+QUERYLOG_HEALTH_INTERVAL = 60  # seconds between query-log settings checks (one cheap GET)
 # AdGuard Home counts failed authentications per address and stops answering for
 # block_auth_min (15 min by default), even to the right password. One attempt
 # per window is the only safe cadence after a rejection.
@@ -322,7 +322,7 @@ class Reconciler:
 
     # -- query-log health -------------------------------------------------
     def check_querylog(self, now: int) -> None:
-        """Warn when the query log makes metering unreliable (at most every 10 min)."""
+        """Warn when the query log makes metering unreliable (at most every minute)."""
         if self._querylog_checked and now - self._querylog_checked < QUERYLOG_HEALTH_INTERVAL:
             return
         self._querylog_checked = now

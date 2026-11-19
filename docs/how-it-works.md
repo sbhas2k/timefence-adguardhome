@@ -117,8 +117,9 @@ buckets**:
   restart at most 30 minutes (`MAX_CATCHUP`) of missed time is caught up;
 - a query log that is disabled, keeps less than an hour, or is too long to read
   surfaces as an admin warning (`querylog_disabled`, `querylog_retention_short`,
-  `querylog_truncated`); a query-log `ignored` list that covers one of your
-  groups shows up as `querylog_ignores_group`.
+  `querylog_truncated`), checked once a minute; a query-log `ignored` list that
+  is enabled and covers one of your groups shows up as
+  `querylog_ignores_group`, and the warning clears within the same minute.
 
 Metering is an approximation: a player that streams from cached IPs or bypasses
 DNS (DoH/VPN/mobile data) will under-report, and background API calls may add a

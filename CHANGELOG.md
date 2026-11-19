@@ -192,6 +192,9 @@ together and is released as one version, so this entry covers everything a
   account.
 - A quoted value in the environment file kept its backslash escapes.
 - A migration failure could leave a half-migrated database.
+- The query-log health check now runs once a minute instead of every ten, so a
+  log that is switched off (or back on) is reported within a minute instead of
+  up to ten minutes of usage going uncounted.
 - Large service icons (the real catalogue has one at ~9.9k characters) were
   dropped from the picker; the cap now covers them, and the base64-only check
   still rejects anything else.

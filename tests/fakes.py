@@ -273,6 +273,10 @@ class FaithfulAdGuard(FakeAdGuard):
                 return {"reason": "FilteredBlackList"}
         return {"reason": "NotFilteredNotFound"}
 
+    def querylog_config(self) -> dict | None:
+        self.calls.append(("querylog_config", None))
+        return super().querylog_config()
+
     def querylog_page(self, limit: int = 500, older_than: str | None = None) -> dict:
         """Newest first, strict `older_than`, no cap, and a few out-of-order rows."""
         self._maybe_fail()

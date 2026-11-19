@@ -363,3 +363,28 @@ def test_a_plain_ignored_entry_hides_only_that_exact_host(settings, fake):
         fake.ql_config["ignored"] = ["||games.example^"]
         reconciler.meter(base + 1300)
         assert "querylog_ignores_group" in client.get("/api/state").json()["warnings"]
+
+
+def test_querylog_health_is_checked_every_minute(store, fake):
+    reconciler = Reconciler(store, fake, TZ)
+    base = 1_700_000_000
+    reconciler.check_querylog(base)
+
+    fake.ql_config["enabled"] = False
+    reconciler.check_querylog(base + 70)
+    assert "querylog_disabled" in reconciler.warnings
+
+    fake.ql_config["enabled"] = True
+    reconciler.check_querylog(base + 140)
+    assert "querylog_disabled" not in reconciler.warnings
+
+
+def test_querylog_health_does_not_hit_adguard_every_pass(store):
+    from .fakes import FaithfulAdGuard
+
+    fake = FaithfulAdGuard()
+    reconciler = Reconciler(store, fake, TZ)
+    base = 1_700_000_000
+    for offset in range(0, 30, 10):
+        reconciler.check_querylog(base + offset)
+    assert len([call for call in fake.calls if call[0] == "querylog_config"]) == 1
