@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import http.server
+import json
 import threading
 import time
+from collections.abc import Callable
 from datetime import UTC
+from pathlib import Path
 
-from timefence.adguard import AdGuardClient, AdGuardError
+from timefence.adguard import AdGuardAuthError, AdGuardClient, AdGuardError
 from timefence.discover import parse_time
+
+SERVICES_FIXTURE = Path(__file__).with_name("data") / "adguard_services.json"
 
 
 class FakeAdGuard(AdGuardClient):
@@ -146,6 +151,150 @@ def make_entry(host: str, client_ip: str = "192.168.1.20", ago: int = 30) -> dic
 
     stamp = datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H:%M:%S.000000000Z")
     return {"time": stamp, "client": client_ip, "question": {"name": host, "type": "A"}}
+
+
+def load_service_catalogue() -> list[dict]:
+    """The recorded real catalogue: single-pipe, wildcard, modifier and regex rules."""
+    return json.loads(SERVICES_FIXTURE.read_text(encoding="utf-8"))
+
+
+def real_entry(
+    host: str,
+    stamp: str,
+    client: str = "192.168.1.20",
+    reason: str = "NotFilteredNotFound",
+    answer: str = "",
+    qtype: str = "A",
+) -> dict:
+    """One query-log entry shaped like the real server's (every field it sends)."""
+    return {
+        "time": stamp,
+        "client": client,
+        "reason": reason,
+        "answer": answer,
+        "status": "NOERROR",
+        "cached": False,
+        "client_proto": "udp",
+        "elapsedMs": "1",
+        "question": {"class": "INET", "name": host, "type": qtype},
+    }
+
+
+class FaithfulAdGuard(FakeAdGuard):
+    """A stand-in shaped like a real AdGuard Home v0.107.80, quirks included.
+
+    It models what the first run against the real server exposed and the older
+    double never did: the per-address brute-force lock on failed sign-ins, query
+    log pages that lose entries sharing a timestamp, `user_rules: null`,
+    `ignored_enabled`, and a catalogue with the real rule shapes and icon sizes.
+    Its clock is injectable, so the lock and its expiry can be driven in a test.
+    """
+
+    AUTH_ATTEMPTS = 5
+    BLOCK_AUTH_SECONDS = 15 * 60
+
+    def __init__(
+        self,
+        services: list[dict] | None = None,
+        password: str = "secret",
+        now: Callable[[], float] | None = None,
+    ) -> None:
+        super().__init__()
+        self.SERVICES = load_service_catalogue() if services is None else services
+        self.password = password
+        self.expected_password = "secret"
+        self._clock = now or time.monotonic
+        self.auth_failures: list[float] = []
+        self.blocked_until = 0.0
+        self.auth_calls = 0
+        self.reasons: dict[str, str] = {}
+        self.rules = []
+        self.ql_config = {
+            "enabled": True,
+            "interval": 7776000000,
+            "ignored": [],
+            # the real default: `ignored` entries are inert until this is on
+            "ignored_enabled": False,
+            "anonymize_client_ip": False,
+        }
+
+    # -- brute-force protection, as AdGuard Home applies it ---------------
+    def _authenticate(self) -> None:
+        self.auth_calls += 1
+        now = self._clock()
+        if now < self.blocked_until:
+            raise AdGuardAuthError("GET /control: AdGuard Home rejected the credentials")
+        # A failure counts while it is younger than the block window and a
+        # successful sign-in clears the record, like the server's limiter.
+        self.auth_failures = [
+            failed for failed in self.auth_failures if now - failed < self.BLOCK_AUTH_SECONDS
+        ]
+        if self.password != self.expected_password:
+            self.auth_failures.append(now)
+            if len(self.auth_failures) >= self.AUTH_ATTEMPTS:
+                self.blocked_until = now + self.BLOCK_AUTH_SECONDS
+            raise AdGuardAuthError("GET /control: AdGuard Home rejected the credentials")
+        self.auth_failures = []
+
+    def _maybe_fail(self) -> None:
+        self._authenticate()
+        super()._maybe_fail()
+
+    def test_connection(self) -> tuple[bool, str]:
+        self._authenticate()
+        return super().test_connection()
+
+    # -- the API's own shapes ---------------------------------------------
+    def user_rules(self) -> list[str] | None:
+        self._maybe_fail()
+        # the real server sends null, not [], when no rule exists
+        return list(self.rules) if self.rules else None
+
+    def check_host(self, name: str) -> dict:
+        self._maybe_fail()
+        if name in self.reasons:
+            return {"reason": self.reasons[name]}
+        for service in self.SERVICES:
+            if service["id"] not in self.ids:
+                continue
+            for rule in service["rules"]:
+                host = _rule_host(rule)
+                if host and (name == host or name.endswith("." + host)):
+                    return {"reason": "FilteredBlockedService", "service_name": service["name"]}
+        for rule in self.rules:
+            host = _rule_host(rule)
+            if host and (name == host or name.endswith("." + host)):
+                return {"reason": "FilteredBlackList"}
+        return {"reason": "NotFilteredNotFound"}
+
+    def querylog_page(self, limit: int = 500, older_than: str | None = None) -> dict:
+        """Newest first, strict `older_than`, no cap, and a few out-of-order rows."""
+        self._maybe_fail()
+        self.calls.append(("querylog_page", older_than))
+        cutoff = parse_time(older_than) if older_than else None
+        entries = [
+            entry
+            for entry in self.entries
+            if cutoff is None or (parse_time(entry.get("time", "")) or 0) < cutoff
+        ]
+        entries.sort(key=lambda entry: parse_time(entry.get("time", "")) or 0, reverse=True)
+        for index in range(0, min(len(entries) - 1, 6), 2):
+            entries[index], entries[index + 1] = entries[index + 1], entries[index]
+        page = entries[:limit]
+        # `oldest` is the last row of the page, which need not be the minimum
+        return {"data": page, "oldest": page[-1]["time"] if page else ""}
+
+
+def _rule_host(rule: str) -> str | None:
+    """The host a rule names, parsed independently of the code under test."""
+    text = (rule or "").strip()
+    if not text or text.startswith(("!", "#", "/", "@@")):
+        return None
+    text = text.removeprefix("||").removeprefix("|")
+    text = text.split("$", 1)[0].rstrip("^").strip(".").lower()
+    if not text or any(char in text for char in "*|/, ~"):
+        return None
+    return text
 
 
 class StubServer:

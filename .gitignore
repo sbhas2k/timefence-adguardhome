@@ -5,6 +5,7 @@
 *.db-shm
 data/
 !src/timefence/data/
+!tests/data/
 secrets/
 adguard_password.txt
 *.bak
