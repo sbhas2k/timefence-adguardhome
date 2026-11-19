@@ -305,7 +305,55 @@ def test_querylog_ignores_group_warning(settings, fake):
 
         reconciler = app.state.reconciler
         fake.ql_config["ignored"] = ["*.games.example"]
+        fake.ql_config["ignored_enabled"] = True
         reconciler.meter(int(time.time()) + 601)
 
         state = client.get("/api/state").json()
         assert "querylog_ignores_group" in state["warnings"]
+
+
+def test_ignored_entries_warn_only_when_ignoring_is_enabled(settings, fake):
+    app = create_app(settings, adguard=fake)
+    with TestClient(app) as client:
+        login_admin(client)
+        created = client.post(
+            "/api/groups",
+            json={"name": "Games", "weekday_minutes": 10, "domains_text": "games.example"},
+        )
+        assert created.status_code == 200, created.text
+        reconciler = app.state.reconciler
+        base = int(time.time())
+        fake.ql_config["ignored"] = ["games.example"]
+        fake.ql_config["ignored_enabled"] = False
+        reconciler.meter(base + 601)
+        state = client.get("/api/state").json()
+        assert "querylog_ignores_group" not in state["warnings"]
+
+        fake.ql_config["ignored_enabled"] = True
+        reconciler.meter(base + 1300)
+        state = client.get("/api/state").json()
+        assert "querylog_ignores_group" in state["warnings"]
+
+
+def test_a_plain_ignored_entry_hides_only_that_exact_host(settings, fake):
+    app = create_app(settings, adguard=fake)
+    with TestClient(app) as client:
+        login_admin(client)
+        assert (
+            client.post(
+                "/api/groups",
+                json={"name": "Games", "weekday_minutes": 10, "domains_text": "www.games.example"},
+            ).status_code
+            == 200
+        )
+        reconciler = app.state.reconciler
+        base = int(time.time())
+        fake.ql_config["ignored"] = ["games.example"]
+        fake.ql_config["ignored_enabled"] = True
+        reconciler.meter(base + 601)
+        assert "querylog_ignores_group" not in client.get("/api/state").json()["warnings"]
+
+        # the anchored form covers subdomains, so the group is hidden
+        fake.ql_config["ignored"] = ["||games.example^"]
+        reconciler.meter(base + 1300)
+        assert "querylog_ignores_group" in client.get("/api/state").json()["warnings"]

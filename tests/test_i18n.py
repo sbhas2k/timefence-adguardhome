@@ -47,3 +47,17 @@ def test_alert_messages_come_from_i18n():
     for match in matches:
         before = text[max(0, match.start() - len("i18n.t(")) : match.start()]
         assert before == "i18n.t(", match.group(0)
+
+
+def test_every_warning_code_emitted_by_the_server_has_a_string():
+    codes: set[str] = set()
+    for name in ("reconciler.py", "api.py"):
+        source = (PACKAGE / name).read_text(encoding="utf-8")
+        codes.update(re.findall(r'warnings\.add\("([a-z0-9_]+)"\)', source))
+        codes.update(re.findall(r'warnings\.discard\("([a-z0-9_]+)"\)', source))
+        codes.update(re.findall(r'"([a-z0-9_]+)"\s*\}\s*if settings\.tz_source', source))
+    assert "querylog_ignores_group" in codes
+    missing = sorted(code for code in codes if f"warn.{code}" not in i18n.STRINGS["en"])
+    assert missing == []
+    app_js = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert 't("warn." + code)' in app_js

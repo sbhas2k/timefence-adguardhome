@@ -129,6 +129,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "warn.tz_utc": "No timezone is configured, so budgets reset at UTC midnight. Set TZ to your IANA timezone, for example Europe/London.",
         "warn.querylog_disabled": "AdGuard's query log is off, so usage cannot be counted.",
         "warn.querylog_retention_short": "AdGuard keeps the query log for less than an hour, so usage may be under-counted.",
+        "warn.querylog_ignores_group": "AdGuard's query-log ignore list hides a group's domain, so its usage cannot be counted.",
         "warn.querylog_truncated": "The query log had more entries than TimeFence could read; some usage may be missing.",
         "warn.rules_section_damaged": "The TimeFence rules in AdGuard are damaged. Check the custom rules and remove stray markers.",
         "warn.session_groups_converted": "Groups that needed Start are now allowed until their daily minutes are used.",

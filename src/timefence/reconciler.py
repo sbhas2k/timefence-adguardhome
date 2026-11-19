@@ -325,15 +325,16 @@ class Reconciler:
             self.warnings.add("querylog_retention_short")
         else:
             self.warnings.discard("querylog_retention_short")
-        ignored = config.get("ignored") or []
+        # `ignored` entries only hide queries while ignoring is switched on;
+        # with it off, AdGuard logs everything and nothing is lost.
+        ignored = (config.get("ignored") or []) if config.get("ignored_enabled") is True else []
         if ignored and self.ignored_covers_a_group(ignored):
             self.warnings.add("querylog_ignores_group")
         else:
             self.warnings.discard("querylog_ignores_group")
 
     def ignored_covers_a_group(self, ignored: list[str]) -> bool:
-        patterns = {self.normalise_ignored(item) for item in ignored}
-        patterns.discard("")
+        patterns = {(text, suffix) for text, suffix in map(self.ignored_pattern, ignored) if text}
         if not patterns:
             return False
         with self.store as conn:
@@ -345,15 +346,22 @@ class Reconciler:
                 for service_id in group.services:
                     hosts.update(domains.get(service_id, set()))
         return any(
-            host == pattern or host.endswith("." + pattern)
+            host == pattern or (suffix and host.endswith("." + pattern))
             for host in hosts
-            for pattern in patterns
+            for pattern, suffix in patterns
         )
 
     @staticmethod
-    def normalise_ignored(value: str) -> str:
-        text = (value or "").strip().lower().removeprefix("||").removesuffix("^")
-        return text.removeprefix("*.").strip(".")
+    def ignored_pattern(value: str) -> tuple[str, bool]:
+        """A query-log ignore entry and whether it also covers subdomains.
+
+        A plain `example.com` hides that exact host only; `||example.com^` (or
+        the `*.example.com` form) hides its subdomains too, as AdGuard does.
+        """
+        text = (value or "").strip().lower()
+        suffix = text.startswith("||") or text.startswith("*.")
+        text = text.removeprefix("||").removeprefix("*.").removesuffix("^")
+        return text.strip("."), suffix
 
     # -- individual halves, both idempotent ------------------------------
     def sync_services(self, now: int | None = None) -> list[str]:

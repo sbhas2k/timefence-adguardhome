@@ -40,6 +40,8 @@ class FakeAdGuard(AdGuardClient):
             "interval": 7776000000,
             "anonymize_client_ip": False,
             "ignored": [],
+            # the real default: `ignored` hides nothing until this is on
+            "ignored_enabled": False,
         }
         self.fail = False
         self.fail_all = False

@@ -197,6 +197,10 @@ together and is released as one version, so this entry covers everything a
   of one phase.
 - The SQLite file (which holds password hashes) and the data directory have
   private modes (`umask 077`, `0600`, `0700`).
+- The warning that AdGuard's query-log ignore list hides a group's domain now
+  appears in the admin banner, and it is raised only when ignoring is actually
+  enabled and the entry really covers the domain (a plain entry hides that exact
+  host; only the anchored form covers subdomains).
 - Docs: the backup and restore recipes, the upgrade and compatibility tables, the
   reverse-proxy and bridge-network notes, the outage-alert minimum and the
   changelog's backup name now match the code.
