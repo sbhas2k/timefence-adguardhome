@@ -192,6 +192,10 @@ together and is released as one version, so this entry covers everything a
   account.
 - A quoted value in the environment file kept its backslash escapes.
 - A migration failure could leave a half-migrated database.
+- Service rules written with a single leading pipe (`|host^`, 21 in the real
+  catalogue) were ignored for metering, and a `$modifier` suffix turned
+  `||qq.com^$denyallow=…` into a junk hostname. One parser now handles both
+  forms, drops the modifier, and returns nothing for wildcards and regexes.
 - Query-log paging lost entries that shared the page's oldest timestamp (busy
   clients can produce several with one stamp), so a busy minute could go
   uncharged. Pages are now large and de-duplicated by entry key, and the cursor

@@ -15,6 +15,7 @@ from timefence.reconciler import (
     SECTION_END,
     Reconciler,
     build_rules,
+    rule_host,
     strip_section,
 )
 
@@ -333,3 +334,46 @@ def test_a_null_user_rules_answer_is_an_empty_list(store):
     assert fake.user_rules() is None
     assert reconciler.release() == {"services": [], "rules_removed": 0}
     assert reconciler.last_error is None
+
+
+def test_service_rule_hosts_from_the_real_catalogue(store):
+    from .fakes import FaithfulAdGuard
+
+    reconciler = Reconciler(store, FaithfulAdGuard(), TZ)
+    domains = reconciler.service_domains()
+
+    assert "youtube.com" in domains["youtube"]
+    assert "spotify.com" in domains["spotify"]
+    assert "audio-ak-spotify-com.akamaized.net" in domains["spotify"]
+    assert "spotify.com.edgesuite.net" in domains["spotify"]
+    assert "qq.com" in domains["qq"]
+    assert "mask.icloud.com" in domains["icloud_private_relay"]
+    assert "amazonaws.com" in domains["amazon"]
+    for hosts in domains.values():
+        assert not [host for host in hosts if "^" in host or "$" in host or "|" in host]
+    assert "vod-adaptive.akamaized.net" not in domains["vimeo"]  # a wildcard names no host
+    assert "ebay-*.s3-us-west-1.amazonaws.com" not in domains["ebay"]
+
+
+@pytest.mark.parametrize(
+    ("rule", "host"),
+    [
+        ("||youtube.com^", "youtube.com"),
+        ("|audio-ak-spotify-com.akamaized.net^", "audio-ak-spotify-com.akamaized.net"),
+        ("||qq.com^$denyallow=wx.qq.com|weixin.qq.com", "qq.com"),
+        ("||amazonaws.com^$dnstype=~CNAME", "amazonaws.com"),
+        ("||mask.icloud.com^$dnsrewrite=NXDOMAIN;;", "mask.icloud.com"),
+        ("||Example.COM^", "example.com"),
+        ("example.com", "example.com"),
+        ("/_spotify-connect._tcp.local/", None),
+        ("*vod-adaptive.akamaized.net^", None),
+        ("|ebay-*.s3-us-west-1.amazonaws.com^", None),
+        ("||awsdns-*.com^", None),
+        ("! a comment", None),
+        ("@@||allowed.example^", None),
+        ("", None),
+        ("   ", None),
+    ],
+)
+def test_rule_host_parses_the_real_rule_shapes(rule, host):
+    assert rule_host(rule) == host

@@ -44,6 +44,27 @@ BLOCKED_USAGE_REASONS = {
 }
 
 
+def rule_host(rule: str) -> str | None:
+    """The one hostname a filtering rule names, or None when it names no host.
+
+    The AdGuard service catalogue mixes `||host^`, its single-pipe sibling
+    `|host^`, `$modifier` suffixes, `*` wildcards and regexes. Cutting the rule
+    at the first pipe character or keeping the modifier text produced junk hosts
+    that never matched a query.
+    """
+    text = (rule or "").strip()
+    if not text or text.startswith(("!", "#", "@@", "/")):
+        return None
+    text = text.removeprefix("||").removeprefix("|")
+    text = text.split("$", 1)[0].rstrip("^").strip(".").lower()
+    if not text or any(char in text for char in "*|/, ~"):
+        return None
+    for label in text.split("."):
+        if not label:
+            return None
+    return text
+
+
 def strip_section(
     rules: list[str],
     begin: str = SECTION_BEGIN,
@@ -193,10 +214,8 @@ class Reconciler:
             for service in self.adguard.all_services():
                 hosts: set[str] = set()
                 for rule in service.get("rules") or []:
-                    if not rule.startswith("||"):
-                        continue
-                    host = rule[2:].removesuffix("^").lstrip(".").lower()
-                    if host and "*" not in host:
+                    host = rule_host(rule)
+                    if host:
                         hosts.add(host)
                 mapping[service["id"]] = hosts
             self._service_domains = mapping

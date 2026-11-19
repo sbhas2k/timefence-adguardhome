@@ -25,7 +25,7 @@ from . import APP_TITLE, __version__, alerts, budget, credentials, db, i18n, sec
 from .adguard import AdGuardClient, AdGuardError
 from .config import Settings
 from .discover import PublicSuffixList, SuffixList, aggregate, humanize_age, recent_clients
-from .reconciler import Reconciler
+from .reconciler import Reconciler, rule_host
 
 log = logging.getLogger("timefence.web")
 
@@ -405,8 +405,8 @@ def create_app(
         for group in groups:
             for service_id in group.services:
                 for rule in services.get(service_id, {}).get("rules") or []:
-                    host = rule.removeprefix("||").removesuffix("^").lstrip(".")
-                    if host and "*" not in host:
+                    host = rule_host(rule)
+                    if host:
                         out.add(host)
         return out
 
@@ -1057,8 +1057,8 @@ def create_app(
                 return json_error(502, i18n.t("error.adguard", detail=str(exc)), "adguard")
             for service_id in group.services:
                 for rule in (services.get(service_id, {}).get("rules") or [])[:2]:
-                    host = rule.removeprefix("||").removesuffix("^").lstrip(".")
-                    if host and "*" not in host:
+                    host = rule_host(rule)
+                    if host:
                         hostnames.append(host)
         results = []
         for host in dict.fromkeys(hostnames):
