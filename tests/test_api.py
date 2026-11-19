@@ -730,3 +730,20 @@ def test_large_service_icons_are_kept(settings):
     assert len(services["peacock_tv"]["icon_svg"]) == 9912
     assert len(services["imgur"]["icon_svg"]) == 8072
     assert services["youtube"]["icon_svg"]
+
+
+def test_the_group_test_probes_a_representative_service_host(settings):
+    from .fakes import FaithfulAdGuard
+
+    app = create_app(settings, adguard=FaithfulAdGuard())
+    with TestClient(app) as client:
+        complete_setup(client)
+        group = client.post(
+            "/api/groups",
+            json={"name": "YouTube", "weekday_minutes": 30, "services": ["youtube"]},
+        ).json()["group"]
+        results = client.get(f"/api/groups/{group['id']}/test").json()["results"]
+
+    hosts = [row["host"] for row in results]
+    assert "youtube.com" in hosts
+    assert len(hosts) == 2

@@ -1042,6 +1042,27 @@ def create_app(
         }
 
     # ------------------------------------------------------------------ test
+    def _probe_hosts(service_id: str, hosts: list[str]) -> list[str]:
+        """The two hosts that best represent a service for a one-shot probe.
+
+        The real catalogue sorts its rules alphabetically, so the first two are
+        often a CDN (`ggpht.cn`) rather than the service itself. Prefer the
+        service's own `.com`, then any host containing its id, then the shortest
+        (the most general) name.
+        """
+        wanted = service_id.replace("_", "").replace("-", "")
+
+        def rank(host: str) -> tuple:
+            return (
+                0 if host == f"{wanted}.com" else 1,
+                0 if wanted in host.replace("-", "").replace(".", "") else 1,
+                len(host.split(".")),
+                len(host),
+                host,
+            )
+
+        return sorted(hosts, key=rank)[:2]
+
     @app.get(f"{base}/api/groups/{{group_id}}/test")
     def api_group_test(group_id: int, request: Request):
         require("admin", request)
@@ -1056,10 +1077,15 @@ def create_app(
             except AdGuardError as exc:
                 return json_error(502, i18n.t("error.adguard", detail=str(exc)), "adguard")
             for service_id in group.services:
-                for rule in (services.get(service_id, {}).get("rules") or [])[:2]:
-                    host = rule_host(rule)
-                    if host:
-                        hostnames.append(host)
+                hosts = [
+                    host
+                    for host in (
+                        rule_host(rule)
+                        for rule in (services.get(service_id, {}).get("rules") or [])
+                    )
+                    if host
+                ]
+                hostnames.extend(_probe_hosts(service_id, hosts))
         results = []
         for host in dict.fromkeys(hostnames):
             try:
