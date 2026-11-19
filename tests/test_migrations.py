@@ -154,7 +154,7 @@ def test_backup_is_written_before_v4(tmp_path):
     backup.write_bytes(b"corrupt, not a database")
     temporary.write_bytes(b"stale leftovers")
 
-    # the 0.3 -> 0.4 upgrade is the one that names its copy after v4
+    # a migration that stops at v4 names its copy after v4
     db.migrate(conn, TZ, target=4)
 
     assert backup.exists()

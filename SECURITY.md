@@ -4,8 +4,8 @@
 
 | version | supported |
 |---|---|
-| 0.5.x | yes |
-| ≤ 0.4.x | no (upgrade; see [upgrading.md](docs/upgrading.md)) |
+| 1.0.x | yes |
+| ≤ 0.3.x | no (upgrade; see [upgrading.md](docs/upgrading.md)) |
 
 ## Reporting a vulnerability
 

@@ -1,55 +1,56 @@
 # Upgrading
 
-## 0.5.0 → 0.5.1
+## Upgrading from 0.3.x to 1.0.x
 
-0.5.1 changes how the timezone is chosen. No schema change, no migration and no
-backup to restore.
-
-- `TZ` still wins when you set it. Otherwise TimeFence uses the host's
-  `/etc/timezone`, then the resolved `/etc/localtime`, and only falls back to
-  UTC when neither is available — that fallback is now the only case with the
-  admin warning.
-- **Docker users:** the image and the examples no longer force `TZ=UTC`. Pin a
-  zone with `TZ: Europe/London`, or follow the host by mounting
-  `/etc/localtime:/etc/localtime:ro` (and optionally
-  `/etc/timezone:/etc/timezone:ro`). Without either the container stays on UTC
-  and the banner says so.
-- **Heads-up:** if you relied on the implicit UTC default and your host runs a
-  non-UTC timezone, budgets now reset at local midnight. Set `TZ=UTC` to keep
-  the old behaviour; existing usage rows keep the dates they were recorded
-  under.
-
-## 0.4 → 0.5
-
-0.5.0 adds bedtime windows and moves the database to schema v5. Nothing has to
-be reconfigured and existing sign-ins keep working.
+1.0.0 is a breaking release for a 0.3.0 install: session mode and the shared PIN
+are gone, the database moves to schema v5, and the Docker defaults changed.
+Nothing has to be reconfigured by hand, but everyone signs in again and the
+steps below are the safe order.
 
 ### What changes for you
 
-- **Bedtime windows.** A group can carry up to four daily no-go windows (start,
-  end, and every day / weekdays / weekends), including ones that cross midnight.
-  A group in a window is blocked even if minutes are left, and no minutes are
-  used up. The admin's **Allow freely until** still overrides a window. See
-  [how it works](how-it-works.md#bedtime-windows).
-- **A service in a bedtime group is blocked house-wide.** AdGuard's blocked
-  services are global; a window on a group that owns YouTube takes YouTube away
-  from every device for the window. See [limitations](limitations.md).
-- **The default-password check runs once per schema version.** If an admin
-  account still uses the default password `admin`, first-run setup is required
-  again after the upgrade. Change that password before upgrading if you would
-  rather not see it.
-- **Sessions stay signed in**; no cookie changes in this release.
-- **Alerts are new and off by default.** Configure one channel under Settings →
-  Alerts. The topic, token and webhook path are stored in the database and
-  therefore in your backups, so keep those copies private.
+- **Session mode is gone.** Every group is now "allowed until the day's minutes
+  are used up". The start/stop buttons and the `15/30/60` shortcuts were
+  removed. A group that had already used its minutes stays blocked until local
+  midnight; anything not yet used is available right away.
+- **The shared PIN is gone.** Each person signs in with their own account: an
+  `admin` (the full UI) or a `user` (a read-only kid screen). A `user` account
+  cannot change anything; every mutating API call is refused with
+  `403 read_only`.
+- **Everybody signs in again.** Cookies now carry the account id and a session
+  epoch, so every 0.3.0 cookie is invalid.
+- **Stopping TimeFence blocks every managed group** until it starts again. That
+  is deliberate; run `timefence release` if you stop it on purpose
+  (`uninstall.sh` does).
+- **Docker defaults changed.** The image listens on `LISTEN_HOST=127.0.0.1` and
+  sets `SECURE_COOKIES=true`. A bridge-network deployment must set
+  `LISTEN_HOST: 0.0.0.0` and publish a port (the bundled compose file binds
+  `127.0.0.1:8099`); `docker run` without `LISTEN_HOST` only listens inside the
+  container. With bridge networking every client looks like the Docker gateway,
+  so set `TRUSTED_PROXIES` behind a proxy or use host networking. See
+  [docker.md](docker.md).
+- **`TZ` is no longer forced to UTC.** Without it the app follows the host
+  (`/etc/timezone`, then `/etc/localtime`) and falls back to UTC only when
+  neither is available. Budgets therefore reset at **local** midnight; set
+  `TZ=UTC` explicitly to keep the old reset time. Existing usage rows keep the
+  dates they were recorded under.
+- **Usage is metered in 15-second activity blocks.** Light or background use is
+  charged less than in 0.3.0, so the same daily minutes can last longer.
+  Blocked answers and free-allow windows are never charged.
+- **New features, nothing to configure.** Bedtime windows per group, alerts
+  (off by default, one ntfy topic or webhook), a History tab with a CSV export,
+  and a phone-first kid screen.
+- **The default-password check runs once per schema version.** If an admin still
+  uses the default password `admin`, first-run setup is required again; change
+  it before upgrading if you would rather not see that.
 
 ### Backup first
 
-The upgrade writes its own verified backup once, before the first schema change
-it makes: the copy is named after the schema it reaches, so any database older
-than v5 — 0.4 as well as 0.3 — gets `timefence.db.pre-v5.bak` next to the
-database. A fresh install writes no copy. The migration verifies the copy before
-touching anything and stops if it cannot write it. Take your own copy as well:
+The upgrade writes its own verified copy before the first schema change. The
+copy is named after the schema it reaches, so any database older than v5 gets
+`timefence.db.pre-v5.bak` next to the database; a fresh install writes none. The
+migration verifies the copy before touching anything and stops if it cannot
+write it. Take your own copy as well:
 
 ```bash
 sudo -u timefence python3 - <<'PY'
@@ -74,15 +75,16 @@ mode 0600 like the database.
 ```bash
 cd timefence-adguardhome
 git fetch --tags
-git checkout <the release tag you are upgrading to>
-sudo ./install.sh                              # idempotent, keeps config and data
+git checkout 1.0.0                            # the release you install
+sudo ./install.sh                             # idempotent, keeps config and data
 sudo journalctl -u timefence -n 50 --no-pager
 ```
 
-Schema changes are applied by the built-in migration on start
-(`PRAGMA user_version`); a failure leaves the previous schema intact. The v5
-step is plain DDL, so `timefence passwd` can also open and upgrade a v4
-database without starting the server.
+`install.sh` reinstalls the package into the existing venv from
+`requirements.lock` (hash-checked) and keeps `/etc/timefence/timefence.env`
+(mode 600). It never touches the database; the schema change is applied by the
+built-in migration on start (`PRAGMA user_version`), and a failure leaves the
+previous schema intact.
 
 ### Docker
 
@@ -92,9 +94,9 @@ docker compose up -d timefence
 docker compose logs -f timefence
 ```
 
-The image entry point is unchanged in this release; `:latest` moves with the
-release, so pin the version you upgrade to (or a digest) if you want controlled
-upgrades.
+Pin `1.0.0` (or a digest) if you want controlled upgrades; `:latest` moves with
+every release. The image has no `/etc/localtime` of its own, so a read-only
+mount of the host's file is what lets it follow the host timezone.
 
 ### Rollback
 
@@ -109,130 +111,42 @@ upgrades.
    sudo rm -f /var/lib/timefence/timefence.db-wal /var/lib/timefence/timefence.db-shm
    ```
 
-3. Run the release you had before (for example the 0.4.x tag or image you were
-   on) and start it. A v4 release reads the restored v4 database.
+3. Run the release you had before (for example the 0.3.x tag or image you were
+   on) and start it. A 0.3.x release reads the restored v3/v4 database.
 
 A database from a newer schema is refused on start instead of being silently
 corrupted — that is why the copy matters. Anything that happened after the
-upgrade is lost by the rollback.
+upgrade (usage, edits, accounts) is lost by the rollback.
 
-## 0.3 → 0.4
+## Upgrading within 1.x
 
-0.4.0 is a breaking release: session mode is removed, the database moves to
-schema v4 and the Docker defaults changed. Read this before you upgrade.
-
-### What changes for you
-
-- **Session mode is gone.** Groups that were "blocked unless a session is
-  running" become "allowed until the day's minutes are used up", like every
-  other group. Their minutes for today are kept, so a group that had already
-  used its budget stays blocked until local midnight; anything not yet used is
-  available right away.
-- **The old sessions stay in the database as history.** They are not billed any
-  more and nothing reads them for budgets.
-- **Everybody signs in again.** Cookies now carry the account id and an epoch,
-  so all existing sign-ins are invalid. `user` accounts become read-only and
-  land on the kid screen; `admin` accounts keep the full UI.
-- **`user` accounts cannot change anything** (server-side `403 read_only`). If a
-  `user` account was doing admin work, promote it or use a separate admin.
-- **Stopping TimeFence blocks every managed group.** That is deliberate; run
-  `timefence release` if you stop it on purpose (`uninstall.sh` does).
-- **The UI changed** (new kid screen, reworked admin quick actions). Nothing to
-  configure.
-
-### Backup first
-
-The upgrade writes its own backup (the copy is named after the schema it
-reaches, `timefence.db.pre-v4.bak` for a 0.3 → 0.4 run, and the migration
-verifies it before touching anything), but take your own copy as well:
+There is no schema change unless a release's entry says so. When a release does
+change the schema, the migration writes one verified copy named
+`timefence.db.pre-v<schema>.bak` next to the database before its first change.
 
 ```bash
-sudo -u timefence python3 - <<'PY'
-import sqlite3
-
-source = sqlite3.connect("/var/lib/timefence/timefence.db")
-copy = sqlite3.connect("/var/lib/timefence/backup.db")
-source.backup(copy)
-copy.close()
-source.close()
-PY
-sudo install -o root -g root -m 600 /var/lib/timefence/backup.db /root/timefence-pre-upgrade.db
-sudo rm -f /var/lib/timefence/backup.db
-```
-
-### Script install
-
-```bash
+# script install
 cd timefence-adguardhome
 git fetch --tags
-git checkout <the release tag you are upgrading to>
-sudo ./install.sh                              # idempotent, keeps config and data
-sudo journalctl -u timefence -n 50 --no-pager
-```
+git checkout <the release tag>
+sudo ./install.sh
 
-`install.sh` reinstalls the package into the existing venv from
-`requirements.lock` (hash-checked) and keeps `/etc/timefence/timefence.env`
-(mode 600). It never touches the database. Schema changes are applied by the
-built-in migration on start (`PRAGMA user_version`); a failure leaves the
-previous schema intact.
-
-### Docker
-
-```bash
+# Docker
 docker compose pull timefence
 docker compose up -d timefence
-docker compose logs -f timefence
 ```
 
-Two defaults changed in the image: `LISTEN_HOST=127.0.0.1` and
-`SECURE_COOKIES=true`.
-
-- A **bridge-network** deployment must set `LISTEN_HOST: 0.0.0.0` (the bundled
-  compose file does) and still publish to the host loopback
-  (`127.0.0.1:8099:8099`). `docker run` without `LISTEN_HOST` only listens
-  inside the container, so the port is unreachable from the host.
-- With bridge networking every client looks like the Docker gateway address;
-  set `TRUSTED_PROXIES` (and a proxy that sends `X-Forwarded-For`) or use host
-  networking, otherwise a burst of failed sign-ins locks the household out for
-  15 minutes. The gateway is usually the `.1` address of the network, for
-  example `TRUSTED_PROXIES: 172.18.0.1/32`.
-- The health check now reports `503` when TimeFence cannot sync with AdGuard.
-  Do not auto-restart on it — restarting TimeFence does not fix AdGuard.
-- `:latest` moves with every release; pin the version you upgrade to (or a
-  digest) if you want controlled upgrades.
-
-### Rollback
-
-1. Stop the new version:
-
-   ```bash
-   sudo systemctl stop timefence            # or: docker compose stop timefence
-   ```
-
-2. Restore the database you saved before the upgrade (or the automatic
-   `timefence.db.pre-v4.bak`) and drop stale write-ahead files:
-
-   ```bash
-   sudo install -o timefence -g timefence -m 600 \
-     /root/timefence-pre-upgrade.db /var/lib/timefence/timefence.db
-   sudo rm -f /var/lib/timefence/timefence.db-wal /var/lib/timefence/timefence.db-shm
-   ```
-
-3. Run the release you had before (for example the 0.3.x tag or image you were
-   on) and start it.
-
-A database from a newer schema is refused on start instead of being silently
-corrupted — that is why the backup matters. Anything that happened *after* the
-upgrade (usage, edits, accounts) is lost by the rollback.
+Take a copy first if you are unsure (the recipe above works for any version),
+and roll back by stopping the service, restoring that copy over
+`/var/lib/timefence/timefence.db` (removing `-wal`/`-shm`), and running the
+previous release.
 
 ## Version compatibility
 
 | TimeFence | AdGuard Home | Python |
 |---|---|---|
-| 0.5.x | 0.107.x (control API v1) | 3.12 or newer |
-| 0.4.x | 0.107.x (control API v1) | 3.12 |
+| 1.0.x | 0.107.x (control API v1) | 3.12 or newer |
 | 0.3.x | 0.107.x (control API v1) | 3.12 |
-| 0.1.x – 0.2.x | 0.107.x (control API v1) | 3.12 |
 
 Newer AdGuard Home releases speak the same control API, so 0.107.x is a floor,
 not a ceiling; check the changelog of a major AdGuard Home release before

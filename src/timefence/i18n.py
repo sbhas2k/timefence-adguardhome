@@ -271,7 +271,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "error.no_budget": "No minutes left today.",
         "error.paused": "This group is paused.",
         "error.not_found": "Not found.",
-        "error.mode_removed": "Session mode was removed in 0.4.0. Groups are allowed until their daily minutes are used.",
+        "error.mode_removed": "Session mode was removed in 1.0.0. Groups are allowed until their daily minutes are used.",
         "error.read_only": "This account can only view time left.",
         "error.wrong_password": "The current password is not correct.",
         "error.adguard": "AdGuard Home did not answer: {detail}",

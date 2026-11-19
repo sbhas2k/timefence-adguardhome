@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "timefence"
-version = "0.5.2"
+version = "1.0.0"
 description = "Daily time budgets for websites and apps, for AdGuard Home."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -13,7 +13,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "sbhas2k" }]
 keywords = ["adguard-home", "parental-controls", "screen-time", "dns", "self-hosted"]
 classifiers = [
-  "Development Status :: 4 - Beta",
+  "Development Status :: 5 - Production/Stable",
   "Environment :: Web Environment",
   "Framework :: FastAPI",
   "Intended Audience :: End Users/Desktop",
