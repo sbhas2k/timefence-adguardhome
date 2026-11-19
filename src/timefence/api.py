@@ -66,7 +66,7 @@ USER_GROUP_KEYS = (
 )
 STATIC = Path(__file__).parent / "static"
 ICON_CHARS = re.compile(r"^[A-Za-z0-9+/=]+$")
-ICON_MAX_CHARS = 8192  # an icon is a small base64 SVG, never a document
+ICON_MAX_CHARS = 32768  # the largest real icon is ~10k chars, never a document
 
 
 def safe_icon(value: object) -> str:

@@ -717,3 +717,16 @@ def test_an_oversized_login_body_is_rejected(ready):
     response = client.post("/api/login", json={"username": "admin", "password": "x" * (17 * 1024)})
     assert response.status_code == 413
     assert client.get("/api/state").status_code == 200
+
+
+def test_large_service_icons_are_kept(settings):
+    from .fakes import FaithfulAdGuard
+
+    app = create_app(settings, adguard=FaithfulAdGuard())
+    with TestClient(app) as client:
+        complete_setup(client)
+        services = {row["id"]: row for row in client.get("/api/services").json()["services"]}
+
+    assert len(services["peacock_tv"]["icon_svg"]) == 9912
+    assert len(services["imgur"]["icon_svg"]) == 8072
+    assert services["youtube"]["icon_svg"]

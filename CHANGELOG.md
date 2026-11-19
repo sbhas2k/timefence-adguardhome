@@ -192,6 +192,9 @@ together and is released as one version, so this entry covers everything a
   account.
 - A quoted value in the environment file kept its backslash escapes.
 - A migration failure could leave a half-migrated database.
+- Large service icons (the real catalogue has one at ~9.9k characters) were
+  dropped from the picker; the cap now covers them, and the base64-only check
+  still rejects anything else.
 - Service rules written with a single leading pipe (`|host^`, 21 in the real
   catalogue) were ignored for metering, and a `$modifier` suffix turned
   `||qq.com^$denyallow=…` into a junk hostname. One parser now handles both
