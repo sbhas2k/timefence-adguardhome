@@ -185,3 +185,29 @@ def test_alerts_never_carry_the_password(store, settings):
     for body in (text, payload):
         assert "secret" not in body
         assert "wrong" not in body
+
+
+def test_a_rejection_skips_the_remaining_phases(store):
+    class LateRejection(FaithfulAdGuard):
+        def __init__(self) -> None:
+            super().__init__()
+            self.denied = 0
+            self.user_rules_calls = 0
+
+        def blocked_services(self):
+            self.auth_calls += 1
+            self.denied += 1
+            raise AdGuardAuthError("AdGuard Home rejected the credentials")
+
+        def user_rules(self):
+            self.user_rules_calls += 1
+            return super().user_rules()
+
+    fake = LateRejection()
+    reconciler = Reconciler(store, fake, TZ)
+    result = reconciler.run("loop", now=1_700_000_000)
+
+    assert fake.denied == 1  # one rejected call, not one per phase
+    assert fake.user_rules_calls == 0  # the domain phase never ran
+    assert result["errors"]
+    assert reconciler.last_error_kind == "auth"

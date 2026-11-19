@@ -135,8 +135,10 @@ def test_querylog_since_reads_every_entry_when_timestamps_tie():
 
 def test_a_timestamp_is_bumped_by_its_own_precision():
     assert next_timestamp("2026-11-19T12:28:17.2765874+05:30") == (
-        "2026-11-19T12:28:17.2765875+05:30"
+        "2026-11-19T12:28:17.2765884+05:30"
     )
+    assert next_timestamp("2026-11-19T12:28:17.276Z") == "2026-11-19T12:28:17.277Z"
+    assert next_timestamp("2026-11-19T12:28:17.889389948Z") == "2026-11-19T12:28:17.889390948Z"
     assert next_timestamp("2026-11-19T12:28:17.9999999Z") == "2026-11-19T12:28:18.0000000Z"
     assert next_timestamp("2026-11-19T12:28:17Z") == "2026-11-19T12:28:18Z"
     assert next_timestamp("not a time") is None
@@ -172,3 +174,15 @@ def test_a_silent_server_is_reported_as_a_timeout():
     text = str(caught.value)
     assert text == "AdGuard Home did not answer within 0.2 s"
     assert stub.url not in text
+
+
+def test_querylog_since_keeps_ties_across_small_pages():
+    fake = FaithfulAdGuard()
+    fake.entries = tied_entries()
+    since = parse_time("2026-11-19T12:00:00.0000000Z")
+
+    entries, truncated = fake.querylog_since(since, page_size=500)
+
+    keys = {(entry["time"], entry["question"]["name"]) for entry in entries}
+    assert len(keys) == 2850
+    assert truncated is False

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.server
 import json
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -281,18 +282,26 @@ class FaithfulAdGuard(FakeAdGuard):
         """Newest first, strict `older_than`, no cap, and a few out-of-order rows."""
         self._maybe_fail()
         self.calls.append(("querylog_page", older_than))
-        cutoff = parse_time(older_than) if older_than else None
+        cutoff = stamp_key(older_than) if older_than else None
         entries = [
             entry
             for entry in self.entries
-            if cutoff is None or (parse_time(entry.get("time", "")) or 0) < cutoff
+            if cutoff is None or stamp_key(entry.get("time", "")) < cutoff
         ]
-        entries.sort(key=lambda entry: parse_time(entry.get("time", "")) or 0, reverse=True)
+        entries.sort(key=lambda entry: stamp_key(entry.get("time", "")), reverse=True)
         for index in range(0, min(len(entries) - 1, 6), 2):
             entries[index], entries[index + 1] = entries[index + 1], entries[index]
         page = entries[:limit]
         # `oldest` is the last row of the page, which need not be the minimum
         return {"data": page, "oldest": page[-1]["time"] if page else ""}
+
+
+def stamp_key(text: str) -> tuple[int, int]:
+    """A timestamp at nanosecond precision, the way the server compares them."""
+    seconds = parse_time(text) or 0
+    match = re.match(r"^.*?T\d{2}:\d{2}:\d{2}\.(\d+)", (text or "").strip())
+    nanos = int(match.group(1).ljust(9, "0")[:9]) if match else 0
+    return (seconds, nanos)
 
 
 def _rule_host(rule: str) -> str | None:

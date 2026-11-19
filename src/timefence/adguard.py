@@ -40,25 +40,31 @@ TIMESTAMP = re.compile(
 
 
 def next_timestamp(text: str) -> str | None:
-    """`text` moved forward by one unit of its own precision.
+    """`text` moved forward by at least a microsecond, in its own precision.
 
     AdGuard's `older_than` is strict, and its log can hold several entries with
-    one timestamp (a burst from one client, or just a coarse clock). Paging with
-    the page's own last stamp would silently skip the rest of that group, so the
-    cursor is moved past it; the repeats are de-duplicated by entry key.
+    one timestamp (a burst from one client, or a coarse clock). Paging with the
+    page's own last stamp would silently skip the rest of that group, so the
+    cursor steps past it; repeats are de-duplicated by entry key. The step is at
+    least 1 us, because that is the finest difference this side can represent.
     """
     match = TIMESTAMP.match((text or "").strip())
     if not match:
         return None
     base, frac, tz = match.group("base"), match.group("frac"), match.group("tz") or ""
-    if frac and not frac.startswith("9" * len(frac)):
-        return f"{base}.{frac[:-1]}{int(frac[-1]) + 1}{tz}"
+    digits = len(frac or "")
+    if digits:
+        unit_ns = 10 ** (9 - digits)
+        step = max(1, -(-1000 // unit_ns))  # nearest whole unit to 1 us
+        value = int(frac) + step
+        if value < 10**digits:
+            return f"{base}.{value:0{digits}d}{tz}"
     try:
-        after = datetime.fromisoformat(base) + timedelta(seconds=1)
+        after = datetime.fromisoformat(base + tz) + timedelta(seconds=1)
     except ValueError:
         return None
     stamp = after.strftime("%Y-%m-%dT%H:%M:%S")
-    return f"{stamp}.{'0' * len(frac)}{tz}" if frac else f"{stamp}{tz}"
+    return f"{stamp}.{'0' * digits}{tz}" if digits else f"{stamp}{tz}"
 
 
 def entry_key(entry: dict) -> tuple[str, ...]:
