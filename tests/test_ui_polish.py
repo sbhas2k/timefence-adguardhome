@@ -133,3 +133,10 @@ def test_the_group_test_table_has_no_hard_coded_english():
 
 def test_service_icon_values_are_escaped_before_the_data_url():
     assert "esc(service.icon_svg)" in read("static", "app.js")
+
+
+def test_the_banner_explains_rejected_credentials():
+    app_js = read("static", "app.js")
+    assert '"error.adguard_auth"' in app_js
+    assert 'state.adguard_error_kind === "auth"' in app_js
+    assert i18n.t("error.adguard_auth", seconds=30) != "error.adguard_auth"

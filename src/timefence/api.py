@@ -343,6 +343,8 @@ def create_app(
             "groups": groups,
             "history": history,
             "adguard_error": reconciler.last_error,
+            "adguard_error_kind": reconciler.last_error_kind,
+            "adguard_retry_seconds": reconciler.backoff_remaining(),
             "last_sync": int(reconciler.last_ok_ts) if reconciler.last_ok_ts else None,
             "warnings": sorted(
                 reconciler.warnings
@@ -1481,7 +1483,9 @@ def create_app(
     @app.post(f"{base}/api/adguard/test")
     def api_adguard_test(request: Request):
         require("admin", request)
-        ok, detail = agh.test_connection()
+        ok, detail = reconciler.test_connection()
+        if ok:
+            reconcile("adguard_test")
         return {"ok": ok, "detail": detail}
 
     @app.get(f"{base}/healthz")

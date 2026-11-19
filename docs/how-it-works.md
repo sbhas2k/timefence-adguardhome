@@ -198,6 +198,17 @@ path), and the AdGuard HTTP calls are made outside that lock. A failing phase
 (including an unexpected error) is logged and recorded; it never skips the other
 phases.
 
+**Rejected credentials are special.** AdGuard Home counts failed authentications
+per source address and, after five, stops answering for `block_auth_min`
+(15 minutes by default) — even to the right password, for TimeFence and for
+every other client on that address. So a `401`/`403` ends the pass at the first
+call (no second phase, no shutdown re-block, no `timefence release` retry) and
+starts a back-off: 30 s, then doubling, capped at 15 minutes, reset by the first
+success. The admin banner names the rejection and the next attempt, and
+`/healthz` stays `503` while it lasts. The admin connection test
+(`POST /api/adguard/test`) clears the back-off so a corrected password is tried
+immediately.
+
 `/healthz` needs no login and no lock. It answers
 `200 {"ok":true,"status":"ok","version"}` while the reconciler had a successful
 sync within `3 × RECONCILE_INTERVAL`, and

@@ -11,10 +11,11 @@ import logging
 import sqlite3
 import threading
 import time
+from collections.abc import Callable
 from zoneinfo import ZoneInfo
 
 from . import budget, db
-from .adguard import AdGuardClient, AdGuardError
+from .adguard import AdGuardAuthError, AdGuardClient, AdGuardError
 from .discover import parse_time
 
 log = logging.getLogger("timefence.reconciler")
@@ -26,6 +27,11 @@ LEGACY_MARKERS = ("budget-app",)  # migrated silently on the first run
 BUCKET = 15  # seconds of real DNS activity charged per busy bucket
 MAX_CATCHUP = 1800  # never charge more than this much missed time after downtime
 QUERYLOG_HEALTH_INTERVAL = 600  # seconds between query-log settings checks
+# AdGuard Home counts failed authentications per address and stops answering for
+# block_auth_min (15 min by default), even to the right password. One attempt
+# per window is the only safe cadence after a rejection.
+AUTH_BACKOFF_BASE = 30.0  # seconds before the first retry
+AUTH_BACKOFF_MAX = 900.0  # never wait longer than AdGuard's own block window
 QUERYLOG_RETENTION_MIN_MS = 3_600_000  # an hour of retention is the minimum
 # Answers that were blocked, not usage. SafeSearch rewrites and Rewrite* are
 # answered queries and do count.
@@ -120,11 +126,17 @@ def desired_domains(conn: sqlite3.Connection, tz: ZoneInfo, now: int | None = No
 
 
 class Reconciler:
+    # overridable in tests: the backoff needs a clock the test can advance
+    monotonic: Callable[[], float] = staticmethod(time.monotonic)
+
     def __init__(self, store: db.Store, adguard: AdGuardClient, tz: ZoneInfo) -> None:
         self.store = store
         self.adguard = adguard
         self.tz = tz
         self.last_error: str | None = None
+        self.last_error_kind: str | None = None
+        self._auth_failures = 0
+        self._next_adguard_attempt = 0.0
         self.last_result: dict = {}
         self.last_ok_ts: float | None = None
         self.last_ok_mono: float | None = None
@@ -143,6 +155,34 @@ class Reconciler:
         bind = getattr(adguard, "bind", None)
         if callable(bind):
             bind(store)
+
+    # -- rejected credentials --------------------------------------------
+    def backoff_remaining(self) -> int:
+        """Seconds until the next AdGuard attempt after rejected credentials."""
+        return max(0, int(round(self._next_adguard_attempt - self.monotonic())))
+
+    def reset_auth_backoff(self) -> None:
+        self._auth_failures = 0
+        self._next_adguard_attempt = 0.0
+        if self.last_error_kind == "auth":
+            self.last_error_kind = None
+            self.last_error = None
+
+    def test_connection(self) -> tuple[bool, str]:
+        """The admin's connection test; a success means try the cycle again now."""
+        try:
+            ok, detail = self.adguard.test_connection()
+        except AdGuardError as exc:
+            return False, str(exc)
+        if ok:
+            self.reset_auth_backoff()
+        return ok, detail
+
+    def _note_auth_failure(self) -> None:
+        self._auth_failures += 1
+        delay = min(AUTH_BACKOFF_BASE * (2 ** (self._auth_failures - 1)), AUTH_BACKOFF_MAX)
+        self._next_adguard_attempt = self.monotonic() + delay
+        self.last_error_kind = "auth"
 
     # -- usage metering (auto mode) --------------------------------------
     def service_domains(self) -> dict[str, set[str]]:
@@ -193,6 +233,8 @@ class Reconciler:
             return 0
         try:
             entries, truncated = self.adguard.querylog_since(start)
+        except AdGuardAuthError:
+            raise
         except AdGuardError as exc:
             log.error("metering skipped: %s", exc)
             return 0
@@ -267,6 +309,8 @@ class Reconciler:
         self._querylog_checked = now
         try:
             config = self.adguard.querylog_config()
+        except AdGuardAuthError:
+            raise
         except AdGuardError as exc:
             log.debug("query-log health check skipped: %s", exc)
             return
@@ -334,7 +378,7 @@ class Reconciler:
         now = now or int(time.time())
         with self.store as conn:
             desired = desired_domains(conn, self.tz, now)
-        current = self.adguard.user_rules()
+        current = self.adguard.user_rules() or []
         damaged: set[str] = set()
         updated = build_rules(current, desired, damaged)
         if damaged:
@@ -380,45 +424,72 @@ class Reconciler:
         now = now or int(time.time())
         result: dict = {"reason": reason, "changed": [], "errors": []}
         synced = True
+        auth_failed = False
+
+        def record(exc: AdGuardError, phase: str) -> bool:
+            """Log one phase failure; True when it was a rejected credential."""
+            if isinstance(exc, AdGuardAuthError):
+                log.error("%s stopped: %s", phase, exc)
+                result["errors"].append(str(exc))
+                self._note_auth_failure()
+                return True
+            log.error("%s failed: %s", phase, exc)
+            result["errors"].append(str(exc))
+            return False
+
+        if self.monotonic() < self._next_adguard_attempt:
+            # AdGuard rejected the credentials: one attempt per window, never a
+            # burst, so its per-address lock is not armed again and again. The
+            # alert probe still runs, so an outage is reported.
+            result["skipped"] = "credentials"
+            if not self.stopping.is_set():
+                self._probe_alerts(now)
+            self.last_result = result
+            return result
+
         if not self.stopping.is_set():
             try:
                 charged = self.meter(now, reason)
                 if charged:
                     result["metered_groups"] = charged
             except AdGuardError as exc:
-                log.error("metering failed: %s", exc)
-                result["errors"].append(str(exc))
+                auth_failed = record(exc, "metering")
             except Exception as exc:  # noqa: BLE001 - one phase must not stop the rest
                 log.exception("metering failed")
                 result["errors"].append(f"internal error: {type(exc).__name__}")
-        if not self.stopping.is_set():
+        if not self.stopping.is_set() and not auth_failed:
             self._probe_alerts(now)
-        if not self.stopping.is_set():
+        if not self.stopping.is_set() and not auth_failed:
             try:
                 changed_services = self.sync_services(now)
                 if changed_services:
                     result["changed"].append("services")
             except AdGuardError as exc:
-                log.error("service sync failed: %s", exc)
-                result["errors"].append(str(exc))
+                auth_failed = record(exc, "service sync")
                 synced = False
             except Exception as exc:  # noqa: BLE001 - one phase must not stop the rest
                 log.exception("service sync failed")
                 result["errors"].append(f"internal error: {type(exc).__name__}")
                 synced = False
-        if not self.stopping.is_set():
+        if not self.stopping.is_set() and not auth_failed:
             try:
                 if self.sync_domains(now):
                     result["changed"].append("domains")
             except AdGuardError as exc:
-                log.error("domain sync failed: %s", exc)
-                result["errors"].append(str(exc))
+                auth_failed = record(exc, "domain sync")
                 synced = False
             except Exception as exc:  # noqa: BLE001 - one phase must not stop the rest
                 log.exception("domain sync failed")
                 result["errors"].append(f"internal error: {type(exc).__name__}")
                 synced = False
-        if synced and not self.stopping.is_set():
+        if auth_failed:
+            self.last_error_kind = "auth"
+        else:
+            self._auth_failures = 0
+            self._next_adguard_attempt = 0.0
+            if self.last_error_kind == "auth":
+                self.last_error_kind = None
+        if synced and not auth_failed and not self.stopping.is_set():
             self.last_ok_ts = time.time()
             self.last_ok_mono = time.monotonic()
         self.last_error = result["errors"][0] if result["errors"] else None
@@ -457,7 +528,7 @@ class Reconciler:
             if set(current_ids) != wanted:
                 self.adguard.set_blocked_services(sorted(wanted), current["schedule"])
                 changed.append("services")
-            current_rules = self.adguard.user_rules()
+            current_rules = self.adguard.user_rules() or []
             updated = build_rules(current_rules, domains)
             if updated != current_rules:
                 self.adguard.set_user_rules(updated)
@@ -484,7 +555,7 @@ class Reconciler:
             removed = sorted(service for service in current_ids if service in owned)
             if set(current_ids) != services:
                 self.adguard.set_blocked_services(sorted(services), current["schedule"])
-            current_rules = self.adguard.user_rules()
+            current_rules = self.adguard.user_rules() or []
             wanted_rules = build_rules(current_rules, [])
             rules_removed = max(0, len(current_rules) - len(wanted_rules))
             if wanted_rules != current_rules:

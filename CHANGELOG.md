@@ -46,6 +46,12 @@ together and is released as one version, so this entry covers everything a
   Blocked answers and free-allow windows are never charged.
 - **Logout signs the account out everywhere.** It bumps the session epoch before
   clearing the cookie, so a copied cookie stops working too.
+- **A rejected AdGuard credential ends the pass and backs off.** AdGuard Home
+  locks a source address out for 15 minutes after five failed authentications,
+  so TimeFence now stops at the first `401`/`403` and retries after 30 s, then
+  doubling to 15 minutes (reset by the first success or by the admin connection
+  test) instead of retrying into the lock. The banner names the rejection and
+  the next attempt, and `/healthz` stays degraded until a pass succeeds.
 
 ### Added
 

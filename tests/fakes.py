@@ -191,6 +191,7 @@ class FaithfulAdGuard(FakeAdGuard):
     """
 
     AUTH_ATTEMPTS = 5
+    AUTH_WINDOW_SECONDS = 60  # a burst, like the server's own attempt window
     BLOCK_AUTH_SECONDS = 15 * 60
 
     def __init__(
@@ -224,10 +225,10 @@ class FaithfulAdGuard(FakeAdGuard):
         now = self._clock()
         if now < self.blocked_until:
             raise AdGuardAuthError("GET /control: AdGuard Home rejected the credentials")
-        # A failure counts while it is younger than the block window and a
+        # A burst of failures inside the attempt window trips the lock; a
         # successful sign-in clears the record, like the server's limiter.
         self.auth_failures = [
-            failed for failed in self.auth_failures if now - failed < self.BLOCK_AUTH_SECONDS
+            failed for failed in self.auth_failures if now - failed < self.AUTH_WINDOW_SECONDS
         ]
         if self.password != self.expected_password:
             self.auth_failures.append(now)
@@ -241,8 +242,11 @@ class FaithfulAdGuard(FakeAdGuard):
         super()._maybe_fail()
 
     def test_connection(self) -> tuple[bool, str]:
-        self._authenticate()
-        return super().test_connection()
+        try:
+            self._authenticate()
+        except AdGuardError as exc:
+            return False, str(exc)
+        return True, "AdGuard Home v0.107.80-fake"
 
     # -- the API's own shapes ---------------------------------------------
     def user_rules(self) -> list[str] | None:

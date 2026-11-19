@@ -79,7 +79,9 @@
     if (!el || !state) { return; }
     var lines = [];
     if (state.adguard_error) {
-      lines.push(t("error.adguard", { detail: state.adguard_error }));
+      lines.push(state.adguard_error_kind === "auth"
+        ? t("error.adguard_auth", { seconds: state.adguard_retry_seconds || 0 })
+        : t("error.adguard", { detail: state.adguard_error }));
     }
     (state.warnings || []).forEach(function (code) {
       var text = t("warn." + code);
@@ -452,6 +454,8 @@
       tab: tab,
       warnings: state.warnings || [],
       adguard_error: state.adguard_error || "",
+      adguard_error_kind: state.adguard_error_kind || "",
+      adguard_retry_seconds: state.adguard_retry_seconds || 0,
       groups: state.groups || [],
       usage: usageData ? { days: usageData.days, rows: usageData.rows } : null,
       usageDays: usageDays

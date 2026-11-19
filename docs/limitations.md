@@ -80,6 +80,16 @@ There is no filtering of content, no logging of what was visited beyond the
 AdGuard query log, and no protection outside your network. AdGuard Home itself
 has more options (Safe Search, parental filters) — use those alongside.
 
+## A wrong AdGuard password locks the address out for a while
+
+AdGuard Home counts failed authentications per source address: after five it
+refuses every request from that address for `block_auth_min` (15 minutes by
+default), including the right password, the AdGuard web UI on the same host and
+`timefence check`. TimeFence stops at the first rejection and backs off (30 s,
+doubling to 15 minutes), so it does not re-arm the lock, but a wrong password in
+`ADGUARD_PASSWORD` still costs up to that window: fix the password, then use the
+admin connection test or wait for the back-off to expire.
+
 ## AdGuard Home must be reachable
 
 If AdGuard goes down, blocking stops (DNS falls back to whatever the device

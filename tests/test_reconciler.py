@@ -319,3 +319,17 @@ def test_release_removes_only_owned_state(store, fake):
     assert "youtube" in removed["services"]
     assert fake.ids == ["tiktok"]  # a foreign service survives
     assert fake.rules == ["||foreign.example^"]  # so does a foreign rule
+
+
+def test_a_null_user_rules_answer_is_an_empty_list(store):
+    # the real server sends null, not [], when no rule exists
+    from .fakes import FaithfulAdGuard
+
+    fake = FaithfulAdGuard()
+    reconciler = Reconciler(store, fake, TZ)
+
+    result = reconciler.run("loop", now=int(time.time()))
+    assert result["errors"] == []
+    assert fake.user_rules() is None
+    assert reconciler.release() == {"services": [], "rules_removed": 0}
+    assert reconciler.last_error is None
