@@ -3,8 +3,14 @@
 #
 # Run as root from timefence-ddns.timer. It never opens DNS to the world: it
 # only ever adds rules for the current address of one hostname and removes the
-# rules it recorded for the previous address. Every rule it creates carries the
-# comment below, and that comment is the only thing it deletes by.
+# rules it recorded for every address it added before. Every rule it creates
+# carries the comment below, and that comment is the only thing it deletes by.
+#
+# State lives in the state dir: `ip` is the address the firewall is open to and
+# `added` lists every address whose rules this helper added and has not removed
+# yet (one per line), except the one `ip` names. A new address is written there
+# as soon as its rules exist, before any old rule is removed, so a run that dies
+# between the two steps leaves a note of the rules it created.
 #
 # Exit codes: 0 ok, 1 resolution/ufw failure, 2 refused address, 64 usage.
 set -eu
@@ -20,9 +26,9 @@ usage() {
 usage: ddns-allowlist.sh <hostname> [--state-dir DIR] [--dry-run]
 
 Keeps the firewall's DNS port open to one address only, the address that
-<hostname> currently resolves to. The previous address is read from
-DIR/ip (default /var/lib/timefence-ddns) and its rules are removed after the
-new ones are in place.
+<hostname> currently resolves to. The rules for every address recorded in
+DIR/added (default /var/lib/timefence-ddns) are removed once the new ones are
+in place, so an address that was only briefly current cannot keep an open port.
 EOF
 }
 
@@ -99,27 +105,57 @@ if refused "$ip"; then
     exit 2
 fi
 
+# Addresses whose rules must go: the recorded current address, plus anything an
+# earlier run added and has not removed. Only well-formed IPv4 lines are used,
+# so a damaged state file cannot put arguments into a ufw command.
 old_ip=''
-if [ -f "$STATE_DIR/ip" ]; then
-    old_ip=$(cat "$STATE_DIR/ip")
-fi
+targets=()
+seen=' '
 
-if [ "$ip" = "$old_ip" ]; then
+add_target() {
+    # A state file copied from Windows may end its lines with CR; only the
+    # leading dotted-quad part is ever used.
+    candidate=${1%%[!0-9.]*}
+    [ -n "$candidate" ] || return 0
+    [[ "$candidate" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 0
+    [ "$candidate" = "$ip" ] && return 0
+    case "$seen" in *" $candidate "*) return 0 ;; esac
+    seen="$seen$candidate "
+    targets+=("$candidate")
+}
+
+collect_state() {
+    old_ip=''
+    targets=()
+    seen=' '
+    if [ -f "$STATE_DIR/ip" ]; then
+        old_ip=$(cat "$STATE_DIR/ip")
+        old_ip=${old_ip%%[!0-9.]*}
+    fi
+    add_target "$old_ip"
+    if [ -f "$STATE_DIR/added" ]; then
+        while IFS= read -r recorded; do
+            add_target "$recorded"
+        done <"$STATE_DIR/added"
+    fi
+}
+
+collect_state
+
+if [ "$ip" = "$old_ip" ] && [ "${#targets[@]}" -eq 0 ]; then
     log "$HOSTNAME_ARG is still $ip; no firewall change"
     exit 0
 fi
 
 if [ "$DRY_RUN" -eq 0 ]; then
+    umask 077
     mkdir -p "$STATE_DIR"
     chmod 700 "$STATE_DIR"
     if command -v flock >/dev/null 2>&1; then
         exec 9>"$STATE_DIR/lock"
         flock 9
-        old_ip=''
-        if [ -f "$STATE_DIR/ip" ]; then
-            old_ip=$(cat "$STATE_DIR/ip")
-        fi
-        if [ "$ip" = "$old_ip" ]; then
+        collect_state
+        if [ "$ip" = "$old_ip" ] && [ "${#targets[@]}" -eq 0 ]; then
             log "$HOSTNAME_ARG is still $ip; no firewall change"
             exit 0
         fi
@@ -137,23 +173,79 @@ run() {
     "$@"
 }
 
-# Add first: if this fails the old rule still works.
-for proto in udp tcp; do
-    run ufw allow from "$ip" to any port "$DNS_PORT" proto "$proto" comment "$COMMENT"
-done
+kept=()
+
+# Record the address as soon as a rule for it exists: a run that dies before it
+# can rewrite the state file still leaves a note of what it created.
+note_added() {
+    [ "$DRY_RUN" -eq 0 ] || return 0
+    printf '%s\n' "$1" >>"$STATE_DIR/added"
+}
+
+# Write the state: every address that still holds a rule, never the address the
+# `ip` file names. The first argument is the address the firewall is open to
+# after this run (the previous one when the add was incomplete); the second one
+# `include-recorded` keeps the addresses recorded earlier (used when no removal
+# was attempted, so every recorded rule is still in place).
+write_state() {
+    STATE_IP=$1
+    {
+        if [ "${2:-}" = "include-recorded" ] && [ -f "$STATE_DIR/added" ]; then
+            cat "$STATE_DIR/added"
+        fi
+        for address in "${kept[@]:-}"; do
+            [ -n "$address" ] && printf '%s\n' "$address"
+        done
+    } | awk 'NF' | sort -u | grep -vx "$STATE_IP" >"$STATE_DIR/added.new" || true
+    printf '%s\n' "$STATE_IP" >"$STATE_DIR/ip.new"
+    chmod 600 "$STATE_DIR/added.new" "$STATE_DIR/ip.new"
+    mv "$STATE_DIR/added.new" "$STATE_DIR/added"
+    mv "$STATE_DIR/ip.new" "$STATE_DIR/ip"
+}
 
 failed=0
-if [ -n "$old_ip" ]; then
+
+# Add first: if this fails the old rule still works. Rules for the address that
+# is already current are left alone; ufw would only skip them anyway.
+if [ "$ip" != "$old_ip" ]; then
+    added_ok=0
     for proto in udp tcp; do
-        if ! run ufw delete allow from "$old_ip" to any port "$DNS_PORT" proto "$proto" comment "$COMMENT"; then
-            log "could not remove the rule for the previous address $old_ip"
-            failed=1
+        if run ufw allow from "$ip" to any port "$DNS_PORT" proto "$proto" comment "$COMMENT"; then
+            added_ok=$((added_ok + 1))
+            note_added "$ip"
+        else
+            log "could not add the $proto rule for $ip"
         fi
     done
+    if [ "$added_ok" -lt 2 ]; then
+        log "the new rules are incomplete; keeping the previous ones for the next run"
+        if [ "$DRY_RUN" -eq 0 ]; then
+            write_state "$old_ip" include-recorded
+        fi
+        exit 1
+    fi
 fi
 
+# Record every address added before deleting, so a run that dies after the add
+# still leaves a note of the rule it created.
+for target in "${targets[@]:-}"; do
+    [ -n "$target" ] || continue
+    for proto in udp tcp; do
+        if run ufw delete allow from "$target" to any port "$DNS_PORT" proto "$proto" comment "$COMMENT"; then
+            :
+        else
+            log "could not remove the rule for the previous address $target"
+            failed=1
+            kept+=("$target")
+        fi
+    done
+done
+
 if [ "$failed" -ne 0 ]; then
-    log "keeping $old_ip in the state file so the next run retries the removal"
+    log "keeping the addresses that still have rules so the next run retries"
+    if [ "$DRY_RUN" -eq 0 ]; then
+        write_state "$ip"
+    fi
     exit 1
 fi
 
@@ -162,7 +254,5 @@ if [ "$DRY_RUN" -eq 1 ]; then
     exit 0
 fi
 
-printf '%s\n' "$ip" >"$STATE_DIR/ip.new"
-chmod 600 "$STATE_DIR/ip.new"
-mv "$STATE_DIR/ip.new" "$STATE_DIR/ip"
+write_state "$ip"
 log "$HOSTNAME_ARG is now $ip (was ${old_ip:-none}); DNS allowed from it only"

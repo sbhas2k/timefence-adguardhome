@@ -41,8 +41,8 @@ public port is another thing to keep patched.
 HOME_IP=203.0.113.10
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
-sudo ufw allow from "$HOME_IP" to any port 53 proto udp
-sudo ufw allow from "$HOME_IP" to any port 53 proto tcp
+sudo ufw allow from "$HOME_IP" to any port 53 proto udp comment timefence-ddns
+sudo ufw allow from "$HOME_IP" to any port 53 proto tcp comment timefence-ddns
 # SSH: your own rule, from your operator address only.
 sudo ufw allow from 203.0.113.20 to any port 22 proto tcp
 sudo ufw enable
@@ -50,7 +50,8 @@ sudo ufw status numbered
 ```
 
 `ufw allow 53` (or `ufw allow from any … port 53`) is exactly the mistake this
-guide is about. The two rules above are the only ones the DDNS helper touches.
+guide is about. The two rules above carry the helper's comment and are recorded
+in its state, so the helper replaces them instead of adding a second pair.
 
 ### nftables
 
@@ -108,6 +109,10 @@ serialises runs), `systemd` and `getent` (glibc, usually present). Without
 `flock` the helper still works but logs a notice and runs unserialised.
 
 ```bash
+# Hand the two rules above to the helper: it deletes and re-adds only rules
+# with this address inside its state, so seed the address it should own.
+sudo install -d -m 700 /var/lib/timefence-ddns
+echo "$HOME_IP" | sudo tee /var/lib/timefence-ddns/ip >/dev/null
 sudo install -m 755 deploy/ddns-allowlist.sh /usr/local/bin/ddns-allowlist.sh
 sudo ddns-allowlist.sh ddns.example.org --dry-run    # prints the commands
 sudo ddns-allowlist.sh ddns.example.org              # applies them
@@ -128,11 +133,16 @@ firewall call at all.
 What it guarantees:
 
 - it only ever adds or removes rules whose comment is `timefence-ddns`, for the
-  address it just resolved and the address recorded in the state file; it never
-  touches other rules and never runs `ufw reset`, `ufw disable` or
-  `ufw default`;
-- it adds the new rules **before** removing the old ones, so a failure leaves a
-  working rule behind; a failed add exits non-zero and changes nothing;
+  address it just resolved and the addresses recorded in the state directory
+  (`ip`, plus every address in `added` that still has a rule); it never touches
+  other rules and never runs `ufw reset`, `ufw disable` or `ufw default`;
+- it adds the new rules **before** removing the old ones, and records a new
+  address in `added` as soon as a rule for it exists, so an address that was
+  only briefly current, or a run that stopped half way, is cleaned up by the
+  next run;
+- a failed add exits non-zero and keeps the previous rules; when only one of the
+  two protocols could be added, the address stays recorded until a later run
+  removes it;
 - it refuses to run when the name resolves to a loopback, private, link-local,
   CGNAT, multicast or `0.0.0.0` address (exit 2), and when the name looks like
   shell syntax (exit 64) — a hijacked or misconfigured DDNS name cannot open DNS

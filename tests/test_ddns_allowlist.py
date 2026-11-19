@@ -45,6 +45,7 @@ class Harness:
         ip: str = "203.0.113.9",
         getent_exit: int = 0,
         ufw_exit: int = 0,
+        ufw_fail_match: str = "",
     ) -> None:
         self.shell = shell
         self.tmp = tmp_path
@@ -62,12 +63,16 @@ class Harness:
         _stub(
             bin_dir / "ufw",
             'printf "ufw %s\\n" "$*" >>"$TF_CALLS"\n'
+            'if [ -n "$TF_UFW_FAIL_MATCH" ] && [[ "$*" == *"$TF_UFW_FAIL_MATCH"* ]]; then\n'
+            "  exit 1\n"
+            "fi\n"
             'if [ "$TF_UFW_EXIT" -ne 0 ]; then exit "$TF_UFW_EXIT"; fi\n',
         )
         self.bin_dir = bin_dir
         self.ip = ip
         self.getent_exit = getent_exit
         self.ufw_exit = ufw_exit
+        self.ufw_fail_match = ufw_fail_match
 
     def run(self, *args: str) -> subprocess.CompletedProcess[str]:
         env = dict(os.environ)
@@ -76,6 +81,7 @@ class Harness:
         env["TF_GETENT_IP"] = self.ip
         env["TF_GETENT_EXIT"] = str(self.getent_exit)
         env["TF_UFW_EXIT"] = str(self.ufw_exit)
+        env["TF_UFW_FAIL_MATCH"] = self.ufw_fail_match
         return subprocess.run(
             [self.shell, SCRIPT.as_posix(), *args],
             cwd=str(self.tmp),
@@ -96,9 +102,19 @@ class Harness:
     def state(self) -> str:
         return (self.state_dir / "ip").read_text(encoding="utf-8")
 
-    def set_state(self, address: str) -> None:
+    def set_state(self, address: str, *added: str) -> None:
         self.state_dir.mkdir(exist_ok=True)
-        (self.state_dir / "ip").write_text(address + "\n", encoding="utf-8")
+        (self.state_dir / "ip").write_text(address + "\n", encoding="utf-8", newline="\n")
+        if added:
+            (self.state_dir / "added").write_text(
+                "".join(f"{one}\n" for one in added), encoding="utf-8", newline="\n"
+            )
+
+    def added(self) -> list[str]:
+        path = self.state_dir / "added"
+        if not path.exists():
+            return []
+        return [line for line in path.read_text(encoding="utf-8").splitlines() if line]
 
 
 def test_hostname_with_shell_metacharacters_is_rejected(shell: str, tmp_path: Path) -> None:
@@ -197,4 +213,74 @@ def test_script_never_opens_dns_to_the_world() -> None:
         for forbidden in ("ufw reset", "ufw disable", "default allow"):
             assert forbidden not in lowered, line
         if "ufw" in lowered and "allow" in lowered:
-            assert 'from "$ip"' in line or 'from "$old_ip"' in line, line
+            assert 'from "$ip"' in line or 'from "$target"' in line, line
+
+
+def test_every_recorded_address_is_removed_in_one_run(shell: str, tmp_path: Path) -> None:
+    harness = Harness(shell, tmp_path, ip="203.0.113.10")
+    harness.set_state("203.0.113.9", "203.0.113.8", "203.0.113.9")
+    proc = harness.run("ddns.example.org", "--state-dir", harness.state_dir.as_posix())
+    assert proc.returncode == 0, proc.stderr
+    calls = harness.ufw_calls()
+    assert calls[:2] == [
+        "ufw allow from 203.0.113.10 to any port 53 proto udp comment timefence-ddns",
+        "ufw allow from 203.0.113.10 to any port 53 proto tcp comment timefence-ddns",
+    ]
+    assert {line.split()[4] for line in calls[2:]} == {"203.0.113.8", "203.0.113.9"}
+    assert len(calls) == 6
+    assert harness.state() == "203.0.113.10\n"
+    assert harness.added() == []
+
+
+def test_a_partial_add_is_recorded_and_cleaned_up_later(shell: str, tmp_path: Path) -> None:
+    harness = Harness(shell, tmp_path, ip="203.0.113.10", ufw_fail_match="proto tcp")
+    harness.set_state("203.0.113.9")
+    first = harness.run("ddns.example.org", "--state-dir", harness.state_dir.as_posix())
+    assert first.returncode == 1, first.stderr
+    assert harness.state() == "203.0.113.9\n"
+    assert harness.added() == ["203.0.113.10"]
+    assert not any("delete" in call for call in harness.ufw_calls())
+
+    harness.ip = "203.0.113.11"
+    harness.ufw_fail_match = ""
+    second = harness.run("ddns.example.org", "--state-dir", harness.state_dir.as_posix())
+    assert second.returncode == 0, second.stderr
+    deleted = [line.split()[4] for line in harness.ufw_calls() if "delete" in line]
+    assert sorted(set(deleted)) == ["203.0.113.10", "203.0.113.9"]
+    assert harness.state() == "203.0.113.11\n"
+    assert harness.added() == []
+
+
+def test_a_failed_removal_keeps_the_address_and_retries(shell: str, tmp_path: Path) -> None:
+    harness = Harness(
+        shell, tmp_path, ip="203.0.113.10", ufw_fail_match="delete allow from 203.0.113.9"
+    )
+    harness.set_state("203.0.113.9")
+    first = harness.run("ddns.example.org", "--state-dir", harness.state_dir.as_posix())
+    assert first.returncode == 1, first.stderr
+    assert harness.state() == "203.0.113.10\n"
+    assert harness.added() == ["203.0.113.9"]
+
+    harness.ufw_fail_match = ""
+    harness.calls_file.write_text("", encoding="utf-8")
+    second = harness.run("ddns.example.org", "--state-dir", harness.state_dir.as_posix())
+    assert second.returncode == 0, second.stderr
+    assert harness.ufw_calls() == [
+        "ufw delete allow from 203.0.113.9 to any port 53 proto udp comment timefence-ddns",
+        "ufw delete allow from 203.0.113.9 to any port 53 proto tcp comment timefence-ddns",
+    ]
+    assert harness.state() == "203.0.113.10\n"
+    assert harness.added() == []
+
+
+def test_the_guide_installs_rules_the_helper_can_remove() -> None:
+    guide = (ROOT / "docs" / "remote-vm.md").read_text(encoding="utf-8")
+    allow_lines = [
+        line
+        for line in guide.splitlines()
+        if line.strip().startswith("sudo ufw allow from") and "port 53" in line
+    ]
+    assert allow_lines
+    for line in allow_lines:
+        assert "comment timefence-ddns" in line, line
+    assert "timefence-ddns/ip" in guide
