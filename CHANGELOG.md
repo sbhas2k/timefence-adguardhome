@@ -192,6 +192,9 @@ together and is released as one version, so this entry covers everything a
   account.
 - A quoted value in the environment file kept its backslash escapes.
 - A migration failure could leave a half-migrated database.
+- A connection failure or timeout in the admin banner is a short sentence
+  ("cannot reach AdGuard Home", "AdGuard Home did not answer within 10 s")
+  instead of raw transport text with the host, port and path.
 - The group **Test** screen no longer calls a SafeSearch or `Rewrite*` answer
   "blocked": it now uses the same list as metering, where only a refused answer
   is a block and a rewritten one is a real answer.

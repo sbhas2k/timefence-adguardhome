@@ -275,7 +275,9 @@ STRINGS: dict[str, dict[str, str]] = {
         "error.mode_removed": "Session mode was removed in 1.0.0. Groups are allowed until their daily minutes are used.",
         "error.read_only": "This account can only view time left.",
         "error.wrong_password": "The current password is not correct.",
-        "error.adguard": "AdGuard Home did not answer: {detail}",
+        # the client's messages are already complete sentences ("cannot reach
+        # AdGuard Home", "AdGuard Home answered HTTP 502"); do not prefix them
+        "error.adguard": "{detail}",
         "error.adguard_auth": "AdGuard Home rejected the credentials. The next attempt is in {seconds} s; check ADGUARD_USER and ADGUARD_PASSWORD.",
         "error.windows_invalid": "Check the bedtime windows: at most four, start and end as HH:MM and different, and days all, weekday or weekend.",
         "error.alerts_invalid": "Check the alert settings: channel, URLs and event toggles.",

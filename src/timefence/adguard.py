@@ -94,12 +94,16 @@ class AdGuardClient:
         kwargs.setdefault("timeout", self.timeout)
         try:
             resp = self.session.request(method, f"{self.url}{path}", auth=self.auth, **kwargs)
-        except requests.RequestException as exc:
-            raise AdGuardError(f"{method} {path}: {exc}") from exc
+        except requests.exceptions.Timeout:
+            # never the urllib3 text, the URL or the credentials: this string is
+            # shown in the admin banner and kept in the state
+            raise AdGuardError(f"AdGuard Home did not answer within {self.timeout:g} s") from None
+        except requests.RequestException:
+            raise AdGuardError("cannot reach AdGuard Home") from None
         if resp.status_code in AUTH_STATUSES:
-            raise AdGuardAuthError(f"{method} {path}: AdGuard Home rejected the credentials")
+            raise AdGuardAuthError("AdGuard Home rejected the credentials")
         if resp.status_code >= 400:
-            raise AdGuardError(f"{method} {path}: HTTP {resp.status_code} {resp.text[:200]}")
+            raise AdGuardError(f"AdGuard Home answered HTTP {resp.status_code}")
         if not resp.content:
             return None
         try:
@@ -117,7 +121,7 @@ class AdGuardClient:
         if data is None:
             return None
         if not isinstance(data, expect):
-            raise AdGuardError(f"{method} {path}: unexpected response")
+            raise AdGuardError("AdGuard Home answered an unexpected response")
         return data
 
     # -- service status --------------------------------------------------

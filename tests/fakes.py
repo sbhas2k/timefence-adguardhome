@@ -332,11 +332,11 @@ class StubServer:
             def do_POST(self) -> None:  # noqa: N802 - the base class names it
                 length = int(self.headers.get("Content-Length") or 0)
                 payload = self.rfile.read(length) if length else b""
-                if outer.delay:
-                    time.sleep(outer.delay)
                 self._answer(payload)
 
             def _answer(self, payload: bytes) -> None:
+                if outer.delay:
+                    time.sleep(outer.delay)
                 outer.requests.append(
                     {"path": self.path, "headers": dict(self.headers), "body": payload}
                 )
@@ -345,13 +345,16 @@ class StubServer:
                     self.send_header("Location", outer.location)
                 self.send_header("Content-Length", str(len(outer.body)))
                 self.end_headers()
-                if outer.trickle:
-                    for byte in outer.body:
-                        self.wfile.write(bytes([byte]))
-                        self.wfile.flush()
-                        time.sleep(outer.trickle)
-                else:
-                    self.wfile.write(outer.body)
+                try:
+                    if outer.trickle:
+                        for byte in outer.body:
+                            self.wfile.write(bytes([byte]))
+                            self.wfile.flush()
+                            time.sleep(outer.trickle)
+                    else:
+                        self.wfile.write(outer.body)
+                except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                    return  # the client gave up (a timeout proof), which is fine
 
             def log_message(self, *args) -> None:
                 return

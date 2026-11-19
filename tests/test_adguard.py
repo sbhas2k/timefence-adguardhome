@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+import requests
 
 from timefence.adguard import (
     AdGuardAuthError,
@@ -139,3 +140,35 @@ def test_a_timestamp_is_bumped_by_its_own_precision():
     assert next_timestamp("2026-11-19T12:28:17.9999999Z") == "2026-11-19T12:28:18.0000000Z"
     assert next_timestamp("2026-11-19T12:28:17Z") == "2026-11-19T12:28:18Z"
     assert next_timestamp("not a time") is None
+
+
+class RefusingSession:
+    """The raw text a refused connection produces, without a real socket."""
+
+    headers: dict[str, str] = {}
+
+    def request(self, *args, **kwargs):
+        raise requests.exceptions.ConnectionError(
+            "HTTPConnectionPool(host='127.0.0.1', port=3100): Max retries exceeded with url: "
+            "/control/blocked_services/get (Caused by NewConnectionError(...))"
+        )
+
+
+def test_a_transport_failure_is_a_short_category():
+    client = AdGuardClient("http://127.0.0.1:3100", "admin", "secret", session=RefusingSession())
+    with pytest.raises(AdGuardError) as caught:
+        client.blocked_services()
+    text = str(caught.value)
+    assert text == "cannot reach AdGuard Home"
+    for leak in ("HTTPConnectionPool", "Max retries", "3100", "http://", "GET ", "secret"):
+        assert leak not in text
+
+
+def test_a_silent_server_is_reported_as_a_timeout():
+    with StubServer(delay=0.5) as stub:
+        client = AdGuardClient(stub.url, "admin", "secret", timeout=0.2)
+        with pytest.raises(AdGuardError) as caught:
+            client.blocked_services()
+    text = str(caught.value)
+    assert text == "AdGuard Home did not answer within 0.2 s"
+    assert stub.url not in text
