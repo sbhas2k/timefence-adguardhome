@@ -9,6 +9,7 @@ import io
 import json
 import logging
 import os
+import re
 import secrets
 import threading
 import time
@@ -32,6 +33,8 @@ DATA = Path(__file__).parent / "data"
 
 # How many sign-ins may run a key derivation at the same time.
 LOGIN_SLOTS = threading.BoundedSemaphore(4)
+MAX_JSON_BYTES = 1024 * 1024  # any JSON body beyond this is refused before parsing
+LOGIN_MAX_BYTES = 16 * 1024  # sign-in is anonymous, so its body is capped hard
 
 USAGE_DAYS = ("7", "14", "30")
 
@@ -62,6 +65,24 @@ USER_GROUP_KEYS = (
     "bedtime_until",
 )
 STATIC = Path(__file__).parent / "static"
+ICON_CHARS = re.compile(r"^[A-Za-z0-9+/=]+$")
+ICON_MAX_CHARS = 8192  # an icon is a small base64 SVG, never a document
+
+
+def safe_icon(value: object) -> str:
+    """An AdGuard service icon, or "" unless it is plain base64.
+
+    The value goes into a data: URL in the page; anything that is not base64
+    could break out of the attribute, so it is dropped rather than escaped.
+    """
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if not text or len(text) > ICON_MAX_CHARS or not ICON_CHARS.match(text):
+        return ""
+    return text
+
+
 TEMPLATES = Path(__file__).parent / "templates"
 
 
@@ -391,10 +412,15 @@ def create_app(
         return request_body if isinstance(request_body, dict) else {}
 
     async def json_body(request: Request) -> dict:
-        """The request body as a dict, or {} when it is missing or not JSON."""
+        """The request body as a dict, or {} when it is missing, too big or not JSON."""
+        buffer = bytearray()
+        async for chunk in request.stream():
+            buffer.extend(chunk)
+            if len(buffer) > MAX_JSON_BYTES:
+                return {}
         try:
-            data = await request.json()
-        except Exception:
+            data = json.loads(bytes(buffer))
+        except (ValueError, UnicodeDecodeError):
             return {}
         return data if isinstance(data, dict) else {}
 
@@ -520,6 +546,14 @@ def create_app(
         mutating = request.method in {"POST", "PUT", "PATCH", "DELETE"} and path.startswith(
             api_prefix
         )
+        if path == f"{base}/api/login" and request.method == "POST":
+            declared = request.headers.get("content-length")
+            try:
+                too_big = declared is not None and int(declared) > LOGIN_MAX_BYTES
+            except ValueError:
+                too_big = True
+            if too_big:
+                return json_error(413, i18n.t("error.body_too_large"), "body_too_large")
         if mutating and path not in {f"{base}/api/login"}:
             sess = request.state.session
             token = request.headers.get("x-csrf-token", "")
@@ -683,7 +717,14 @@ def create_app(
             LOGIN_SLOTS.release()
 
     @app.post(f"{base}/api/logout")
-    def api_logout():
+    def api_logout(request: Request):
+        sess = current_session(request)
+        if sess is not None:
+            # A copied cookie must stop working: logout signs the account out
+            # everywhere instead of only clearing this browser's cookie.
+            with store as conn:
+                credentials.bump_epoch(conn, sess.uid)
+                conn.commit()
         response = JSONResponse({"ok": True})
         response.delete_cookie(session_manager.COOKIE, path=settings.base_path)
         return response
@@ -791,6 +832,14 @@ def create_app(
             groups = [reduced_group(group) for group in groups]
         return {"groups": groups}
 
+    def group_payload_problem(data: dict) -> JSONResponse | None:
+        """Services and domains are lists of strings; anything else is a 400."""
+        for field in ("services", "domains"):
+            value = data.get(field)
+            if value is not None and not isinstance(value, list):
+                return json_error(400, i18n.t("error.group_fields"), "invalid")
+        return None
+
     def group_from_payload(data: dict, existing: budget.Group | None = None) -> dict:
         def int_or(value: Any, fallback: int) -> int:
             try:
@@ -838,6 +887,9 @@ def create_app(
         sess = require("admin", request)
         if sets_removed_mode(data):
             return json_error(400, i18n.t("error.mode_removed"), "mode_removed")
+        problem = group_payload_problem(data)
+        if problem is not None:
+            return problem
         fields = group_from_payload(data)
         hits = critical_hits(fields["domains"])
         if hits and not data.get("confirm_critical"):
@@ -864,6 +916,9 @@ def create_app(
         sess = require("admin", request)
         if sets_removed_mode(data):
             return json_error(400, i18n.t("error.mode_removed"), "mode_removed")
+        problem = group_payload_problem(data)
+        if problem is not None:
+            return problem
         with store as conn:
             existing = budget.get_group(conn, group_id)
             if not existing or existing.deleted:
@@ -1039,7 +1094,7 @@ def create_app(
             {
                 "id": s["id"],
                 "name": s.get("name", s["id"]),
-                "icon_svg": s.get("icon_svg", ""),
+                "icon_svg": safe_icon(s.get("icon_svg")),
                 "group": used.get(s["id"]),
             }
             for s in services_cache["data"]
@@ -1386,6 +1441,7 @@ def create_app(
                 return json_error(409, i18n.t("users.self_delete"), "self")
             if row["role"] == "admin" and users_count("admin") <= 1:
                 return json_error(409, i18n.t("users.last_admin"), "last_admin")
+            conn.execute("UPDATE groups SET owner_id=NULL WHERE owner_id=?", (user_id,))
             conn.execute("DELETE FROM users WHERE id=?", (user_id,))
             conn.commit()
             budget.log_event(

@@ -803,7 +803,8 @@
       $("#service-list").innerHTML = list.map(function (service) {
         var checked = selected.indexOf(service.id) >= 0;
         var icon = service.icon_svg
-          ? '<img alt="" width="20" height="20" src="data:image/svg+xml;base64,' + service.icon_svg + '">'
+          ? '<img alt="" width="20" height="20" src="data:image/svg+xml;base64,' +
+            esc(service.icon_svg) + '">'
           : "";
         return '<label class="item"><input type="checkbox" data-service="' + esc(service.id) + '"' +
           (checked ? " checked" : "") + (service.group ? " disabled" : "") + "> " + icon +
@@ -871,12 +872,15 @@
     api("GET", "/api/groups/" + groupId + "/test").then(function (data) {
       var rows = data.results.map(function (r) {
         return "<tr><td>" + esc(r.host) + '</td><td><span class="pill ' +
-          (r.blocked ? "bad" : "ok") + '">' + (r.blocked ? "blocked" : "allowed") +
+          (r.blocked ? "bad" : "ok") + '">' +
+          esc(t(r.blocked ? "groups.test_blocked" : "groups.test_allowed")) +
           "</span></td></tr>";
       }).join("");
       openModal(
         '<h2>' + esc(t("groups.test")) + "</h2>" +
-        '<div class="table-wrap mt"><table><thead><tr><th>host</th><th>AdGuard</th></tr></thead><tbody>' +
+        '<div class="table-wrap mt"><table><thead><tr><th>' +
+        esc(t("groups.test_host")) + "</th><th>" + esc(t("groups.test_adguard")) +
+        "</th></tr></thead><tbody>" +
         rows + "</tbody></table></div>" +
         '<div class="row mt"><button class="btn" data-action="modal-close">' +
         esc(t("common.close")) + "</button></div>"

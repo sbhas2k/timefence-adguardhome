@@ -115,3 +115,21 @@ def test_templates_have_no_inline_styles():
     for path in sorted(package_file("templates").glob("*.html")):
         text = path.read_text(encoding="utf-8")
         assert 'style="' not in text, path.name
+
+
+def test_the_group_test_table_has_no_hard_coded_english():
+    app_js = read("static", "app.js")
+    assert '? "blocked" : "allowed"' not in app_js
+    assert "<th>host</th>" not in app_js
+    for key in (
+        "groups.test_host",
+        "groups.test_adguard",
+        "groups.test_blocked",
+        "groups.test_allowed",
+    ):
+        assert f'"{key}"' in app_js, key
+        assert i18n.t(key) != key
+
+
+def test_service_icon_values_are_escaped_before_the_data_url():
+    assert "esc(service.icon_svg)" in read("static", "app.js")

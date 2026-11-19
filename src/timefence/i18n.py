@@ -185,6 +185,10 @@ STRINGS: dict[str, dict[str, str]] = {
         "groups.delete_warning": "Delete this group? Its rules are removed from AdGuard; the history is kept.",
         "groups.delete_confirm": "Type the group name to confirm",
         "groups.test": "Test",
+        "groups.test_host": "Host",
+        "groups.test_adguard": "AdGuard",
+        "groups.test_blocked": "Blocked",
+        "groups.test_allowed": "Allowed",
         "groups.test_result": "Blocked: {blocked} · Allowed: {allowed}",
         "groups.need_target": "Add at least one service or domain.",
         "groups.critical_title": "This looks like a shared or critical domain",
@@ -276,6 +280,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "error.alerts_topic": "A topic may only contain letters, digits, dashes and underscores, 1 to 64 characters.",
         "error.usage_days": "Choose 7, 14 or 30 days.",
         "error.invalid_group": "{detail}",
+        "error.group_fields": "Services and domains must be lists.",
+        "error.body_too_large": "The request body is too large.",
     }
 }
 

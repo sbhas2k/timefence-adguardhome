@@ -631,3 +631,89 @@ def test_alert_test_endpoint_reports_categories(ready, deliveries):
     shown = client.get("/api/alerts").json()
     assert shown["last_result"] == "ok"
     assert shown["last_result_ts"]
+
+
+# --------------------------------------------------------------------------- #
+# input hygiene: ownership on delete, payload shapes, icons, logout, body cap
+# --------------------------------------------------------------------------- #
+
+
+def test_deleting_a_user_leaves_their_groups_shared(ready):
+    client = ready["client"]
+    kid = client.post(
+        "/api/users", json={"username": "kid", "password": "kid-password", "role": "user"}
+    ).json()["user"]
+    kept = make_group(client, name="Kept", owner_id=kid["id"])
+    gone = make_group(client, name="Gone", owner_id=kid["id"], services=["instagram"])
+    assert client.delete(f"/api/groups/{gone['id']}").status_code == 200
+
+    assert client.delete(f"/api/users/{kid['id']}").status_code == 200
+
+    groups = {row["id"]: row for row in client.get("/api/state").json()["groups"]}
+    assert groups[kept["id"]]["owner_id"] is None
+    assert groups[kept["id"]]["name"] == "Kept"
+    # the soft-deleted row must not keep a dangling owner either
+    with locked_conn(client.app) as conn:
+        owners = {row["owner_id"] for row in conn.execute("SELECT owner_id FROM groups")}
+    assert owners == {None}
+
+
+def test_group_payload_types_are_checked(ready):
+    client = ready["client"]
+    bad_services = client.post(
+        "/api/groups", json={"name": "X", "weekday_minutes": 30, "services": 5}
+    )
+    assert bad_services.status_code == 400
+    assert bad_services.json()["code"] == "invalid"
+    bad_domains = client.post(
+        "/api/groups", json={"name": "X", "weekday_minutes": 30, "domains": "example.com"}
+    )
+    assert bad_domains.status_code == 400
+    assert bad_domains.json()["code"] == "invalid"
+
+    group = make_group(client)
+    too_long = client.put(
+        f"/api/groups/{group['id']}", json={"name": "x" * 500, "services": ["roblox"]}
+    )
+    assert too_long.status_code == 400
+    assert too_long.json()["code"] == "invalid"
+    fresh = client.get("/api/state").json()["groups"][0]
+    assert fresh["name"] == "Games"
+
+
+def test_service_icons_are_sanitised(ready, fake):
+    from timefence import api
+
+    assert api.safe_icon("PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=")
+    assert api.safe_icon('x" onerror="alert(1)') == ""
+    assert api.safe_icon(None) == ""
+    assert api.safe_icon("") == ""
+
+    fake.SERVICES = fake.SERVICES + [
+        {"id": "evil", "name": "Evil", "rules": [], "icon_svg": 'x" onerror="alert(1)'},
+        {"id": "good", "name": "Good", "rules": [], "icon_svg": "PHN2Zy8+"},
+    ]
+    services = {row["id"]: row for row in ready["client"].get("/api/services").json()["services"]}
+    assert services["evil"]["icon_svg"] == ""
+    assert services["good"]["icon_svg"] == "PHN2Zy8+"
+
+
+def test_logout_revokes_the_copied_cookie(ready):
+    client = ready["client"]
+    session = client.cookies.get("timefence_session")
+    assert session
+
+    assert client.post("/api/logout", json={}).status_code == 200
+    assert client.get("/api/state").status_code == 401
+
+    copied = TestClient(client.app)
+    copied.cookies.set("timefence_session", session, path="/")
+    assert copied.get("/api/state").status_code == 401
+    copied.close()
+
+
+def test_an_oversized_login_body_is_rejected(ready):
+    client = ready["client"]
+    response = client.post("/api/login", json={"username": "admin", "password": "x" * (17 * 1024)})
+    assert response.status_code == 413
+    assert client.get("/api/state").status_code == 200

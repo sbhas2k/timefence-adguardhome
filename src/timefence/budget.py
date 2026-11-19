@@ -459,6 +459,8 @@ def update_group(
     new_name = group.name if name is None else name.strip()
     if not new_name:
         raise ValidationError("name is required")
+    if len(new_name) > 60:
+        raise ValidationError("name is too long")
     dup = conn.execute(
         "SELECT id FROM groups WHERE name=? AND deleted=0 AND id IS NOT ?", (new_name, group_id)
     ).fetchone()

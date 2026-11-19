@@ -393,3 +393,50 @@ def test_setup_disables_other_admins_with_the_default_password(settings, fake):
         assert [user for user in users if user["username"] == "admin"][0]["disabled"] is True
         other.close()
         dad.close()
+
+
+def test_a_success_does_not_clear_the_address_lock(settings, fake):
+    app = create_app(settings, adguard=fake)
+    with TestClient(app) as admin:
+        complete_setup(admin)
+        # 19 failures spread over five names: no pair reaches its own limit
+        for index, username in enumerate(("a0", "a1", "a2", "a3")):
+            for _ in range(4):
+                attempt = admin.post(
+                    "/api/login", json={"username": username, "password": "wrong-pass"}
+                )
+                assert attempt.status_code == 401, (index, attempt.text)
+        for _ in range(3):
+            attempt = admin.post("/api/login", json={"username": "a4", "password": "wrong-pass"})
+            assert attempt.status_code == 401
+
+        # a valid account from the same address succeeds but resets only its pair
+        good = admin.post("/api/login", json=ADMIN2)
+        assert good.status_code == 200, good.text
+
+        # the twentieth failure from this address locks the address
+        twentieth = admin.post("/api/login", json={"username": "a5", "password": "wrong-pass"})
+        assert twentieth.status_code == 429
+        blocked = admin.post("/api/login", json=ADMIN2)
+        assert blocked.status_code == 429
+
+
+def test_a_kid_cannot_sign_in_before_setup(settings, fake):
+    from timefence import security
+
+    app = create_app(settings, adguard=fake)
+    with TestClient(app) as client:
+        with app.state.store as conn:
+            conn.execute(
+                "INSERT INTO users(username, role, hash, created_at, updated_at) "
+                "VALUES('kid','user',?,0,0)",
+                (security.hash_secret("kid-password"),),
+            )
+            conn.commit()
+
+        early = client.post("/api/login", json={"username": "kid", "password": "kid-password"})
+        assert early.status_code == 403
+        assert early.json()["code"] == "setup_required"
+
+        admin = client.post("/api/login", json=ADMIN)
+        assert admin.status_code == 200
