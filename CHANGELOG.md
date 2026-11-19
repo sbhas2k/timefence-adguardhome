@@ -192,6 +192,9 @@ together and is released as one version, so this entry covers everything a
   account.
 - A quoted value in the environment file kept its backslash escapes.
 - A migration failure could leave a half-migrated database.
+- The group **Test** screen no longer calls a SafeSearch or `Rewrite*` answer
+  "blocked": it now uses the same list as metering, where only a refused answer
+  is a block and a rewritten one is a real answer.
 - The group **Test** screen now probes a representative host of each service: the
   real catalogue is sorted alphabetically, so a YouTube group used to test
   `ggpht.cn` and never `youtube.com`.

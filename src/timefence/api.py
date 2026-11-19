@@ -25,7 +25,7 @@ from . import APP_TITLE, __version__, alerts, budget, credentials, db, i18n, sec
 from .adguard import AdGuardClient, AdGuardError
 from .config import Settings
 from .discover import PublicSuffixList, SuffixList, aggregate, humanize_age, recent_clients
-from .reconciler import Reconciler, rule_host
+from .reconciler import BLOCKED_REASONS, Reconciler, rule_host
 
 log = logging.getLogger("timefence.web")
 
@@ -1096,13 +1096,8 @@ def create_app(
             results.append(
                 {
                     "host": host,
-                    "blocked": reason
-                    not in {
-                        "",
-                        "NotFilteredNotFound",
-                        "NotFilteredWhiteList",
-                        "NotFilteredAllowList",
-                    },
+                    # one definition, shared with metering: a rewrite is not a block
+                    "blocked": reason in BLOCKED_REASONS,
                     "reason": reason,
                 }
             )

@@ -747,3 +747,33 @@ def test_the_group_test_probes_a_representative_service_host(settings):
     hosts = [row["host"] for row in results]
     assert "youtube.com" in hosts
     assert len(hosts) == 2
+
+
+def test_a_rewritten_answer_is_not_reported_as_blocked(settings):
+    from .fakes import FaithfulAdGuard
+
+    fake = FaithfulAdGuard()
+    fake.reasons = {
+        "safesearch.example": "FilteredSafeSearch",
+        "rewritten.example": "Rewrite",
+        "blocked.example": "FilteredBlackList",
+    }
+    app = create_app(settings, adguard=fake)
+    with TestClient(app) as client:
+        complete_setup(client)
+        group = client.post(
+            "/api/groups",
+            json={
+                "name": "Mixed",
+                "weekday_minutes": 30,
+                "domains_text": "safesearch.example\nrewritten.example\nblocked.example",
+            },
+        ).json()["group"]
+        results = {
+            row["host"]: row
+            for row in client.get(f"/api/groups/{group['id']}/test").json()["results"]
+        }
+
+    assert results["safesearch.example"]["blocked"] is False
+    assert results["rewritten.example"]["blocked"] is False
+    assert results["blocked.example"]["blocked"] is True

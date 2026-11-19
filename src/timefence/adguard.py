@@ -18,14 +18,6 @@ from .discover import parse_time
 
 log = logging.getLogger("timefence.adguard")
 
-BLOCKED_REASONS = {
-    "FilteredBlackList",
-    "FilteredBlockedService",
-    "FilteredSafeBrowsing",
-    "FilteredParental",
-    "FilteredSafeSearch",
-}
-
 
 class AdGuardError(RuntimeError):
     """Any failure talking to AdGuard Home."""
@@ -171,9 +163,6 @@ class AdGuardClient:
     def check_host(self, name: str) -> dict:
         data = self._request_json("GET", "/control/filtering/check_host", params={"name": name})
         return data if isinstance(data, dict) else {}
-
-    def is_blocked(self, name: str) -> bool:
-        return self.check_host(name).get("reason") in BLOCKED_REASONS
 
     # -- query log -------------------------------------------------------
     def querylog_page(self, limit: int = 500, older_than: str | None = None) -> dict:

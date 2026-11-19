@@ -33,9 +33,10 @@ QUERYLOG_HEALTH_INTERVAL = 60  # seconds between query-log settings checks (one 
 AUTH_BACKOFF_BASE = 30.0  # seconds before the first retry
 AUTH_BACKOFF_MAX = 900.0  # never wait longer than AdGuard's own block window
 QUERYLOG_RETENTION_MIN_MS = 3_600_000  # an hour of retention is the minimum
-# Answers that were blocked, not usage. SafeSearch rewrites and Rewrite* are
-# answered queries and do count.
-BLOCKED_USAGE_REASONS = {
+# Answers that AdGuard refused rather than answered: not usage, and what the
+# group Test screen calls "blocked". SafeSearch rewrites and Rewrite* are
+# answered queries (the page loaded), so they count as usage and are not blocks.
+BLOCKED_REASONS = {
     "FilteredBlackList",
     "FilteredBlockedService",
     "FilteredSafeBrowsing",
@@ -314,7 +315,7 @@ class Reconciler:
             client = entry.get("client") or ""
             if client in ("127.0.0.1", "::1"):
                 continue
-            if (entry.get("reason") or "") in BLOCKED_USAGE_REASONS:
+            if (entry.get("reason") or "") in BLOCKED_REASONS:
                 continue
             name = (entry.get("question") or {}).get("name") or ""
             hits.append((ts, name))
