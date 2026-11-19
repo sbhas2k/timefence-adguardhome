@@ -27,6 +27,25 @@ def _prompt_secret(role: str) -> str:
     return first
 
 
+def _unquote(value: str) -> str:
+    """Strip one matching quote pair; inside it a backslash escapes the next char."""
+    if len(value) < 2 or value[0] != value[-1] or value[0] not in "\"'":
+        return value
+    out: list[str] = []
+    escaped = False
+    for char in value[1:-1]:
+        if escaped:
+            out.append(char)
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        else:
+            out.append(char)
+    if escaped:
+        out.append("\\")
+    return "".join(out)
+
+
 def _read_env_file(path: str) -> dict[str, str]:
     """Parse KEY=VALUE lines; no shell evaluation, one matching quote pair is stripped."""
     values: dict[str, str] = {}
@@ -39,10 +58,7 @@ def _read_env_file(path: str) -> dict[str, str]:
         key, separator, value = line.partition("=")
         if not separator:
             continue
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
-        values[key.strip()] = value
+        values[key.strip()] = _unquote(value.strip())
     return values
 
 
