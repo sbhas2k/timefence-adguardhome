@@ -1,0 +1,22 @@
+# Keep local state away from the build daemon.
+# The Dockerfile copies only requirements.lock, pyproject.toml, README.md,
+# LICENSE, src/ and deploy/docker-entrypoint.sh, so nothing here is needed.
+.git
+.github
+.venv
+venv
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.env
+.env.*
+*.db
+*.db-*
+*.sqlite*
+*.bak
+*.log
+*.tar.gz
+docs
+adguard_password.txt
