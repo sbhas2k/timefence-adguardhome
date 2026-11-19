@@ -1,4 +1,6 @@
 # TimeFence with host networking.
+# Docs: https://github.com/sbhas2k/timefence-adguardhome/blob/main/docs/docker.md
+# TimeFence with host networking.
 #
 # Use this when AdGuard Home is NOT in the same compose project (for example
 # when it runs natively or in another compose file on the same host and binds
@@ -12,7 +14,9 @@ services:
   timefence:
     image: ghcr.io/sbhas2k/timefence-adguardhome:latest
     container_name: timefence
-    stop_grace_period: 20s
+    # The reconciler blocks every group on a clean stop; give it time to
+    # finish that write before Docker sends SIGKILL.
+    stop_grace_period: 45s
     network_mode: host
     environment:
       ADGUARD_URL: http://127.0.0.1:3000

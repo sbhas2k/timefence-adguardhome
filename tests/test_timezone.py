@@ -360,18 +360,48 @@ def test_a_garbage_localtime_file_is_ignored(tmp_path):
     ) == ("UTC", "default")
 
 
-def test_a_huge_localtime_file_is_ignored(tmp_path):
-    # the same over-sized bytes exist in the tree: only the size cap can ignore it
-    huge = b"TZif" + b"x" * (64 * 1024)
-    tree = zone_tree(tmp_path, {"Europe/London": huge})
-    localtime = localtime_file(tmp_path, huge)
+def test_a_localtime_file_over_the_cap_is_not_matched(tmp_path):
+    # exactly one byte over the cap, and the same bytes exist in the tree, so
+    # only the size check can refuse the match
+    cap = config.LOCALTIME_MAX_BYTES
+    oversized = b"TZif" + b"x" * (cap - 3)
+    assert len(oversized) == cap + 1
+    tree = zone_tree(tmp_path, {"Europe/London": oversized})
+    localtime = localtime_file(tmp_path, oversized)
 
-    assert detect_timezone(
+    assert config._content_zone(localtime, (tree,)) is None
+    # one byte shorter is inside the cap and does match
+    at_cap = oversized[:-1]
+    (tree / "Europe" / "London").write_bytes(at_cap)
+    smaller = tmp_path / "localtime-small"
+    smaller.write_bytes(at_cap)
+    assert config._content_zone(smaller, (tree,)) == "Europe/London"
+
+
+def test_a_localtime_symlink_into_the_tree_names_its_zone(tmp_path):
+    # An image whose /etc/localtime points at its own Etc/UTC keeps saying UTC
+    # even when a host file is bind-mounted over it; the image therefore
+    # removes both files (see the Dockerfile) so the mount is a regular file.
+    tree = zone_tree(tmp_path, {"Etc/UTC": TOKYO, "Europe/Berlin": TOKYO})
+    target = tree / "Etc" / "UTC"
+    link = tmp_path / "localtime"
+    try:
+        link.symlink_to(target)
+        localtime = link
+    except OSError:
+        localtime = target
+
+    assert config.detect_timezone(
         None,
         timezone_file=tmp_path / "none",
         localtime_file=localtime,
         zoneinfo_dirs=(tree,),
-    ) == ("UTC", "default")
+    ) == ("Etc/UTC", "system")
+
+
+def test_the_image_removes_its_own_timezone_files() -> None:
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
+    assert "rm -f /etc/localtime /etc/timezone" in dockerfile
 
 
 def test_the_zoneinfo_path_wins_over_the_content(tmp_path):

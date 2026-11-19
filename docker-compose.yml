@@ -1,9 +1,13 @@
+# TimeFence + AdGuard Home in one compose project.
+# Docs: https://github.com/sbhas2k/timefence-adguardhome/blob/main/docs/docker.md
 # Example: TimeFence next to an official AdGuard Home container.
 #
-# 1. cp .env.example .env and set ADGUARD_PASSWORD (or point
-#    ADGUARD_PASSWORD_FILE at a file inside the container).
+# 1. printf '%s' '<adguard-admin-password>' > adguard_password.txt
+#    (the secret below; no .env file is read by this compose file).
 # 2. docker compose up -d
-# 3. open http://<host>:8099/ and complete the first-run setup.
+# 3. open http://127.0.0.1:8099/ on the host and complete the first-run setup.
+#    The port is bound to loopback and cookies are Secure, so a browser on
+#    another machine needs the reverse proxy (docs/reverse-proxy.md).
 #
 # NOTE: AdGuard Home needs port 53, so it uses host networking below. If you
 # already run AdGuard on the host, delete the adguardhome service and point
@@ -22,7 +26,9 @@ services:
   timefence:
     image: ghcr.io/sbhas2k/timefence-adguardhome:latest
     container_name: timefence
-    stop_grace_period: 20s
+    # The reconciler blocks every group on a clean stop; give it time to
+    # finish that write before Docker sends SIGKILL.
+    stop_grace_period: 45s
     environment:
       ADGUARD_URL: http://host.docker.internal:3000
       ADGUARD_USER: admin

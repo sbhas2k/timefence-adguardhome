@@ -11,7 +11,8 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends tzdata ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --user-group --home-dir /app --shell /usr/sbin/nologin timefence \
- && install -d -o timefence -g timefence -m 700 /data
+ && install -d -o timefence -g timefence -m 700 /data \
+ && rm -f /etc/localtime /etc/timezone
 
 WORKDIR /app
 COPY requirements.lock ./
@@ -23,7 +24,10 @@ RUN pip install --no-deps . && rm -rf /app/src && chmod 755 /usr/local/bin/timef
 
 USER timefence:timefence
 # TZ is optional: without it the app follows the host timezone when you mount
-# /etc/localtime (see docs/docker.md), and otherwise falls back to UTC.
+# /etc/localtime (see docs/docker.md), and otherwise falls back to UTC. The
+# image's own /etc/localtime and /etc/timezone are removed above, so a mount is
+# a regular file whose content can be matched instead of a symlink that keeps
+# naming the image's Etc/UTC.
 ENV DATA_DIR=/data \
     BASE_PATH=/ \
     LISTEN_HOST=127.0.0.1 \
