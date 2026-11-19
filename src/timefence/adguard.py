@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+from datetime import datetime, timedelta
 from typing import Any
 
 import requests
@@ -38,6 +40,46 @@ class AdGuardAuthError(AdGuardError):
 
 
 AUTH_STATUSES = frozenset({401, 403})
+
+TIMESTAMP = re.compile(
+    r"^(?P<base>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})"
+    r"(?:\.(?P<frac>\d+))?(?P<tz>Z|[+-]\d{2}:\d{2})?$"
+)
+
+
+def next_timestamp(text: str) -> str | None:
+    """`text` moved forward by one unit of its own precision.
+
+    AdGuard's `older_than` is strict, and its log can hold several entries with
+    one timestamp (a burst from one client, or just a coarse clock). Paging with
+    the page's own last stamp would silently skip the rest of that group, so the
+    cursor is moved past it; the repeats are de-duplicated by entry key.
+    """
+    match = TIMESTAMP.match((text or "").strip())
+    if not match:
+        return None
+    base, frac, tz = match.group("base"), match.group("frac"), match.group("tz") or ""
+    if frac and not frac.startswith("9" * len(frac)):
+        return f"{base}.{frac[:-1]}{int(frac[-1]) + 1}{tz}"
+    try:
+        after = datetime.fromisoformat(base) + timedelta(seconds=1)
+    except ValueError:
+        return None
+    stamp = after.strftime("%Y-%m-%dT%H:%M:%S")
+    return f"{stamp}.{'0' * len(frac)}{tz}" if frac else f"{stamp}{tz}"
+
+
+def entry_key(entry: dict) -> tuple[str, ...]:
+    """A stable identity for one query-log row (timestamps are not unique)."""
+    question = entry.get("question") or {}
+    return (
+        str(entry.get("time") or ""),
+        str(entry.get("client") or ""),
+        str(question.get("name") or ""),
+        str(question.get("type") or ""),
+        str(entry.get("reason") or ""),
+        str(entry.get("answer") or ""),
+    )
 
 
 class AdGuardClient:
@@ -142,22 +184,45 @@ class AdGuardClient:
         return self._request_json("GET", "/control/querylog", params=params) or {}
 
     def querylog_since(
-        self, since_ts: int, page_size: int = 500, max_pages: int = 20
+        self, since_ts: int, page_size: int = 5000, max_pages: int = 20
     ) -> tuple[list[dict], bool]:
-        """Every entry newer than `since_ts`, plus whether the log ran out of pages."""
+        """Every entry newer than `since_ts`, plus whether the log ran out of pages.
+
+        Pages are read by timestamp, not by offset, so a busy log can shift
+        under us; rows are de-duplicated by key and the cursor skips past the
+        page's oldest stamp so a tie at the boundary is not lost.
+        """
         entries: list[dict] = []
+        seen: set[tuple[str, ...]] = set()
         older_than: str | None = None
         for _ in range(max_pages):
             page = self.querylog_page(limit=page_size, older_than=older_than)
             data = list(page.get("data") or [])
             if not data:
                 return entries, False
-            entries.extend(data)
-            oldest = page.get("oldest")
-            oldest_ts = parse_time(oldest) if isinstance(oldest, str) else None
-            if oldest_ts is None or oldest_ts <= since_ts or oldest == older_than:
+            added = 0
+            for entry in data:
+                key = entry_key(entry)
+                if key in seen:
+                    continue
+                seen.add(key)
+                entries.append(entry)
+                added += 1
+            stamps = [
+                (parse_time(entry.get("time", "")), entry.get("time", ""))
+                for entry in data
+                if isinstance(entry.get("time"), str)
+            ]
+            stamps = [pair for pair in stamps if pair[0] is not None]
+            if not stamps:
                 return entries, False
-            older_than = oldest
+            oldest_ts, oldest_text = min(stamps, key=lambda pair: pair[0])
+            if oldest_ts <= since_ts:
+                return entries, False
+            cursor = next_timestamp(oldest_text)
+            if cursor is None or cursor == older_than or added == 0:
+                return entries, False
+            older_than = cursor
         return entries, True
 
     def querylog_config(self) -> dict | None:

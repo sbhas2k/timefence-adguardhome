@@ -157,10 +157,16 @@ def test_pagination_reads_all_pages(store, fake):
         db.set_setting(conn, "meter_last_ts", str(start))
 
     entries = [entry(start + offset) for offset in range(1100)]
+    fake.entries = entries
+    pages_needed, truncated = fake.querylog_since(start, page_size=500)
+    assert len(pages_needed) == 1100  # every entry, across several pages
+    assert truncated is False
+
+    fake.calls.clear()
     settle(Reconciler(store, fake, TZ), fake, now, entries)
 
     pages = [call for call in fake.calls if call[0] == "querylog_page"]
-    assert len(pages) == 3
+    assert len(pages) == 1  # one large page covers this window
     # entries start+1 .. start+1099 cover 74 buckets of 15 s
     with store as conn:
         assert budget.metered_seconds(conn, group.id, budget.day_str(now, TZ)) == 74 * BUCKET

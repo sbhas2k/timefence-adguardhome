@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from timefence.adguard import AdGuardAuthError, AdGuardClient, AdGuardError
+from timefence.adguard import (
+    AdGuardAuthError,
+    AdGuardClient,
+    AdGuardError,
+    next_timestamp,
+)
 from timefence.discover import parse_time
 
-from .fakes import StubServer
+from .fakes import FaithfulAdGuard, StubServer, real_entry
 
 
 class StubResponse:
@@ -77,7 +82,8 @@ def test_querylog_since_stops_at_window_start():
     entries, truncated = client.querylog_since(parse_time("2026-11-12T15:59:30Z"))
 
     assert [entry["time"] for entry in entries] == [newer, older]
-    assert client.calls == [None, newer]  # stopped: the second page reaches the window
+    # stopped: the second page reaches the window past its first entry
+    assert client.calls == [None, next_timestamp(newer)]
     assert truncated is False
 
 
@@ -95,3 +101,41 @@ def test_querylog_since_reports_truncation():
 
     assert len(entries) == 3
     assert truncated is True
+
+
+def tied_entries(total: int = 2850) -> list[dict]:
+    """Realistic ties: 6 to 10 entries share a stamp, unaligned with any page."""
+    entries = []
+    group = index = 0
+    size = 6
+    for _ in range(total):
+        stamp = f"2026-11-19T12:{group // 60:02d}:{group % 60:02d}.0000000Z"
+        entries.append(real_entry(f"q{group}-{index}.example.org", stamp))
+        index += 1
+        if index >= size:
+            group += 1
+            index = 0
+            size = 6 + (group % 5)
+    return entries
+
+
+def test_querylog_since_reads_every_entry_when_timestamps_tie():
+    fake = FaithfulAdGuard()
+    fake.entries = tied_entries()
+    since = parse_time("2026-11-19T12:00:00.0000000Z")
+
+    entries, truncated = fake.querylog_since(since)
+
+    keys = {(entry["time"], entry["question"]["name"]) for entry in entries}
+    assert len(keys) == 2850
+    assert truncated is False
+    assert fake.querylog_page(limit=5000)["data"]  # a larger page is honoured
+
+
+def test_a_timestamp_is_bumped_by_its_own_precision():
+    assert next_timestamp("2026-11-19T12:28:17.2765874+05:30") == (
+        "2026-11-19T12:28:17.2765875+05:30"
+    )
+    assert next_timestamp("2026-11-19T12:28:17.9999999Z") == "2026-11-19T12:28:18.0000000Z"
+    assert next_timestamp("2026-11-19T12:28:17Z") == "2026-11-19T12:28:18Z"
+    assert next_timestamp("not a time") is None

@@ -192,6 +192,10 @@ together and is released as one version, so this entry covers everything a
   account.
 - A quoted value in the environment file kept its backslash escapes.
 - A migration failure could leave a half-migrated database.
+- Query-log paging lost entries that shared the page's oldest timestamp (busy
+  clients can produce several with one stamp), so a busy minute could go
+  uncharged. Pages are now large and de-duplicated by entry key, and the cursor
+  steps past the boundary stamp.
 - `discover.parse_time` mishandled negative UTC offsets.
 - An unexpected exception from AdGuard aborted the whole reconcile pass instead
   of one phase.
