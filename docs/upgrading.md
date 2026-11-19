@@ -46,22 +46,23 @@ be reconfigured and existing sign-ins keep working.
 ### Backup first
 
 The upgrade writes its own verified backup once, before the first schema change
-it makes: `timefence.db.pre-v5.bak` next to the database (a database older than
-0.4 is upgraded straight to v5 and gets the same single, verified copy named
-after the schema it reaches). A fresh install writes no copy. The migration
-verifies the copy before touching anything and stops if it cannot write it. Take
-your own copy as well:
+it makes: the copy is named after the schema it reaches, so any database older
+than v5 — 0.4 as well as 0.3 — gets `timefence.db.pre-v5.bak` next to the
+database. A fresh install writes no copy. The migration verifies the copy before
+touching anything and stops if it cannot write it. Take your own copy as well:
 
 ```bash
-sudo systemctl stop timefence
 sudo -u timefence python3 - <<'PY'
 import sqlite3
-src = sqlite3.connect("/var/lib/timefence/timefence.db")
-dst = sqlite3.connect("/root/timefence-pre-0.5.db")
-src.backup(dst)
-dst.close()
+
+source = sqlite3.connect("/var/lib/timefence/timefence.db")
+copy = sqlite3.connect("/var/lib/timefence/backup.db")
+source.backup(copy)
+copy.close()
+source.close()
 PY
-sudo systemctl start timefence     # or continue with the upgrade below
+sudo install -o root -g root -m 600 /var/lib/timefence/backup.db /root/timefence-pre-upgrade.db
+sudo rm -f /var/lib/timefence/backup.db
 ```
 
 `TIMEFENCE_SKIP_MIGRATION_BACKUP=1` skips the automatic copy (not recommended).
@@ -72,7 +73,8 @@ mode 0600 like the database.
 
 ```bash
 cd timefence-adguardhome
-git fetch --tags && git checkout v0.5.0
+git fetch --tags
+git checkout <the release tag you are upgrading to>
 sudo ./install.sh                              # idempotent, keeps config and data
 sudo journalctl -u timefence -n 50 --no-pager
 ```
@@ -91,18 +93,24 @@ docker compose logs -f timefence
 ```
 
 The image entry point is unchanged in this release; `:latest` moves with the
-release, so pin `:0.5.0` (or a digest) if you want controlled upgrades.
+release, so pin the version you upgrade to (or a digest) if you want controlled
+upgrades.
 
 ### Rollback
 
 1. Stop the new version (`sudo systemctl stop timefence` or
    `docker compose stop timefence`).
-2. Restore the database you saved before the upgrade, or the automatic
-   `timefence.db.pre-v5.bak`, over `/var/lib/timefence/timefence.db` and keep
-   it at mode 0600 and owner `timefence`.
-3. Go back to the previous version: `git checkout v0.4.0 && sudo ./install.sh`
-   (or `docker compose up -d` with the 0.4.0 tag). 0.4.0 reads a v4 database;
-   restoring `timefence.db.pre-v5.bak` first is what makes that possible.
+2. Restore the pre-upgrade backup — your own copy or the automatic
+   `timefence.db.pre-v5.bak` — and drop stale write-ahead files:
+
+   ```bash
+   sudo install -o timefence -g timefence -m 600 \
+     /root/timefence-pre-upgrade.db /var/lib/timefence/timefence.db
+   sudo rm -f /var/lib/timefence/timefence.db-wal /var/lib/timefence/timefence.db-shm
+   ```
+
+3. Run the release you had before (for example the 0.4.x tag or image you were
+   on) and start it. A v4 release reads the restored v4 database.
 
 A database from a newer schema is refused on start instead of being silently
 corrupted — that is why the copy matters. Anything that happened after the
@@ -134,35 +142,39 @@ schema v4 and the Docker defaults changed. Read this before you upgrade.
 
 ### Backup first
 
-The upgrade writes its own backup (`timefence.db.pre-v4.bak` next to the
-database, and the migration verifies it before touching anything), but take your
-own copy as well:
+The upgrade writes its own backup (the copy is named after the schema it
+reaches, `timefence.db.pre-v4.bak` for a 0.3 → 0.4 run, and the migration
+verifies it before touching anything), but take your own copy as well:
 
 ```bash
-sudo systemctl stop timefence
 sudo -u timefence python3 - <<'PY'
 import sqlite3
-src = sqlite3.connect("/var/lib/timefence/timefence.db")
-dst = sqlite3.connect("/root/timefence-pre-0.4.db")
-src.backup(dst)
-dst.close()
+
+source = sqlite3.connect("/var/lib/timefence/timefence.db")
+copy = sqlite3.connect("/var/lib/timefence/backup.db")
+source.backup(copy)
+copy.close()
+source.close()
 PY
-sudo systemctl start timefence     # or continue with the upgrade below
+sudo install -o root -g root -m 600 /var/lib/timefence/backup.db /root/timefence-pre-upgrade.db
+sudo rm -f /var/lib/timefence/backup.db
 ```
 
 ### Script install
 
 ```bash
 cd timefence-adguardhome
-git fetch --tags && git checkout v0.4.0
+git fetch --tags
+git checkout <the release tag you are upgrading to>
 sudo ./install.sh                              # idempotent, keeps config and data
 sudo journalctl -u timefence -n 50 --no-pager
 ```
 
 `install.sh` reinstalls the package into the existing venv from
-`requirements.lock`, keeps `/etc/timefence/timefence.env` (mode 600) and never
-touches the database. Schema changes are applied by the built-in migration on
-start (`PRAGMA user_version`); a failure leaves the previous schema intact.
+`requirements.lock` (hash-checked) and keeps `/etc/timefence/timefence.env`
+(mode 600). It never touches the database. Schema changes are applied by the
+built-in migration on start (`PRAGMA user_version`); a failure leaves the
+previous schema intact.
 
 ### Docker
 
@@ -182,11 +194,12 @@ Two defaults changed in the image: `LISTEN_HOST=127.0.0.1` and
 - With bridge networking every client looks like the Docker gateway address;
   set `TRUSTED_PROXIES` (and a proxy that sends `X-Forwarded-For`) or use host
   networking, otherwise a burst of failed sign-ins locks the household out for
-  15 minutes.
+  15 minutes. The gateway is usually the `.1` address of the network, for
+  example `TRUSTED_PROXIES: 172.18.0.1/32`.
 - The health check now reports `503` when TimeFence cannot sync with AdGuard.
   Do not auto-restart on it — restarting TimeFence does not fix AdGuard.
-- `:latest` moves with every release; pin `:0.4.0` (or a digest) if you want
-  controlled upgrades.
+- `:latest` moves with every release; pin the version you upgrade to (or a
+  digest) if you want controlled upgrades.
 
 ### Rollback
 
@@ -197,16 +210,16 @@ Two defaults changed in the image: `LISTEN_HOST=127.0.0.1` and
    ```
 
 2. Restore the database you saved before the upgrade (or the automatic
-   `timefence.db.pre-v4.bak`) over `/var/lib/timefence/timefence.db`:
+   `timefence.db.pre-v4.bak`) and drop stale write-ahead files:
 
    ```bash
-   sudo cp /root/timefence-pre-0.4.db /var/lib/timefence/timefence.db
-   sudo chown timefence:timefence /var/lib/timefence/timefence.db
-   sudo chmod 600 /var/lib/timefence/timefence.db
+   sudo install -o timefence -g timefence -m 600 \
+     /root/timefence-pre-upgrade.db /var/lib/timefence/timefence.db
+   sudo rm -f /var/lib/timefence/timefence.db-wal /var/lib/timefence/timefence.db-shm
    ```
 
-3. Go back to the previous version (`git checkout v0.3.0 && sudo ./install.sh`,
-   or `docker compose up -d` with the previous tag) and start it.
+3. Run the release you had before (for example the 0.3.x tag or image you were
+   on) and start it.
 
 A database from a newer schema is refused on start instead of being silently
 corrupted — that is why the backup matters. Anything that happened *after* the
@@ -216,6 +229,7 @@ upgrade (usage, edits, accounts) is lost by the rollback.
 
 | TimeFence | AdGuard Home | Python |
 |---|---|---|
+| 0.5.x | 0.107.x (control API v1) | 3.12 or newer |
 | 0.4.x | 0.107.x (control API v1) | 3.12 |
 | 0.3.x | 0.107.x (control API v1) | 3.12 |
 | 0.1.x – 0.2.x | 0.107.x (control API v1) | 3.12 |

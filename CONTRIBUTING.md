@@ -65,6 +65,6 @@ Emergency bypass: `SKIP_HOOKS=1 git push`.
 
 1. Bump `version` in `pyproject.toml` and `src/timefence/__init__.py`.
 2. Update `CHANGELOG.md` and, for anything owners must do, `docs/upgrading.md`.
-3. `git tag v0.4.0 && git push origin main --tags` — CI publishes the
+3. `git tag v<version> && git push origin main --tags` — CI publishes the
    multi-arch image to `ghcr.io/sbhas2k/timefence-adguardhome`.
 4. Point the deployment at the new tag; `:latest` moves with the release.

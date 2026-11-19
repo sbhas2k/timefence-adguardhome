@@ -16,8 +16,9 @@ that intent.
 - **group_windows** — 0..4 bedtime windows per group: start and end as minutes
   after local midnight, and the days they apply to (`all`, `weekday`,
   `weekend`).
-- **alerts_sent** — one row per notification already sent, so a restart does not
-  resend it. Reserved by schema v5; nothing writes it yet.
+- **alerts_sent** — one row per notification, reserved before delivery so a
+  restart does not resend it and the hourly limit can be counted (a failed
+  delivery keeps its row). Pruned after 14 days.
 - **users** — username, role (`admin`/`user`), Argon2id hash, `disabled`,
   `session_epoch`. The epoch is bumped whenever existing cookies must stop
   working.
@@ -125,7 +126,8 @@ few buckets that are not "watching".
 
 ## Who sees what
 
-Each group has an optional `owner` (a user account). Admins see and manage every
+Each group has an optional `owner` (a user account); deleting the account clears
+the owner and leaves the group in place, shared with everybody. Admins see and manage every
 group; a `user` sees the groups they own plus the shared ones, on a dedicated
 read-only screen, and the server refuses every mutating `/api/*` call from a
 `user` session with `403 read_only`. The user state payload is reduced to time
@@ -216,13 +218,15 @@ Each reconcile run calls a cheap **alert probe** after metering and before the
 AdGuard phases. It takes the store lock once, builds the per-group facts,
 classifies the events and enqueues them; its own errors are logged once and
 never touch the run result or the event log. Delivery happens in a separate
-daemon thread, so no request, reconcile run or shutdown waits for it.
+daemon thread, so no request or reconcile run waits for it. Shutdown stops the
+worker and joins it (up to 2.5 s) before it blocks the groups and closes the
+database, because the worker writes its bookkeeping through the same lock.
 
 | event | fires | default | de-duplicated by |
 |---|---|---|---|
-| `group_low` | `0 < remaining ≤ 10 min` | on | `low:<group>:<local day>` |
+| `group_low` | `0 < remaining ≤ 10 min` and the group is allowed (not free) | on | `low:<group>:<local day>` |
 | `group_exhausted` | the run that reaches 0 minutes | on | `ex:<group>:<local day>` |
-| `bedtime_started` | the first run inside a bedtime window | off | `bedtime:<group>:<local day>` |
+| `bedtime_started` | the first run inside a bedtime window | off | `bedtime:<group>:<window end>`, so a window that crosses midnight fires once |
 | `sync_failing` | three runs in a row without a successful AdGuard sync | on | the outage start |
 | `sync_recovered` | the first run after that outage | on | the outage start |
 | `weekly_summary` | Monday, local 08:00 or later | off | `weekly:<local Monday>` |
@@ -246,7 +250,10 @@ daemon thread, so no request, reconcile run or shutdown waits for it.
   the incoming class (or the newcomer). Drops increment a counter that survives
   restarts and is shown in the alert settings.
 - One attempt, no retry, no redirects; the queue holds 50 messages; the response
-  body is never logged. Test messages go through the same limits.
+  body is never logged, and a delivery is abandoned after a hard 5 s
+  wall-clock deadline. The **Test** button sends one message directly, outside
+  the queue and the hourly limit, with the same transport rules; only one test
+  runs at a time (`429 busy` otherwise).
 - Webhooks receive JSON with `event`, `time` (ISO-8601 with the local offset)
   and `message`, plus `group`/`minutes_left`, `group`, `outage_seconds` or
   `days`/`groups` depending on the event. ntfy receives a plain-text body with

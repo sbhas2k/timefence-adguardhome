@@ -25,7 +25,7 @@ Start the development server (it uses a temporary database and a fake AdGuard
 Home, so it is safe to click around):
 
 ```bash
-python scripts/dev_server.py        # http://127.0.0.1:8099, TZ defaults to the host
+TZ=Europe/London python scripts/dev_server.py   # http://127.0.0.1:8099; TZ=UTC when unset
 ```
 
 Add accounts and sample groups, then capture at 390×844 (phone) and 1280×800

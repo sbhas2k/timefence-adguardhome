@@ -4,8 +4,8 @@
 
 | version | supported |
 |---|---|
-| 0.4.x | yes |
-| ≤ 0.3.x | no (upgrade; see [upgrading.md](docs/upgrading.md)) |
+| 0.5.x | yes |
+| ≤ 0.4.x | no (upgrade; see [upgrading.md](docs/upgrading.md)) |
 
 ## Reporting a vulnerability
 
@@ -31,23 +31,25 @@ is **not** hardened against a hostile multi-tenant deployment.
   live in SQLite and plaintext exists only in the environment file you create.
   Admin passwords need ≥ 10 characters and must not be `admin`; `user`
   passwords need ≥ 8 characters.
-- **First run.** A fresh database gets `admin` / `admin`, and every API call
-  except login/setup/logout is refused until an admin completes setup. The
-  default-login hint disappears once setup is done, and completing setup
-  disables any admin account still using the default password.
+- **First run.** A fresh database gets `admin` / `admin`, and every API call is
+  refused with `403 setup_required` until an admin completes setup, except
+  login, setup, logout, `/api/meta` (version and setup flag for the page) and
+  `/api/i18n` (the UI strings). A `user` account cannot sign in before setup is
+  complete, even with a valid password. The default-login hint disappears once
+  setup is done, and completing setup disables any admin account still using the
+  default password.
 - **Sessions.** Signed cookies (itsdangerous), `HttpOnly`, `SameSite=Lax`,
   `Secure` by default, path `BASE_PATH`. The cookie names the account *and* the
-  account's current `session_epoch`; disabling, deleting, demoting, renaming or
+  account's current `session_epoch`; disabling, deleting, demoting or
   password-changing an account bumps the epoch, so every existing cookie for it
   stops working on the next request. Changing your own password re-issues your
   cookie in the same response; `/api/setup` does the same for the caller. The
   check is skipped only for `/static/` and `/healthz`, which never read or write
   account state.
-- **Logout limitation.** Logout clears the cookie in your browser; it does not
-  revoke a copy of the token someone already holds. The token stays valid until
-  the account's epoch changes (password change, role change, disable, delete,
-  or `timefence passwd`). If you suspect a token leaked, change that account's
-  password.
+- **Logout revokes.** Logout bumps the account's `session_epoch` before clearing
+  the cookie, so it ends every session of that account, on every device and for
+  any copy of the token. A `user` account can log itself out; it cannot log out
+  anyone else.
 - **Lockout vs. attacks.** Sign-in is JSON-only (`415` otherwise) and counted
   twice: 5 failures per account+address and 20 per address in 15 minutes. The
   attempt that reaches a limit is the one that gets `429`. Lockout is in memory,
@@ -89,12 +91,20 @@ is **not** hardened against a hostile multi-tenant deployment.
   on purpose** — a self-hosted ntfy on `192.168.x.x` is the normal setup — so
   the app is not an SSRF boundary. Redirects are never followed; the HTTP
   session ignores environment proxies (`trust_env=False`); there is no retry.
-  The connect timeout is 3 s and the read timeout 2 s *per socket operation*,
-  not a hard total deadline, so a slow-dripping server can hold the single alert
-  worker longer; the queue is bounded and the reconciler is independent. At most
-  1 KiB of the response body is read and it is never logged, stored or returned;
-  failures leave the sender only as a category (`dns`, `connect`, `timeout`,
-  `http_<status>`, `config`).
+  Each delivery has a **hard 5-second wall-clock deadline** (the request runs on
+  a helper thread that is abandoned when the deadline passes), and within it the
+  connect timeout is 3 s and the read timeout 2 s per socket operation — a
+  trickling server can no longer hold the single alert worker. The queue is
+  bounded and the reconciler is independent. At most 1 KiB of the response body
+  is read and it is never logged, stored or returned; failures leave the sender
+  only as a category (`dns`, `connect`, `timeout`, `http_<status>`, `config`).
+- **Alert targets reach anything the app can.** The webhook/ntfy target is
+  admin-supplied and is fetched from the TimeFence host, so an admin can point it
+  at loopback, the LAN or a cloud metadata address. The **Test** button
+  (`POST /api/alerts/test`, admin-only, CSRF-protected) then reports only a
+  category, but that is still a blind port/status probe of the target host. Keep
+  the admin role trustworthy; there is no separate SSRF allow-list, and private
+  targets stay allowed on purpose.
 - **Alert secrets.** The ntfy topic, the optional access token and the webhook
   path are stored in plain text in SQLite (mode 0600) and therefore in every
   backup and every copy of `timefence.db` — see

@@ -56,10 +56,11 @@ untrusted hop, which is the client.
 
 ## Caddy
 
-See [`deploy/Caddyfile`](../deploy/Caddyfile). Either terminate at the root,
-or preserve the prefix with `handle /timer/*` (recommended, matches
-`BASE_PATH=/timer`). `handle_path /timer/*` strips the prefix, which only works
-with `BASE_PATH=/`.
+See [`deploy/Caddyfile`](../deploy/Caddyfile). Either terminate at the root, or
+preserve the prefix with `handle /timer/*` (`BASE_PATH=/timer`). Do **not** use
+`handle_path`: it strips the prefix, while the app emits absolute `/static`,
+`/api` and `/login` URLs under `BASE_PATH`, so a stripped request reaches
+TimeFence at a path it does not serve.
 
 ## Cookies and HTTPS
 
@@ -67,5 +68,8 @@ Session cookies are `Secure` by default. For plain-HTTP development set
 `SECURE_COOKIES=false` (never in production). The login page shows a note when
 it is opened over plain HTTP, and after a successful sign-in over HTTP without
 HTTPS the browser silently drops the cookie — the page then says the cookie was
-not stored instead of looping. The cookie path is `BASE_PATH`, so TimeFence and
-another app on the same hostname cannot see each other's session.
+not stored instead of looping. The cookie path is `BASE_PATH`, so under a
+sub-path (`/timer`) TimeFence and another app on the same hostname cannot see
+each other's session. At the root the cookie path is `/`, so both apps share the
+hostname's cookie namespace — session values are signed and name-bound, so a
+sibling app still cannot forge or read one.

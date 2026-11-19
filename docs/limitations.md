@@ -97,12 +97,15 @@ domains, client addresses or usernames — so treat it as a nudge, not a log.
 Delivery runs in one background thread with a bounded queue (50): while a slow
 server holds it, newer messages are dropped (the oldest of the same kind first)
 and the drop counter in the alert settings goes up. Redirects are not followed,
-environment proxies are ignored, and the timeouts are per socket operation (3 s
+environment proxies are ignored, each delivery is abandoned after 5 s in total,
+and the socket timeouts are 3 s to connect and 2 s per read
 connect, 2 s read), not a hard total deadline. Private/LAN targets are allowed
 on purpose, because a self-hosted ntfy is the normal setup.
 
 "AdGuard unreachable" needs three reconcile runs in a row without a successful
-sync (three times `RECONCILE_INTERVAL`, 90 s by default); any success in between
+sync. A run counts as stale only once the last success is older than three
+intervals, so with the default 30 s interval the earliest message is about
+150 s (2.5 minutes) after the outage starts, not 90 s; any success in between
 resets it, so a flapping connection may never alert. A clock that jumps
 backwards can suppress a duplicate message and a jump forwards can skip a day;
 both are accepted for a household tool. The topic, token and webhook path are

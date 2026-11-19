@@ -3,14 +3,9 @@ timefence.example.com {
     reverse_proxy 127.0.0.1:8099
 }
 
-# TimeFence at a sub-path (BASE_PATH=/timer)
-#
-# handle_path strips the prefix, so keep BASE_PATH=/ when using it:
-#   handle_path /timer/* {
-#       reverse_proxy 127.0.0.1:8099
-#   }
-#
-# Or preserve the prefix (BASE_PATH=/timer, recommended, matches the docs):
+# TimeFence at a sub-path (BASE_PATH=/timer). Keep the prefix: the app emits
+# absolute /static, /api and /login URLs under BASE_PATH, so handle_path (which
+# strips it) does not work.
 #   handle /timer/* {
 #       reverse_proxy 127.0.0.1:8099
 #   }

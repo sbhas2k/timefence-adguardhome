@@ -4,6 +4,67 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `.dockerignore`, so the build context no longer carries `.env`, `.venv` or
+  local-only files; GitHub issue templates (bug report and feature request).
+- The release workflow now runs lint and the test suite before it publishes an
+  image (`needs: test`).
+
+### Changed
+
+- **Logout ends every session of the account.** It bumps the account's session
+  epoch before clearing the cookie, so a copied cookie stops working, and every
+  device is signed out with one click.
+- **Alert delivery has a hard 5-second deadline.** A server that trickles its
+  response can no longer hold the alert worker; the outcome is the existing
+  `timeout` category.
+- **Deleting a user account keeps their groups.** The groups stay (and become
+  shared) instead of keeping a dangling owner.
+- **A bedtime alert fires once per night.** The de-duplication key names the
+  window's end, so a window that crosses midnight no longer sends a second
+  message after 00:00.
+- **No "budget low" message during a free window.** The warning is reserved for
+  a group that is actually spending its minutes.
+- **Stricter admin input.** `services` and `domains` must be lists (`400`
+  instead of a server error), a group name over 60 characters is refused on
+  update as well as create, and a service icon is only accepted when it is plain
+  base64 (escaped in the page as well).
+- **Sign-in bodies are capped.** A login request over 16 KiB is refused with
+  `413` before it is parsed; other JSON bodies are bounded at 1 MiB.
+- **`timefence passwd` checks the stored role.** `--role` must match the
+  account's role, and the password rules are applied to that role.
+- **The installer treats its environment file as data.** `install.sh` parses
+  `KEY=VALUE` lines instead of sourcing the file (a password with spaces, `$` or
+  backticks is just a value), quotes every value it writes, installs from
+  `requirements.lock` with `--require-hashes` before the package with
+  `--no-deps`, and probes `${BASE_PATH}/healthz`.
+- **The DDNS helper records every address it adds** (`added` in its state
+  directory), removes all of them except the current one, and keeps a partly
+  added address for the next run to clean up. The guide's first rules carry the
+  helper's comment and seed its state.
+- **The image drops its own `/etc/localtime` and `/etc/timezone`**, so a host
+  mount arrives as a regular file and the content match can name the zone; with
+  no mount the app falls back to UTC and says so.
+- **Compose files wait 45 s for a clean stop** (`stop_grace_period`), and their
+  headers point at the Docker guide with the loopback URL.
+
+### Fixed
+
+- `timefence` reads a quoted environment value with its backslash escapes, so a
+  password containing a quote or a backslash round-trips instead of keeping the
+  escapes.
+- Docs: backup and restore recipes now produce and consume the copy as the
+  service user with SQLite's online backup and remove stale `-wal`/`-shm`
+  files; the upgrade guide no longer points at unpublished tags or images; the
+  compatibility table has a 0.5.x row; the reverse-proxy guide no longer
+  suggests `handle_path`, and the cookie-path note is limited to sub-paths; the
+  bridge-network lockout note names the gateway CIDR for `TRUSTED_PROXIES`; the
+  outage alert's real minimum (~150 s) and the dev server's UTC default are
+  stated.
+
 ## [0.5.2] - 2026-11-18
 
 ### Changed
@@ -72,10 +133,11 @@ and the project uses [Semantic Versioning](https://semver.org/).
   step is plain DDL, so `timefence passwd` can upgrade a v4 database without
   starting the server.
 - **One verified backup per upgrade.** A `migrate()` call now writes exactly one
-  verified copy before its first schema change, named
-  `timefence.db.pre-v<schema>.bak` for the highest schema it reaches
-  (`pre-v5.bak` for 0.4 → 0.5, `pre-v4.bak` for a 0.3 → 0.4 run). A fresh
-  install writes none; `TIMEFENCE_SKIP_MIGRATION_BACKUP=1` still skips it.
+  verified copy before its first schema change, named after the highest schema
+  it reaches: this build writes `timefence.db.pre-v5.bak` for any database older
+  than v5, so a 0.3 → 0.5 run gets the same `pre-v5` copy as 0.4 → 0.5 (the 0.4
+  release, whose highest step was v4, wrote `pre-v4.bak`). A fresh install writes
+  none; `TIMEFENCE_SKIP_MIGRATION_BACKUP=1` still skips it.
 - **The default-password check runs once per schema version.** If an admin
   account still uses `admin`, first-run setup is required again after the
   upgrade.

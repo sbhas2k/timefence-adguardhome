@@ -8,17 +8,27 @@ The image keeps the app on loopback (`LISTEN_HOST=127.0.0.1`) and cookies
 `LISTEN_HOST: 0.0.0.0` (the example compose file sets it, with the published
 port still bound to `127.0.0.1`).
 
+The image has **no** `/etc/localtime` and no `/etc/timezone` of its own (the
+Dockerfile removes the base image's), so a host mount always arrives as a
+regular file instead of a symlink to the image's `Etc/UTC`.
+
 ## A. Everything in one compose project (bridge network)
 
 Use the root [`docker-compose.yml`](../docker-compose.yml). TimeFence talks to
-`http://adguardhome:3000` over the compose network (AdGuard itself runs with
-host networking for port 53) and publishes `127.0.0.1:8099` on the host.
+`http://host.docker.internal:3000` (`extra_hosts: host.docker.internal:host-gateway`)
+because AdGuard itself runs with host networking for port 53, and publishes
+`127.0.0.1:8099` on the host.
 
 > ⚠️ **Bridge networking and the login lockout.** With bridge networking
-> TimeFence sees every client as the Docker gateway address. Without
-> `TRUSTED_PROXIES` and a proxy that sends `X-Forwarded-For`, 20 failed sign-ins
-> from any device lock sign-in for the whole household for 15 minutes. Put a
-> reverse proxy in front with `TRUSTED_PROXIES` set, or use host networking.
+> TimeFence sees every client as the Docker gateway address, so both limits —
+> 5 failures per account and 20 per address — count the whole household
+> together. Put a reverse proxy
+> on the host in front of `127.0.0.1:8099` and set `TRUSTED_PROXIES` to the
+> gateway address the container sees (the `.1` of its network, e.g.
+> `TRUSTED_PROXIES: 172.18.0.1/32`; find it with `docker network inspect`),
+> so the proxy's `X-Forwarded-For` is believed. Do **not** set the gateway
+> address without such a proxy: nothing would overwrite the header and a client
+> could pick its own address. Host networking avoids the problem entirely.
 
 ## B. AdGuard Home already runs on the host (host networking)
 
@@ -28,10 +38,16 @@ Run TimeFence with host networking:
 
 ```bash
 cp deploy/docker-compose.host.yml docker-compose.yml
+sudo install -d -m 755 /etc/timefence
 printf '%s' "$ADGUARD_PASSWORD" | sudo tee /etc/timefence/adguard.pass >/dev/null
-sudo chmod 640 /etc/timefence/adguard.pass          # readable by the container user
+sudo chown root:10001 /etc/timefence/adguard.pass   # the image's uid
+sudo chmod 640 /etc/timefence/adguard.pass          # group 10001 can read it
 docker compose up -d
 ```
+
+The directory is `755` so the container can traverse it; the file is `640` and
+owned by `root:10001`, the user the image runs as. If you run the container with
+`user: "1000:1000"` instead, use that group (`chown root:1000`).
 
 `deploy/docker-compose.host.yml` sets:
 
@@ -42,7 +58,7 @@ docker compose up -d
 - `/data` as a named volume (or bind-mount an existing data directory to keep
   history when migrating from a systemd install);
 - `journald` logging, so `journalctl CONTAINER_NAME=timefence` works;
-- `stop_grace_period: 20s`, because a clean stop blocks every managed group and
+- `stop_grace_period: 45s`, because a clean stop blocks every managed group and
   that takes a few seconds.
 
 ### Migrating a systemd install to this container
@@ -94,9 +110,10 @@ upstreams, cache settings) lives in those two directories, so it comes along.
   `timefence release` removes the managed rules section and the services
   TimeFence took over, and keeps everything else. It prints what it removed.
 - **Upgrade** with `docker compose pull && docker compose up -d`; the schema
-  upgrade writes one verified copy named `timefence.db.pre-v<schema>.bak` next
-  to the database before it changes anything (`pre-v5.bak` for 0.4 → 0.5, and a
-  fresh install writes none). See [upgrading.md](upgrading.md).
+  upgrade writes one verified copy next to the database before it changes
+  anything. The copy is named after the schema it reaches, so any database older
+  than v5 gets `timefence.db.pre-v5.bak`; a fresh install writes none. See
+  [upgrading.md](upgrading.md).
 - **Remove**: `docker compose rm -sf timefence`, then delete the volume.
 
 ## Gotchas
@@ -112,11 +129,12 @@ upstreams, cache settings) lives in those two directories, so it comes along.
     - /etc/timezone:/etc/timezone:ro   # optional
   ```
 
-  Without either, the container falls back to UTC and the admin banner says so.
-  The image installs the tz database, so IANA names resolve inside it.
+  Without either, the container has no zone file at all and falls back to UTC;
+  the admin banner says so. The image installs the tz database, so IANA names
+  resolve inside it.
 
-  `/etc/localtime` **alone is enough**: Docker turns the host's symlink into a
-  regular file inside the container, and TimeFence identifies the zone by
+  `/etc/localtime` **alone is enough**: because the image removed its own copy,
+  the mount lands as a regular file, and TimeFence identifies the zone by
   matching that file's bytes against the image's zone database (it prefers the
   canonical names listed in `zone1970.tab`). Mounting `/etc/timezone` as well is
   a bonus for hosts that have it (Debian/Ubuntu); hosts that do not (RHEL,

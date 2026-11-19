@@ -84,13 +84,15 @@ regenerate it are in [`docs/screenshots/`](docs/screenshots/).
 ```bash
 git clone https://github.com/sbhas2k/timefence-adguardhome.git
 cd timefence-adguardhome
-cp .env.example .env          # set ADGUARD_PASSWORD or ADGUARD_PASSWORD_FILE
-printf 'your-adguard-admin-password' > adguard_password.txt   # or use a secret
+printf 'your-adguard-admin-password' > adguard_password.txt   # or mount a secret
 docker compose up -d
 ```
 
 The example compose file runs `adguard/adguardhome` (host network, needs port
-53) and TimeFence on `127.0.0.1:8099`.
+53) and TimeFence on `127.0.0.1:8099`; it reads the password from
+`adguard_password.txt` below, so no `.env` file is involved. `.env.example` is
+for local runs (`uvicorn timefence.main:app` or `timefence serve`), which read a
+`.env` from the working directory.
 
 ### Script (systemd + venv)
 
@@ -273,8 +275,7 @@ groups.
 
 ## Roadmap
 
-- Per-device budgets and a 7-day usage export
-- Notifications (e.g. "5 minutes left")
+- Per-device budgets (quotas per client address rather than per group)
 - YouTube restricted mode as an alternative to blocking
 - Pi-hole support
 - Multiple AdGuard instances
