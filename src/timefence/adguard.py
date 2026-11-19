@@ -29,6 +29,17 @@ class AdGuardError(RuntimeError):
     """Any failure talking to AdGuard Home."""
 
 
+class AdGuardAuthError(AdGuardError):
+    """AdGuard Home rejected the credentials (HTTP 401 or 403).
+
+    Its own type because repeating the call makes things worse: AdGuard Home
+    counts failed authentications per address and stops answering for minutes.
+    """
+
+
+AUTH_STATUSES = frozenset({401, 403})
+
+
 class AdGuardClient:
     def __init__(
         self,
@@ -51,6 +62,8 @@ class AdGuardClient:
             resp = self.session.request(method, f"{self.url}{path}", auth=self.auth, **kwargs)
         except requests.RequestException as exc:
             raise AdGuardError(f"{method} {path}: {exc}") from exc
+        if resp.status_code in AUTH_STATUSES:
+            raise AdGuardAuthError(f"{method} {path}: AdGuard Home rejected the credentials")
         if resp.status_code >= 400:
             raise AdGuardError(f"{method} {path}: HTTP {resp.status_code} {resp.text[:200]}")
         if not resp.content:

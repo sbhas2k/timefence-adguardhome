@@ -167,11 +167,17 @@ class StubServer:
         outer = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - the base class names it
+                self._answer(b"")
+
             def do_POST(self) -> None:  # noqa: N802 - the base class names it
                 length = int(self.headers.get("Content-Length") or 0)
                 payload = self.rfile.read(length) if length else b""
                 if outer.delay:
                     time.sleep(outer.delay)
+                self._answer(payload)
+
+            def _answer(self, payload: bytes) -> None:
                 outer.requests.append(
                     {"path": self.path, "headers": dict(self.headers), "body": payload}
                 )

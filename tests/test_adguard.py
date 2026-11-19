@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from timefence.adguard import AdGuardClient, AdGuardError
+from timefence.adguard import AdGuardAuthError, AdGuardClient, AdGuardError
 from timefence.discover import parse_time
+
+from .fakes import StubServer
 
 
 class StubResponse:
@@ -35,6 +37,18 @@ def test_non_json_response_raises_adguard_error():
         client.user_rules()
     with pytest.raises(AdGuardError, match="unexpected response"):
         client.all_services()
+
+
+def test_a_rejected_credential_is_its_own_error():
+    # the real server answers 401 with an empty body, for a wrong password and
+    # also while its brute-force lock is active
+    for status in (401, 403):
+        with StubServer(status=status, body=b"") as stub:
+            client = AdGuardClient(stub.url, "admin", "wrong")
+            with pytest.raises(AdGuardAuthError) as caught:
+                client.blocked_services()
+        assert isinstance(caught.value, AdGuardError)
+        assert "credentials" in str(caught.value)
 
 
 class PagingClient(AdGuardClient):
