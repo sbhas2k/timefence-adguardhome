@@ -112,7 +112,7 @@ def test_cli_passwd(tmp_path):
             "timefence",
             "passwd",
             "--role",
-            "user",
+            "admin",
             "--data-dir",
             str(tmp_path),
         ],
@@ -125,6 +125,29 @@ def test_cli_passwd(tmp_path):
     conn = db.connect(path)
     stored = conn.execute("SELECT hash FROM users WHERE username='admin'").fetchone()[0]
     assert security.verify_secret(stored, "new-password-123")
+    conn.close()
+
+
+def test_reset_refuses_a_role_that_does_not_match_the_row(tmp_path):
+    path = tmp_path / "timefence.db"
+    conn = db.connect(path)
+    db.migrate(conn)
+    conn.execute(
+        "INSERT INTO users(username, role, hash, created_at, updated_at) "
+        "VALUES('kid','user',?,0,0)",
+        (security.hash_secret("kid-password"),),
+    )
+    conn.commit()
+    conn.close()
+
+    # an admin reset aimed at a user row is refused, not silently applied
+    with pytest.raises(credentials.CredentialError, match="role"):
+        credentials.reset(tmp_path, "admin", "brand new password", username="kid")
+    # and the stored rules decide the length: eight characters are fine for a user
+    credentials.reset(tmp_path, "user", "eightchr", username="kid")
+    conn = db.connect(path)
+    stored = conn.execute("SELECT hash FROM users WHERE username='kid'").fetchone()[0]
+    assert security.verify_secret(stored, "eightchr")
     conn.close()
 
 

@@ -73,9 +73,6 @@ def reset(data_dir: str | Path, role: str, secret: str, username: str = "admin")
     """Set a new password offline (service may be running; SQLite handles it)."""
     if role not in ROLES:
         raise CredentialError(f"role must be one of {', '.join(ROLES)}")
-    problem = validate(role, secret)
-    if problem:
-        raise CredentialError(problem)
     path = db_path_for(data_dir)
     if not path.exists():
         raise CredentialError(f"database not found: {path}")
@@ -86,10 +83,18 @@ def reset(data_dir: str | Path, role: str, secret: str, username: str = "admin")
         except db.DataMigrationRequired as exc:
             raise CredentialError(str(exc)) from exc
         row = conn.execute(
-            "SELECT id FROM users WHERE username = ? COLLATE NOCASE", (username,)
+            "SELECT id, role FROM users WHERE username = ? COLLATE NOCASE", (username,)
         ).fetchone()
         if not row:
             raise CredentialError(f"no account called {username!r}")
+        stored_role = str(row["role"])
+        if stored_role != role:
+            raise CredentialError(
+                f"{username!r} is a {stored_role} account; --role {role} does not match it"
+            )
+        problem = validate(stored_role, secret)
+        if problem:
+            raise CredentialError(problem)
         store_password(conn, row["id"], security.hash_secret(secret))
         conn.commit()
     finally:
