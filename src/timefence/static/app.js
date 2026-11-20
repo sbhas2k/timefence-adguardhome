@@ -952,13 +952,22 @@
     return false;
   }
 
-  function alertReason(category) {
+  function alertReason(category, channel) {
     var text = String(category || "");
+    var via = String(channel || "");
+    if (text.indexOf("http_") === 0) {
+      if (via === "telegram") {
+        if (text === "http_401") { return t("alerts.reason_telegram_token"); }
+        if (text === "http_400" || text === "http_403" || text === "http_404") {
+          return t("alerts.reason_telegram_delivery");
+        }
+      }
+      return t("alerts.reason_http");
+    }
     if (text === "dns" || text === "connect") { return t("alerts.reason_connect"); }
     if (text === "timeout") { return t("alerts.reason_timeout"); }
     if (text === "config") { return t("alerts.reason_config"); }
     if (text === "rate_limited") { return t("alerts.reason_limited"); }
-    if (text.indexOf("http_") === 0) { return t("alerts.reason_http"); }
     return t("alerts.reason_other");
   }
 
@@ -968,7 +977,7 @@
       return t("alerts.result_ok", { time: clock(data.last_result_ts) });
     }
     return t("alerts.result_failed", {
-      reason: alertReason(data.last_result),
+      reason: alertReason(data.last_result, data.channel),
       time: clock(data.last_result_ts)
     });
   }
@@ -979,6 +988,12 @@
     var channel = data.channel || "";
     $("#alerts-channel").value = channel;
     $("#alerts-enabled").checked = data.enabled !== false;
+    $("#alerts-telegram-token").placeholder = data.telegram.token_tail
+      ? t("alerts.saved_tail", { tail: data.telegram.token_tail })
+      : t("alerts.telegram_token");
+    $("#alerts-telegram-chat").placeholder = data.telegram.chat_tail
+      ? t("alerts.saved_tail", { tail: data.telegram.chat_tail })
+      : t("alerts.telegram_chat");
     $("#alerts-ntfy-base").placeholder = data.ntfy.base_host || "https://ntfy.sh";
     $("#alerts-ntfy-topic").placeholder = data.ntfy.topic_tail
       ? t("alerts.saved_tail", { tail: data.ntfy.topic_tail })
@@ -994,12 +1009,16 @@
     $$("#alerts-events input[data-event]").forEach(function (box) {
       box.checked = Boolean(data.events && data.events[box.dataset.event]);
     });
+    $("#alerts-telegram").classList.toggle("hidden", channel !== "telegram");
     $("#alerts-ntfy").classList.toggle("hidden", channel !== "ntfy");
     $("#alerts-webhook").classList.toggle("hidden", channel !== "webhook");
     $$("[data-action='clear-secret']").forEach(function (button) {
-      var configured = button.dataset.secret === "ntfy_token"
-        ? Boolean(data.ntfy.token_configured)
-        : Boolean(data.webhook.host);
+      var secret = button.dataset.secret;
+      var configured = {
+        telegram_token: Boolean(data.telegram.token_tail),
+        ntfy_token: Boolean(data.ntfy.token_configured),
+        webhook_url: Boolean(data.webhook.host)
+      }[secret];
       button.classList.toggle("hidden", !configured);
     });
     var needsToken = channel === "ntfy" && !data.ntfy.token_configured &&
@@ -1026,6 +1045,8 @@
       payload.events[box.dataset.event] = box.checked;
     });
     [
+      ["telegram_token", "#alerts-telegram-token"],
+      ["telegram_chat", "#alerts-telegram-chat"],
       ["ntfy_base", "#alerts-ntfy-base"],
       ["ntfy_topic", "#alerts-ntfy-topic"],
       ["ntfy_token", "#alerts-ntfy-token"],
@@ -1256,14 +1277,21 @@
     alertsForm.addEventListener("submit", function (event) {
       event.preventDefault();
       api("PUT", "/api/alerts", alertsPayload()).then(function (data) {
-        ["#alerts-ntfy-base", "#alerts-ntfy-topic", "#alerts-ntfy-token", "#alerts-webhook-url"]
-          .forEach(function (selector) { var input = $(selector); if (input) { input.value = ""; } });
+        [
+          "#alerts-telegram-token",
+          "#alerts-telegram-chat",
+          "#alerts-ntfy-base",
+          "#alerts-ntfy-topic",
+          "#alerts-ntfy-token",
+          "#alerts-webhook-url"
+        ].forEach(function (selector) { var input = $(selector); if (input) { input.value = ""; } });
         paintAlerts(data);
         toast(t("common.saved"));
       }).catch(function (error) { toast(error.message); });
     });
     var channelSelect = $("#alerts-channel");
     channelSelect.addEventListener("change", function () {
+      $("#alerts-telegram").classList.toggle("hidden", channelSelect.value !== "telegram");
       $("#alerts-ntfy").classList.toggle("hidden", channelSelect.value !== "ntfy");
       $("#alerts-webhook").classList.toggle("hidden", channelSelect.value !== "webhook");
     });
@@ -1273,7 +1301,11 @@
         var payload = {};
         payload[secret] = "";
         api("PUT", "/api/alerts", payload).then(function (data) {
-          var input = secret === "ntfy_token" ? $("#alerts-ntfy-token") : $("#alerts-webhook-url");
+          var input = $({
+            telegram_token: "#alerts-telegram-token",
+            ntfy_token: "#alerts-ntfy-token",
+            webhook_url: "#alerts-webhook-url"
+          }[secret]);
           if (input) { input.value = ""; }
           paintAlerts(data);
           toast(t("common.saved"));
@@ -1284,9 +1316,10 @@
     alertsTest.addEventListener("click", function () {
       alertsTest.disabled = true;
       api("POST", "/api/alerts/test", {}).then(function (data) {
+        var channel = alertsConfig ? alertsConfig.channel : "";
         $("#alerts-result").textContent = data.ok
           ? t("alerts.test_ok")
-          : t("alerts.test_failed", { reason: alertReason(data.category) });
+          : t("alerts.test_failed", { reason: alertReason(data.category, channel) });
       }).catch(function (error) {
         $("#alerts-result").textContent = error.message;
       }).then(function () { alertsTest.disabled = false; });

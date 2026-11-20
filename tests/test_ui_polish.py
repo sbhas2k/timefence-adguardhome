@@ -140,3 +140,56 @@ def test_the_banner_explains_rejected_credentials():
     assert '"error.adguard_auth"' in app_js
     assert 'state.adguard_error_kind === "auth"' in app_js
     assert i18n.t("error.adguard_auth", seconds=30) != "error.adguard_auth"
+
+
+def test_telegram_fields_are_masked_and_listed_first():
+    html = read("templates", "app.html")
+    js = read("static", "app.js")
+
+    # the dropdown offers Telegram first, then ntfy, then the webhook
+    assert html.index('value="telegram"') < html.index('value="ntfy"')
+    assert html.index('value="ntfy"') < html.index('value="webhook"')
+
+    token = next(
+        line for line in html.splitlines() if "alerts-telegram-token" in line and "<input" in line
+    )
+    assert 'type="password"' in token
+    assert 'autocomplete="new-password"' in token
+    chat = next(
+        line for line in html.splitlines() if "alerts-telegram-chat" in line and "<input" in line
+    )
+    assert 'type="text"' in chat
+    assert 'inputmode="numeric"' in chat
+    assert 'data-secret="telegram_token"' in html
+    assert 'id="alerts-telegram"' in html
+    assert 't("alerts.telegram_help")' in html
+
+    # never the stored value, only a two-character tail
+    assert 't("alerts.saved_tail", { tail: data.telegram.token_tail })' in js
+    assert 't("alerts.saved_tail", { tail: data.telegram.chat_tail })' in js
+    assert '["telegram_token", "#alerts-telegram-token"]' in js
+    assert '["telegram_chat", "#alerts-telegram-chat"]' in js
+    # the payload carries tails only, never a stored value
+    assert not re.search(r"data\.telegram\.token(?!\w)", js)
+    assert not re.search(r"data\.telegram\.chat(?!\w)", js)
+
+    for key in (
+        "alerts.channel_telegram",
+        "alerts.telegram_token",
+        "alerts.telegram_chat",
+        "alerts.telegram_help",
+        "alerts.clear_telegram_token",
+    ):
+        assert i18n.t(key) != key, key
+
+
+def test_telegram_failures_get_their_own_sentences():
+    js = read("static", "app.js")
+    assert 'via === "telegram"' in js
+    assert 'if (text === "http_401") { return t("alerts.reason_telegram_token"); }' in js
+    for status in ('"http_400"', '"http_403"', '"http_404"'):
+        assert status in js, status
+    assert 't("alerts.reason_telegram_delivery")' in js
+    assert "alertReason(data.last_result, data.channel)" in js
+    for key in ("alerts.reason_telegram_token", "alerts.reason_telegram_delivery"):
+        assert i18n.t(key) != key, key
