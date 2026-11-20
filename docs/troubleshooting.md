@@ -32,7 +32,7 @@ Some apps and TV boxes ignore the DNS server they were given and talk to a
 hardcoded resolver, or use DNS-over-HTTPS to a provider over port 443. DNS-level
 blocking cannot see or stop that.
 
-- Google TV / Android TV and a few game launchers are known for this.
+- Some smart TVs, streaming boxes and game launchers are reported to do this.
 - Router options: block the device's traffic to the public DoH/DoT endpoints
   (port 853, and 443 to the resolver's hostnames), or block the whole MAC
   address at the times you want the device offline.
