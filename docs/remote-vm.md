@@ -1,5 +1,8 @@
 # Running TimeFence on a remote VM
 
+New to this? [Deploy on a VM, step by step](vm-deploy.md) walks through the whole
+setup in order. This page is the reference behind it.
+
 This guide is for the shape "AdGuard Home (and TimeFence) on a VM with a public
 address, used by a home network whose public address changes". The VM resolves
 for the household, so it must accept DNS from the internet — but only from the
@@ -98,6 +101,14 @@ enables DDNS (at the router, or through the ISP or a DDNS provider) and keeps a
 hostname like `ddns.example.org` up to date; the VM re-resolves that name every
 five minutes and rewrites only the port-53 rules.
 
+Check first that DDNS can work: the router's WAN address must be the public one
+(compare it with a "what is my IP" site). A WAN address in `100.64.0.0/10` or a
+private range means the ISP uses carrier-grade NAT, and no hostname can point at
+you; the helper refuses such an address (exit 2) rather than open the firewall to
+it. If the router has no DDNS client, run a small updater on any always-on home
+device; [vm-deploy.md](vm-deploy.md#3-give-the-house-a-stable-name-ddns) has an
+example.
+
 Keep the DDNS TTL short (**60–300 s**). A long TTL means a stale address is
 handed out after a change, and the helper keeps a rule for an address the
 household no longer uses.
@@ -169,8 +180,13 @@ new one exists.
   allow-list above covers **IPv4 only** — an IPv6 home connection needs its own
   rules (and IPv6 is also the most common reason a block does not land; see
   [Troubleshooting](troubleshooting.md)).
-- **Do not add a second public DNS server** on the router as a "backup". Devices
-  spread queries over both, so half the blocking silently disappears.
+- **Do not add a second public DNS server** (Google, Cloudflare, the ISP's) on the
+  router or a device as a "backup". Devices do not treat it as a spare: many send
+  queries to both, and all of them switch to it when the first one does not
+  answer, for example right after the home address changes and before the
+  allow-list catches up. Every lookup that reaches it gets the real answer, so
+  the block silently stops working. Give devices one DNS server, the VM (the same
+  address twice if a field must be filled).
 - **The VM is now part of your household's DNS.** Patch it, and keep the
   TimeFence and AdGuard UIs on loopback.
 
