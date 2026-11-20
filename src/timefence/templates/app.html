@@ -87,11 +87,24 @@
           <label for="alerts-channel">{{ t("alerts.channel") }}</label>
           <select id="alerts-channel">
             <option value="">{{ t("alerts.channel_none") }}</option>
+            <option value="telegram">{{ t("alerts.channel_telegram") }}</option>
             <option value="ntfy">{{ t("alerts.channel_ntfy") }}</option>
             <option value="webhook">{{ t("alerts.channel_webhook") }}</option>
           </select>
         </div>
         <label class="check"><input type="checkbox" id="alerts-enabled"> {{ t("alerts.enabled") }}</label>
+      </div>
+      <div id="alerts-telegram" class="stack hidden">
+        <div>
+          <label for="alerts-telegram-token">{{ t("alerts.telegram_token") }}</label>
+          <input type="password" id="alerts-telegram-token" placeholder="{{ t('alerts.telegram_token') }}" autocomplete="new-password">
+          <button type="button" class="btn ghost hidden mt" data-action="clear-secret" data-secret="telegram_token" aria-label="{{ t('alerts.clear_telegram_token') }}">{{ t("alerts.clear") }}</button>
+        </div>
+        <div>
+          <label for="alerts-telegram-chat">{{ t("alerts.telegram_chat") }}</label>
+          <input type="text" id="alerts-telegram-chat" placeholder="{{ t('alerts.telegram_chat') }}" inputmode="numeric" autocomplete="off" spellcheck="false">
+        </div>
+        <p class="sub">{{ t("alerts.telegram_help") }}</p>
       </div>
       <div id="alerts-ntfy" class="stack hidden">
         <div>
