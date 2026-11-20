@@ -1078,3 +1078,20 @@ def test_a_cleared_telegram_channel_drops_the_message(store, tmp_path):
     assert worker._deliver_message(a_message()) is True
     with store as conn:
         assert db.get_setting(conn, "alerts.last_result", "") == ""
+
+
+def test_telegram_ignores_a_hand_edited_token(store, tmp_path):
+    """Only write_config stores these values; a tampered row must not build a URL."""
+    settings = settings_for(tmp_path)
+    with store as conn:
+        for key, value in (
+            ("alerts.channel", "telegram"),
+            ("alerts.telegram_token", "12345:ok?x=https://evil.example"),
+            ("alerts.telegram_chat", CHAT),
+        ):
+            db.set_setting(conn, key, value)
+    with store as conn:
+        assert alerts._target_for(alerts.read_config(conn)) is None
+        shown = alerts.public_config(conn, 0)
+    assert shown["telegram"]["configured"] is True  # both fields hold text
+    assert alerts.send_test(store, settings) == "config"
