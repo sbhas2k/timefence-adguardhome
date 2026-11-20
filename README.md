@@ -26,7 +26,7 @@ regenerate it are in [`docs/screenshots/`](docs/screenshots/).
 
 <img src="docs/screenshots/bedtime-editor-390.png" width="390" alt="Group editor on a phone, showing the bedtime windows">
 
-<img src="docs/screenshots/alerts-1280.png" alt="Settings, Alerts card: one ntfy or webhook channel and the event toggles">
+<img src="docs/screenshots/alerts-1280.png" alt="Settings, Alerts card: one alert channel (Telegram, ntfy or webhook) and the event toggles">
 
 <img src="docs/screenshots/history-1280.png" alt="History tab: minutes used per group over the last 7 days (7, 14 or 30 selectable) and the CSV download">
 
@@ -54,11 +54,12 @@ regenerate it are in [`docs/screenshots/`](docs/screenshots/).
   card, plus `Block now`, `Allow freely until HH:MM`, pause and `Reset today`.
   Every action is applied once (double taps are ignored while in flight) and
   confirmed with a toast.
-- **Alerts when it matters.** One ntfy topic or one webhook (no accounts, no
-  third-party service): "10 minutes left", "budget used up", an optional bedtime
-  notice, an optional Monday summary, and a warning when AdGuard Home stops
-  answering plus a recovery message. Messages carry a group name and numbers
-  only; de-duplication and an hourly cap keep them from turning into noise.
+- **Alerts when it matters.** One Telegram bot, one ntfy topic or one webhook
+  (no accounts, no third-party service): "10 minutes left", "budget used up", an
+  optional bedtime notice, an optional Monday summary, and a warning when
+  AdGuard Home stops answering plus a recovery message. Messages carry a group
+  name and numbers only; de-duplication and an hourly cap keep them from turning
+  into noise.
 - **Reconciler** every 30 seconds: AdGuard is only written to when the desired
   state differs, and it preserves services/rules that TimeFence does not own.
 - **Admin tools**: edit minutes and targets, **Discover** recent domains from
@@ -180,6 +181,45 @@ registrable domain, hides OS/telemetry noise and already-managed domains, and
 lets you tick domains and add them to a group. See
 [docs/discover.md](docs/discover.md) for a worked example.
 
+## Alerts (Telegram, ntfy or a webhook)
+
+Settings → **Alerts** sends one message per event to a single channel: a
+Telegram bot, an ntfy topic or a generic webhook. Only a group name, numbers and
+a time are ever sent. Until a channel is set up, the Today tab shows a
+**Set up alerts** button that takes you straight to the card.
+
+### Telegram setup
+
+1. In Telegram, message [@BotFather](https://t.me/BotFather), send
+   `/newbot`, pick a name and a username ending in `bot`, and copy the token it
+   prints (it looks like `123456789:AA…`).
+2. Open your new bot and press **Start** — a bot cannot message you until you
+   have started a conversation with it.
+3. Message [@userinfobot](https://t.me/userinfobot); it replies with your
+   numeric chat id (a negative number for a group).
+4. In TimeFence: Settings → Alerts → Channel **Telegram**, paste the token and
+   the chat id, press **Save alerts**, then **Send test**.
+5. The saved token and chat id are never shown again — only their last two
+   characters. Clear the token with the **Clear** button, or pick another
+   channel; the old values stay stored but unused.
+
+If the test fails with "Telegram rejected the bot token", the token was copied
+wrong (or the bot was deleted). "Could not deliver" means the chat id is wrong
+or you have not pressed **Start** on the bot yet.
+
+### ntfy setup
+
+1. Install the ntfy app (Android, iOS) or open the [ntfy web app](https://ntfy.sh/app).
+2. Choose a topic name that is long and random — on the public `ntfy.sh`
+   anyone who guesses a topic can read the messages. Something like
+   `tf-kids-7s3k9x2q` rather than `timefence`.
+3. Subscribe to that topic in the app.
+4. In TimeFence: Settings → Alerts → Channel **ntfy**, leave the server as
+   `https://ntfy.sh` (or your own ntfy server), enter the topic, press **Save
+   alerts**, then **Send test**.
+5. On a self-hosted ntfy that needs a login, also add an access token. The card
+   warns you when the topic sits on a public server without a token.
+
 ## DNS caching and how fast a block lands
 
 AdGuard Home caches DNS answers, so a device that has just lost access may keep
@@ -231,6 +271,7 @@ docker compose stop timefence && \
 - [How it works](docs/how-it-works.md) — metering, reconciler, ownership, fail-safety
 - [Reverse proxy](docs/reverse-proxy.md) — nginx (root and sub-path), Caddy
 - [Limitations](docs/limitations.md) — what DNS-level time limits cannot do
+- [Troubleshooting](docs/troubleshooting.md) — a device that is still not blocked
 - [Discover workflow](docs/discover.md) — worked example
 - [Backup & restore](docs/backup-restore.md)
 - [Upgrading](docs/upgrading.md)
@@ -252,6 +293,10 @@ streaming on cached IPs or bypass DNS with DoH/VPN/mobile data therefore
 under-report — see [limitations](docs/limitations.md).
 
 **I forgot the admin password.** See [Recovering access](#recovering-access).
+
+**A device is still not blocked although the minutes are gone.** Almost always a
+DNS bypass — usually IPv6, sometimes an app's own resolver. See
+[Troubleshooting](docs/troubleshooting.md).
 
 **Why are my changes to AdGuard's user rules not visible?** TimeFence owns only
 the `# timefence:begin … # timefence:end` block and the services belonging to

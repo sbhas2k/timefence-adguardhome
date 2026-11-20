@@ -80,12 +80,18 @@ together and is released as one version, so this entry covers everything a
   overrides a window. AdGuard's blocked-services list is global, so a window on a
   group that owns a service takes that service away from every device for the
   window.
-- **Alerts.** One ntfy topic or one webhook under Settings → Alerts: budget low
-  (10 minutes left), budget used up, bedtime started (default off), AdGuard Home
-  unreachable and reachable again, and a weekly summary (default off, Monday
-  morning). Messages carry a group name and numbers only; de-duplication and a
-  20-per-hour cap keep them quiet, and delivery failures are reduced to a
-  category before they leave the sender.
+- **Alerts.** One Telegram bot, one ntfy topic or one webhook under Settings →
+  Alerts: budget low (10 minutes left), budget used up, bedtime started (default
+  off), AdGuard Home unreachable and reachable again, and a weekly summary
+  (default off, Monday morning). Messages carry a group name and numbers only;
+  de-duplication and a 20-per-hour cap keep them quiet, and delivery failures are
+  reduced to a category before they leave the sender. The bot token is never
+  echoed back (two-character tails only) and a delivery cannot print it. Until a
+  channel is configured, the Today tab offers a **Set up alerts** button.
+- **Troubleshooting guide** (`docs/troubleshooting.md`) for the case "the
+  minutes are gone but the device still works": IPv6 bypassing the DNS, apps
+  with their own resolver, caches, a remote VM that sees one home address, and
+  AdGuard's per-client settings.
 - **Usage summary and CSV export.** The History tab shows 7, 14 or 30 days per
   group from a dedicated endpoint (two queries regardless of groups and days)
   with metered minutes, bonus minutes and the minutes allowed that day, plus a
