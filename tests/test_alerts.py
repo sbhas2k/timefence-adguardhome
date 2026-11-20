@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import queue
 import time
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
+import requests
 from fastapi.testclient import TestClient
 
 from timefence import alerts, budget, db
@@ -873,3 +875,206 @@ def test_a_trickling_delivery_ends_as_a_timeout(deliveries):
         elapsed = time.monotonic() - started
     assert category == "timeout"
     assert elapsed < 7.5, elapsed
+
+
+# --------------------------------------------------------------------------- #
+# telegram
+# --------------------------------------------------------------------------- #
+
+TOKEN = "8471903:AAH2fake-Token_for_TESTS_0123456789ab"
+CHAT = "-1002233445566"
+
+
+def telegram_config(store, **overrides) -> None:
+    values = {"channel": "telegram", "telegram_token": TOKEN, "telegram_chat": CHAT}
+    values.update(overrides)
+    configure(store, **values)
+
+
+def telegram_target(store) -> alerts.Target:
+    """The fixed-host target the channel builds; no user URL is involved."""
+    with store as conn:
+        target = alerts._target_for(alerts.read_config(conn))
+    assert target is not None
+    assert target.channel == "telegram"
+    assert target.host == "api.telegram.org"
+    assert target.port == 443
+    assert target.url == f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    return target
+
+
+def capture_posts(monkeypatch, status: int = 200) -> list:
+    """Record the requests the sender would make; the real network is never used."""
+    calls: list[tuple[str, dict]] = []
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return _FakeResponse(status)
+
+    monkeypatch.setattr(alerts.SESSION, "post", fake_post)
+    return calls
+
+
+def test_telegram_config_is_masked_and_merged(store):
+    now = ts_utc(2026, 11, 16, 12)
+    with store as conn:
+        shown = alerts.public_config(conn, now)
+    assert shown["telegram"] == {"token_tail": "", "chat_tail": "", "configured": False}
+
+    telegram_config(store)
+    with store as conn:
+        shown = alerts.public_config(conn, now)
+    text = json.dumps(shown)
+    assert TOKEN not in text
+    assert CHAT not in text
+    assert shown["channel"] == "telegram"
+    assert shown["telegram"] == {"token_tail": "ab", "chat_tail": "66", "configured": True}
+
+    # an absent key keeps the stored value, "" clears it
+    configure(store, enabled=False)
+    with store as conn:
+        shown = alerts.public_config(conn, now)
+    assert shown["telegram"]["configured"] is True
+    assert shown["enabled"] is False
+
+    configure(store, telegram_chat="")
+    with store as conn:
+        shown = alerts.public_config(conn, now)
+    assert shown["telegram"]["chat_tail"] == ""
+    assert shown["telegram"]["configured"] is False
+    assert shown["telegram"]["token_tail"] == "ab"
+
+
+def test_telegram_config_validation(store):
+    for good in (
+        {"telegram_token": "12345:" + "a" * 30, "telegram_chat": "1"},
+        {"telegram_token": "1234567890123456:" + "A-z_0" * 10, "telegram_chat": "-1002233445566"},
+        {"telegram_token": TOKEN, "telegram_chat": "12345678901234567890"},
+    ):
+        with store as conn:
+            alerts.write_config(conn, dict(channel="telegram", **good))
+
+    for bad in (
+        {"telegram_token": "12345:short"},
+        {"telegram_token": "12345:" + "a" * 51},
+        {"telegram_token": "1234:" + "a" * 30},
+        {"telegram_token": "8471903:AAH2 fake token 0123456789abcdefgh"},
+        {"telegram_token": "8471903:AAH2fake-Token_for_TESTS_0123456789a!"},
+        {"telegram_chat": "@mychat"},
+        {"telegram_chat": "12 34"},
+        {"telegram_chat": "123456789012345678901"},
+        {"telegram_chat": "-"},
+        {"telegram_chat": "abc"},
+        {"telegram_chat": "1.5"},
+    ):
+        with store as conn, pytest.raises(budget.ValidationError):
+            alerts.write_config(conn, dict(channel="telegram", **bad))
+
+
+def test_telegram_request_shape(deliveries, store, monkeypatch):
+    telegram_config(store)
+    target = telegram_target(store)
+    calls = capture_posts(monkeypatch)
+
+    assert alerts._deliver(target, a_message()) == "ok"
+    assert alerts._deliver(target, a_message("group_exhausted", key="ex:1")) == "ok"
+
+    url, kwargs = calls[0]
+    assert url == f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    assert kwargs["allow_redirects"] is False
+    assert kwargs["timeout"] == (3, 2)
+    assert kwargs["headers"] == {"Content-Type": "application/json"}
+    body = json.loads(kwargs["data"])
+    assert body == {
+        "chat_id": CHAT,
+        "text": alerts.message_text(a_message()),
+        "disable_notification": True,
+    }
+    assert "Игры" in body["text"]
+    assert TOKEN not in json.dumps(body)  # the token only travels in the URL path
+    assert json.loads(calls[1][1]["data"])["disable_notification"] is False
+
+
+def test_telegram_delivery_categories(deliveries, store, monkeypatch):
+    telegram_config(store)
+    target = telegram_target(store)
+    for status, expected in (
+        (200, "ok"),
+        (400, "http_400"),
+        (401, "http_401"),
+        (403, "http_403"),
+        (404, "http_404"),
+        (302, "http_3xx"),
+        (500, "http_500"),
+    ):
+        capture_posts(monkeypatch, status)
+        assert alerts._deliver(target, a_message()) == expected, status
+
+
+def test_telegram_transport_failures_are_categories(deliveries, store, monkeypatch):
+    telegram_config(store)
+    target = telegram_target(store)
+
+    def timeout(url, **kwargs):
+        raise requests.exceptions.Timeout()
+
+    def refused(url, **kwargs):
+        raise requests.exceptions.ConnectionError()
+
+    monkeypatch.setattr(alerts.SESSION, "post", timeout)
+    assert alerts._deliver(target, a_message()) == "timeout"
+    monkeypatch.setattr(alerts.SESSION, "post", refused)
+    assert alerts._deliver(target, a_message()) == "connect"
+
+
+def test_telegram_secrets_never_reach_any_log(store, tmp_path, monkeypatch, caplog, deliveries):
+    settings = settings_for(tmp_path)
+    telegram_config(store)
+    seen: list[str] = []
+
+    def fake_post(url, **kwargs):
+        # what the transport would print at DEBUG if nothing silenced it
+        logging.getLogger("urllib3.connectionpool").debug(
+            "Starting new HTTPS connection: POST %s", url
+        )
+        seen.append(url)
+        return _FakeResponse()
+
+    monkeypatch.setattr(alerts.SESSION, "post", fake_post)
+    with caplog.at_level("DEBUG"):
+        assert alerts.send_test(store, settings) == "ok"
+
+    assert seen and TOKEN in seen[0]  # the URL really carries the token
+    assert TOKEN not in caplog.text
+    assert CHAT not in caplog.text
+    assert "sendMessage" not in caplog.text
+    assert logging.getLogger("urllib3").getEffectiveLevel() == logging.WARNING
+
+
+def test_telegram_needs_a_token_and_a_chat(store, tmp_path, monkeypatch, deliveries):
+    settings = settings_for(tmp_path)
+    configure(store, channel="telegram", telegram_token=TOKEN)
+    assert alerts.send_test(store, settings) == "config"
+    with store as conn:
+        assert alerts._target_for(alerts.read_config(conn)) is None
+
+    configure(store, telegram_chat=CHAT)
+    calls = capture_posts(monkeypatch)
+    assert alerts.send_test(store, settings) == "ok"
+    assert len(calls) == 1
+    assert calls[0][1]["headers"] == {"Content-Type": "application/json"}
+    with store as conn:
+        assert db.get_setting(conn, "alerts.last_result") == "ok"
+
+
+def test_a_cleared_telegram_channel_drops_the_message(store, tmp_path):
+    settings = settings_for(tmp_path)
+    telegram_config(store)
+    worker = alerts.AlertWorker(store, settings)
+    telegram_config(store)
+    configure(store, channel="")
+
+    # the guard fixture would raise here if the worker tried to send anything
+    assert worker._deliver_message(a_message()) is True
+    with store as conn:
+        assert db.get_setting(conn, "alerts.last_result", "") == ""

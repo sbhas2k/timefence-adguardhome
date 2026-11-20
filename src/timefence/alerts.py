@@ -1,9 +1,9 @@
-"""Outbound alerts: one ntfy or webhook channel, delivered by one worker.
+"""Outbound alerts: one Telegram, ntfy or webhook channel, one worker.
 
 The worker never blocks a request, a reconcile run or shutdown, and it never
 lets a transport problem escape as an exception. Failures leave this module only
-as a short category, and no URL, path, topic or token is ever logged or read
-back through the API.
+as a short category, and no URL, path, topic, token or chat id is ever logged or
+read back through the API.
 """
 
 from __future__ import annotations
@@ -30,6 +30,9 @@ import requests
 from . import budget, db, i18n
 
 log = logging.getLogger("timefence.alerts")
+# urllib3 logs the request line at DEBUG, and a Telegram token or a webhook
+# secret lives in that path. The transport must never print it.
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 EVENT_NAMES = (
     "group_low",
@@ -40,7 +43,7 @@ EVENT_NAMES = (
     "weekly_summary",
 )
 DEFAULT_OFF = frozenset({"bedtime_started", "weekly_summary"})
-CHANNELS = ("ntfy", "webhook")
+CHANNELS = ("telegram", "ntfy", "webhook")
 LOW_SECONDS = 600
 HOURLY_LIMIT = 20
 QUEUE_SIZE = 50
@@ -53,12 +56,16 @@ TEST_LOCK = threading.Lock()
 
 TOPIC_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 HOST_RE = re.compile(r"^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")
+TELEGRAM_TOKEN_RE = re.compile(r"^[0-9]{5,16}:[A-Za-z0-9_-]{30,50}$")
+TELEGRAM_CHAT_RE = re.compile(r"^-?[0-9]{1,20}$")
 
 CHANNEL = "alerts.channel"
 ENABLED = "alerts.enabled"
 NTFY_BASE = "alerts.ntfy_base"
 NTFY_TOPIC = "alerts.ntfy_topic"
 NTFY_TOKEN = "alerts.ntfy_token"
+TELEGRAM_TOKEN = "alerts.telegram_token"
+TELEGRAM_CHAT = "alerts.telegram_chat"
 WEBHOOK_URL = "alerts.webhook_url"
 EVENT_PREFIX = "alerts.event."
 OUTAGE = "alerts.outage_started_at"
@@ -103,6 +110,7 @@ class Target:
     host: str = ""
     port: int | None = None
     token: str = ""
+    chat: str = ""  # telegram only; it travels in the JSON body, never the URL
 
 
 @dataclass(frozen=True)
@@ -186,6 +194,10 @@ def read_config(conn: sqlite3.Connection) -> dict:
             "topic": rows.get(NTFY_TOPIC) or "",
             "token": rows.get(NTFY_TOKEN) or "",
         },
+        "telegram": {
+            "token": rows.get(TELEGRAM_TOKEN) or "",
+            "chat": rows.get(TELEGRAM_CHAT) or "",
+        },
         "webhook": rows.get(WEBHOOK_URL) or "",
     }
 
@@ -215,6 +227,16 @@ def write_config(conn: sqlite3.Connection, data: dict) -> None:
         if raw and any(ord(character) < 33 or ord(character) > 126 for character in raw):
             raise budget.ValidationError("the token must be printable ASCII")
         updates[NTFY_TOKEN] = raw
+    if "telegram_token" in data:
+        raw = str(data.get("telegram_token") or "").strip()
+        if raw and not TELEGRAM_TOKEN_RE.match(raw):
+            raise budget.ValidationError("the bot token is not a Telegram bot token")
+        updates[TELEGRAM_TOKEN] = raw
+    if "telegram_chat" in data:
+        raw = str(data.get("telegram_chat") or "").strip()
+        if raw and not TELEGRAM_CHAT_RE.match(raw):
+            raise budget.ValidationError("the chat id must be a number")
+        updates[TELEGRAM_CHAT] = raw
     if "webhook_url" in data:
         raw = str(data.get("webhook_url") or "").strip()
         if raw:
@@ -349,6 +371,11 @@ def public_config(conn: sqlite3.Connection, now: int) -> dict:
             "topic_tail": _tail(topic),
             "token_configured": bool(config["ntfy"]["token"]),
         },
+        "telegram": {
+            "token_tail": _tail(config["telegram"]["token"]),
+            "chat_tail": _tail(config["telegram"]["chat"]),
+            "configured": bool(config["telegram"]["token"] and config["telegram"]["chat"]),
+        },
         "webhook": {"host": _host_display(config["webhook"]), "path_tail": _tail(path)},
         "sent_last_hour": len(keys),
         "dropped_last_hour": len(_recent_drops(conn, now)),
@@ -426,6 +453,19 @@ def _target_for(config: dict) -> Target | None:
             base = (config["ntfy"]["base"] or DEFAULT_NTFY_BASE).rstrip("/")
             target = parse_target(f"{base}/{quote(topic, safe='')}")
             return replace(target, channel="ntfy", token=config["ntfy"]["token"])
+        if config["channel"] == "telegram":
+            token = config["telegram"]["token"]
+            chat = config["telegram"]["chat"]
+            if not token or not chat:
+                return None
+            # A fixed host and a fixed path: no admin-supplied URL is involved.
+            return Target(
+                url=f"https://api.telegram.org/bot{token}/sendMessage",
+                channel="telegram",
+                host="api.telegram.org",
+                port=443,
+                chat=chat,
+            )
         if config["channel"] == "webhook":
             url = config["webhook"]
             if not url:
@@ -467,6 +507,17 @@ def _request_parts(target: Target, message: Message) -> tuple[bytes, dict[str, s
     """The body and headers for one message, whatever the channel."""
     if target.channel == "ntfy":
         return message_text(message).encode("utf-8"), _headers_for(target, message)
+    if target.channel == "telegram":
+        body = json.dumps(
+            {
+                "chat_id": target.chat,
+                "text": message_text(message),
+                "disable_notification": PRIORITY.get(message.event, "default")
+                in {"low", "default"},
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        return body, {"Content-Type": "application/json"}
     body = json.dumps(webhook_payload(message), ensure_ascii=False).encode("utf-8")
     return body, {"Content-Type": "application/json"}
 

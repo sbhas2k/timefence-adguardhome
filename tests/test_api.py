@@ -597,6 +597,57 @@ def test_alert_config_is_masked_merged_and_validated(ready):
         assert response.status_code == 400, (bad, response.text)
 
 
+def test_telegram_config_round_trip_and_role_gate(ready):
+    client = ready["client"]
+    token = "8471903:AAH2fake-Token_for_TESTS_0123456789ab"
+    chat = "-1002233445566"
+
+    response = client.put(
+        "/api/alerts",
+        json={"channel": "telegram", "telegram_token": token, "telegram_chat": chat},
+    )
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store"
+    shown = response.json()
+    text = json.dumps(shown)
+    assert token not in text
+    assert chat not in text
+    assert shown["channel"] == "telegram"
+    assert shown["telegram"] == {"token_tail": "ab", "chat_tail": "66", "configured": True}
+
+    body = client.get("/api/alerts").text
+    assert token not in body and chat not in body
+
+    # an absent key keeps the stored value, "" clears it
+    kept = client.put("/api/alerts", json={"enabled": False}).json()
+    assert kept["telegram"]["configured"] is True
+    cleared = client.put("/api/alerts", json={"telegram_chat": ""}).json()
+    assert cleared["telegram"]["configured"] is False
+    assert cleared["telegram"]["token_tail"] == "ab"
+
+    for bad in (
+        {"telegram_token": "nope"},
+        {"telegram_chat": "@someone"},
+        {"telegram_chat": "1 2"},
+    ):
+        assert client.put("/api/alerts", json=bad).status_code == 400, bad
+
+    # a kid account can neither read nor change the alert settings
+    created = client.post(
+        "/api/users", json={"username": "kid", "password": "kid-password", "role": "user"}
+    )
+    assert created.status_code == 200, created.text
+    login = client.post("/api/login", json={"username": "kid", "password": "kid-password"})
+    assert login.status_code == 200, login.text
+    kid_csrf = login.json()["csrf"]
+    assert client.get("/api/alerts").status_code == 403
+    put = client.put(
+        "/api/alerts", json={"telegram_chat": "-1"}, headers={"X-CSRF-Token": kid_csrf}
+    )
+    assert put.status_code == 403
+    assert put.json()["code"] == "read_only"
+
+
 def test_alert_test_endpoint_reports_categories(ready, deliveries):
     from timefence import alerts
 
