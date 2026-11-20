@@ -648,6 +648,26 @@ def test_telegram_config_round_trip_and_role_gate(ready):
     assert put.json()["code"] == "read_only"
 
 
+def test_the_today_tab_has_one_alerts_setup_hint(ready):
+    from timefence import i18n
+
+    client = ready["client"]
+    page = client.get("/").text
+    assert 'id="alerts-hint"' in page
+    assert i18n.t("alerts.hint") in page
+    assert i18n.t("alerts.setup") in page
+
+    # a kid account gets its own screen, so the admin hint never reaches it
+    created = client.post(
+        "/api/users", json={"username": "kid", "password": "kid-password", "role": "user"}
+    )
+    assert created.status_code == 200, created.text
+    assert login(client, "kid", "kid-password").status_code == 200
+    kid_page = client.get("/").text
+    assert "alerts-hint" not in kid_page
+    assert i18n.t("alerts.setup") not in kid_page
+
+
 def test_alert_test_endpoint_reports_categories(ready, deliveries):
     from timefence import alerts
 
