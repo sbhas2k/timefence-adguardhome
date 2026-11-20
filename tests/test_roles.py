@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime, timedelta
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -126,14 +127,16 @@ def test_user_state_is_reduced(settings, fake):
         assert set(listed[0]) == GROUP_KEYS
 
 
-def test_kid_payload_has_only_the_bedtime_state(settings, fake):
+def test_kid_payload_has_only_the_bedtime_state(settings, fake, monkeypatch):
     client = TestClient(create_app(settings, adguard=fake))
     with client:
+        # frozen at local noon: the window is fixed and the sessions are minted
+        # at the same instant, so neither depends on when the suite runs
+        fixed = datetime(2026, 11, 11, 12, 0, tzinfo=UTC).timestamp()
+        monkeypatch.setattr(time, "time", lambda: fixed)
         complete_setup(client)
         create_kid(client)
-        now = datetime.now(UTC)
-        start = (now - timedelta(minutes=5)).strftime("%H:%M")
-        end = (now + timedelta(minutes=55)).strftime("%H:%M")
+        start, end = "11:55", "12:55"
         created = client.post(
             "/api/groups",
             json={

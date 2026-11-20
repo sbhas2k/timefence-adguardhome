@@ -149,6 +149,8 @@ class FakeAdGuard(AdGuardClient):
 
 
 def make_entry(host: str, client_ip: str = "192.168.1.20", ago: int = 30) -> dict:
+    # real clock on purpose: used only for discovery windows of minutes, and no
+    # local day is compared (30 s ago is always inside a 15-minute window)
     ts = time.time() - ago
     from datetime import datetime
 

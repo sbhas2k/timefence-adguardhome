@@ -142,10 +142,12 @@ def test_usage_range_runs_exactly_two_queries(store):
 def test_usage_range_zero_fills_and_skips_deleted_groups(store):
     kept = make_group(store, "Kept")
     gone = make_group(store, "Gone")
-    add_usage(store, kept, budget.day_str(int(time.time()), TZ), 300, bonus=120)
+    # one instant for the write and the read: two calls could straddle midnight
+    now = int(time.time())
+    add_usage(store, kept, budget.day_str(now, TZ), 300, bonus=120)
     with store as conn:
         budget.delete_group(conn, gone.id)
-        rows = budget.usage_range(conn, TZ, days=7, now=int(time.time()))
+        rows = budget.usage_range(conn, TZ, days=7, now=now)
     assert {row["group"] for row in rows} == {"Kept"}
     today = rows[-1]
     assert today["group_id"] == kept.id
@@ -177,9 +179,10 @@ def test_usage_endpoint_matches_the_query_and_is_admin_only(settings):
         )
         assert created.status_code == 200, created.text
         group_id = created.json()["group"]["id"]
+        now = int(time.time())  # one instant: the write and the read must agree
         with app.state.store as conn:
             budget.add_metered_seconds(
-                conn, group_id, budget.day_str(int(time.time()), app.state.settings.zone), 900
+                conn, group_id, budget.day_str(now, app.state.settings.zone), 900
             )
         for days in ("7", "14", "30"):
             response = client.get(f"/api/usage?days={days}")
@@ -189,9 +192,7 @@ def test_usage_endpoint_matches_the_query_and_is_admin_only(settings):
             assert payload["days"] == int(days)
             assert len(payload["rows"]) == int(days)
             with app.state.store as conn:
-                expected = budget.usage_range(
-                    conn, app.state.settings.zone, int(days), int(time.time())
-                )
+                expected = budget.usage_range(conn, app.state.settings.zone, int(days), now)
             assert payload["rows"] == expected
 
         for bad in ("abc", "0", "31", "7.5", ""):

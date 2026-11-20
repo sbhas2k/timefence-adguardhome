@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+import time
+from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
@@ -302,11 +303,16 @@ def test_group_windows_round_trip_and_validation(ready, fake):
     )
 
 
-def test_status_and_permitted_agree(ready, fake):
+def test_status_and_permitted_agree(ready, fake, monkeypatch):
     client = ready["client"]
-    now = datetime.now(UTC)
-    start = (now - timedelta(minutes=5)).strftime("%H:%M")
-    end = (now + timedelta(minutes=55)).strftime("%H:%M")
+    # frozen at local noon: the window and the session are both minted against
+    # this instant, so the result does not depend on when the suite runs
+    fixed = datetime(2026, 11, 11, 12, 0, tzinfo=UTC).timestamp()
+    monkeypatch.setattr(time, "time", lambda: fixed)
+    login = client.post("/api/login", json=ADMIN2)
+    assert login.status_code == 200, login.text
+    client.headers.update({"X-CSRF-Token": login.json()["csrf"]})
+    start, end = "11:55", "12:55"
     group = make_group(client, windows=[{"start": start, "end": end, "days": "all"}])
 
     state = client.get("/api/state").json()["groups"][0]

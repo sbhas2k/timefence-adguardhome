@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from datetime import UTC
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -219,7 +219,9 @@ def test_metering_charges_time_only_when_the_group_was_queried(store, fake):
         youtube = add_group(conn, services=("youtube",), minutes=30)
         roblox = add_group(conn, name="Roblox", services=("roblox",), minutes=30)
     reconciler = Reconciler(store, fake, TZ)
-    now = int(time.time())
+    # a fixed local noon: the stale entry below stays outside the window and the
+    # fresh one stays on the same local day, whatever the suite's start hour
+    now = int(datetime(2026, 11, 13, 12, 0, tzinfo=UTC).timestamp())
 
     # first pass only sets the cursor
     reconciler.meter(now, "startup")
@@ -239,8 +241,6 @@ def test_metering_charges_time_only_when_the_group_was_queried(store, fake):
         assert budget.metered_seconds(conn, youtube.id, budget.day_str(now, TZ)) == 0
 
     # now a fresh entry inside the window
-    from datetime import datetime
-
     stamp = datetime.fromtimestamp(now + 40, UTC).strftime("%Y-%m-%dT%H:%M:%S.000000000Z")
     fake.entries = [
         {
