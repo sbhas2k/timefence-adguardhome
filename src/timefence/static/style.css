@@ -85,6 +85,7 @@ a { color: var(--accent); }
 }
 
 .card h2 { margin: 0; font-size: 17px; display: flex; align-items: center; gap: 8px; }
+#alerts-card { scroll-margin-top: 96px; }
 .card .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
 
 .pill {

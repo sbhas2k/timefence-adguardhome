@@ -289,7 +289,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "error.adguard": "{detail}",
         "error.adguard_auth": "AdGuard Home rejected the credentials. The next attempt is in {seconds} s; check ADGUARD_USER and ADGUARD_PASSWORD.",
         "error.windows_invalid": "Check the bedtime windows: at most four, start and end as HH:MM and different, and days all, weekday or weekend.",
-        "error.alerts_invalid": "Check the alert settings: channel, URLs and event toggles.",
+        "error.alerts_invalid": "Check the alert settings: channel, Telegram bot token and chat id, URLs and event toggles.",
         "error.alerts_topic": "A topic may only contain letters, digits, dashes and underscores, 1 to 64 characters.",
         "error.usage_days": "Choose 7, 14 or 30 days.",
         "error.invalid_group": "{detail}",
