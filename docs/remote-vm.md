@@ -162,8 +162,13 @@ new one exists.
   certificate and restrict port 853 the same way — or prefer DNS-over-HTTPS to a
   provider you trust over plain DNS to your own box.
 - **NAT collapses the household into one address** from the VM's point of view.
-  Budgets stay per group, not per device; per-device budgets are a later
-  feature.
+  Every home device reaches AdGuard Home through the router's public address, so
+  the device's own `192.168.x.x` address never appears in the query log and
+  AdGuard's per-client settings cannot tell the devices apart. Budgets stay per
+  group, not per device; per-device budgets are a later feature. The
+  allow-list above covers **IPv4 only** — an IPv6 home connection needs its own
+  rules (and IPv6 is also the most common reason a block does not land; see
+  [Troubleshooting](troubleshooting.md)).
 - **Do not add a second public DNS server** on the router as a "backup". Devices
   spread queries over both, so half the blocking silently disappears.
 - **The VM is now part of your household's DNS.** Patch it, and keep the

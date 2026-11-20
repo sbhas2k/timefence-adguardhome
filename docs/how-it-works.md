@@ -220,11 +220,24 @@ AdGuard Home is unreachable; that does not help and is not recommended.
 
 ## Alerts
 
-One channel at a time: **ntfy** (a server base URL, a topic and an optional
-access token) or a generic **webhook**. The configuration lives in the settings
-table; the topic, token and webhook path are write-only through the API (reads
-return a boolean and the last two characters only). `alerts_sent` is both the
+One channel at a time: **Telegram** (a bot token and a numeric chat id),
+**ntfy** (a server base URL, a topic and an optional access token) or a generic
+**webhook**. The configuration lives in the settings table; the bot token, chat
+id, topic, token and webhook path are write-only through the API (reads return a
+boolean and the last two characters only). `alerts_sent` is both the
 de-duplication record and the rate-limit log, pruned after 14 days.
+
+Telegram is the only channel with a fixed destination: the request goes to
+`https://api.telegram.org/bot<token>/sendMessage` with a JSON body
+(`chat_id`, `text`, `disable_notification` for the low and default priorities),
+so no admin-supplied URL is parsed for it. The token travels in the request
+path, which is why the `urllib3` logger is pinned to `WARNING` at import: at
+`DEBUG` it would print the path (and with it the token, or a webhook secret).
+The same transport rules apply to every channel — no redirects, no proxy from
+the environment, one attempt, a hard 5 s deadline — and a failure leaves the
+module as a short category (`http_401` for a bad bot token, `http_400`/`403`/`404`
+for a bad chat id or a bot you never pressed Start on), never as a message or a
+traceback.
 
 Each reconcile run calls a cheap **alert probe** after metering and before the
 AdGuard phases. It takes the store lock once, builds the per-group facts,
@@ -269,8 +282,9 @@ database, because the worker writes its bookkeeping through the same lock.
 - Webhooks receive JSON with `event`, `time` (ISO-8601 with the local offset)
   and `message`, plus `group`/`minutes_left`, `group`, `outage_seconds` or
   `days`/`groups` depending on the event. ntfy receives a plain-text body with
-  `Title`, `Priority` and `Tags` headers. A message only ever contains a group
-  name, numbers and a time — never a domain, client address or username.
+  `Title`, `Priority` and `Tags` headers; Telegram receives the same message
+  text in its own JSON body. A message only ever contains a group name, numbers
+  and a time — never a domain, client address or username.
 
 ## Usage history and export
 
