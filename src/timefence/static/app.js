@@ -16,6 +16,7 @@
   var discoverData = null;
   var alertsConfig = null;
   var alertsTabLoaded = false;
+  var alertsHintLoaded = false;
   var usageDays = 7;
   var usageData = null;
   var usageLoading = false;
@@ -489,6 +490,7 @@
       loadUsers();
       if (!alertsTabLoaded) { alertsTabLoaded = true; loadAlerts(); }
     }
+    maybeLoadAlertsHint();
     alertBox();
     restoreFocus(focus);
   }
@@ -1027,6 +1029,28 @@
     warning.textContent = needsToken ? t("alerts.token_warning") : "";
     warning.classList.toggle("hidden", !needsToken);
     $("#alerts-result").textContent = alertResultText(data);
+    paintAlertsHint();
+  }
+
+  /* One calm line on the Today tab, for an admin who never opened the alerts
+     card: the config is fetched once, and never for a kid account. */
+  function paintAlertsHint() {
+    var el = $("#alerts-hint");
+    if (!el) { return; }
+    var config = alertsConfig;
+    var wanted = !config || !config.channel || config.enabled === false;
+    el.classList.toggle("hidden", !(role === "admin" && wanted));
+  }
+
+  function maybeLoadAlertsHint() {
+    if (role !== "admin" || alertsHintLoaded) { return; }
+    alertsHintLoaded = true;
+    api("GET", "/api/alerts")
+      .then(function (data) {
+        alertsConfig = data;
+        paintAlertsHint();
+      })
+      .catch(function () { alertsHintLoaded = false; });
   }
 
   function loadAlerts() {
@@ -1323,6 +1347,19 @@
       }).catch(function (error) {
         $("#alerts-result").textContent = error.message;
       }).then(function () { alertsTest.disabled = false; });
+    });
+  }
+
+  var alertsSetup = $("#alerts-setup");
+  if (alertsSetup) {
+    alertsSetup.addEventListener("click", function () {
+      tab = "settings";
+      alertsTabLoaded = false;
+      render();
+      var card = $("#alerts-card");
+      if (card && card.scrollIntoView) { card.scrollIntoView({ block: "start" }); }
+      var channel = $("#alerts-channel");
+      if (channel) { channel.focus(); }
     });
   }
 

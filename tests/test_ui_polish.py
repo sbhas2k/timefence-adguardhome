@@ -193,3 +193,27 @@ def test_telegram_failures_get_their_own_sentences():
     assert "alertReason(data.last_result, data.channel)" in js
     for key in ("alerts.reason_telegram_token", "alerts.reason_telegram_delivery"):
         assert i18n.t(key) != key, key
+
+
+def test_the_today_tab_offers_one_alerts_setup_hint():
+    html = read("templates", "app.html")
+    js = read("static", "app.js")
+
+    assert 'id="alerts-hint"' in html
+    assert 'id="alerts-setup"' in html
+    assert 'id="alerts-card"' in html
+    assert 't("alerts.hint")' in html
+    assert 't("alerts.setup")' in html
+
+    # fetched once, for admins only; a kid never asks for the config
+    assert 'if (role !== "admin" || alertsHintLoaded) { return; }' in js
+    assert "maybeLoadAlertsHint();" in js
+    # shown while there is no channel or alerts are switched off
+    assert "!config.channel || config.enabled === false" in js
+    assert "paintAlertsHint();" in js
+    # the button opens Settings and takes you to the card
+    assert 'tab = "settings";' in js
+    assert "scrollIntoView" in js
+
+    for key in ("alerts.hint", "alerts.setup"):
+        assert i18n.t(key) != key, key
