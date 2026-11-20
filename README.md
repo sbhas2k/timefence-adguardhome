@@ -235,7 +235,8 @@ TimeFence can serve a home network from a VM with a public address. Only DNS
 (port 53, TCP and UDP) should be reachable from the internet, only from the home
 connection, and the home address changes with consumer ISPs. The full guide —
 firewall rules, an SSH tunnel for the UI, and a helper that re-resolves a DDNS
-name every five minutes — is in [docs/remote-vm.md](docs/remote-vm.md).
+name every five minutes — is in [docs/remote-vm.md](docs/remote-vm.md); the order to do it in is
+[docs/vm-deploy.md](docs/vm-deploy.md).
 
 ## Recovering access
 
@@ -276,7 +277,8 @@ docker compose stop timefence && \
 - [Backup & restore](docs/backup-restore.md)
 - [Upgrading](docs/upgrading.md)
 - [Running in Docker](docs/docker.md)
-- [Running on a remote VM](docs/remote-vm.md)
+- [Deploy on a VM, step by step](docs/vm-deploy.md) — AdGuard Home + TimeFence on a VM for a home network, with DDNS
+- [Running on a remote VM](docs/remote-vm.md) — firewall rules, the DDNS allow-list helper, recovery
 
 ## FAQ
 

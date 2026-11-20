@@ -92,6 +92,10 @@ together and is released as one version, so this entry covers everything a
   minutes are gone but the device still works": IPv6 bypassing the DNS, apps
   with their own resolver, caches, a remote VM that sees one home address, and
   AdGuard's per-client settings.
+- **VM deployment guide** (`docs/vm-deploy.md`): AdGuard Home and TimeFence on a
+  VM for a home network in order (firewall, containers, DDNS, the allow-list
+  helper, closed-to-the-world check, router DNS), including why a second public
+  DNS server defeats the blocking.
 - **Usage summary and CSV export.** The History tab shows 7, 14 or 30 days per
   group from a dedicated endpoint (two queries regardless of groups and days)
   with metered minutes, bonus minutes and the minutes allowed that day, plus a
