@@ -308,6 +308,11 @@ def _default_zone() -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
+def _clock() -> int:
+    """The current time for the v4 data migration (a seam for its test)."""
+    return int(time.time())
+
+
 def _close_open_sessions(conn: sqlite3.Connection, now: int) -> int:
     """Bill elapsed time for sessions a previous run left open."""
     closed = 0
@@ -349,7 +354,7 @@ def _backfill_session_usage(conn: sqlite3.Connection, tz: ZoneInfo) -> int:
 
 def _migration_4(conn: sqlite3.Connection, tz: ZoneInfo) -> None:
     """Session mode is gone: convert groups, keep their usage, add the epoch."""
-    now = int(time.time())
+    now = _clock()
     closed = _close_open_sessions(conn, now)
     backfilled = _backfill_session_usage(conn, tz)
     converted = conn.execute("UPDATE groups SET mode = 'auto' WHERE mode <> 'auto'").rowcount

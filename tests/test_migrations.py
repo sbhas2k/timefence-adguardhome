@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import sqlite3
-import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -83,10 +82,15 @@ def test_v3_session_groups_become_auto_with_usage_backfilled(tmp_path):
     conn.close()
 
 
-def test_open_sessions_are_closed_and_billed_elapsed(tmp_path):
+@pytest.mark.parametrize("hour, minute", [(1, 1), (12, 0), (23, 59)])
+def test_open_sessions_are_closed_and_billed_elapsed(tmp_path, monkeypatch, hour, minute):
     conn = build_v3_db(tmp_path / "t.db")
     group = add_group(conn, "Open")
-    now = int(time.time())
+    # a fixed local instant that is never within an hour of midnight, so both
+    # sessions below are the same local day (with the real clock this test
+    # failed whenever the suite ran between local 00:00 and 01:00)
+    now = local_ts("2026-11-10", hour=hour) + minute * 60
+    monkeypatch.setattr(db, "_clock", lambda: now)
     add_session(conn, group, now - 600, 0, planned=900, ended=False)
     add_session(conn, group, now - 3600, 0, planned=900, ended=False)
 
@@ -103,6 +107,24 @@ def test_open_sessions_are_closed_and_billed_elapsed(tmp_path):
     assert all(row["end_reason"] == "migrated" for row in rows)
     day = datetime.fromtimestamp(rows[0]["started_at"], TZ).strftime("%Y-%m-%d")
     assert usage(conn, group, day) == 1500
+    conn.close()
+
+
+@pytest.mark.parametrize("hour, minute", [(0, 5), (0, 30), (0, 59)])
+def test_open_sessions_are_billed_to_the_day_each_one_started(tmp_path, monkeypatch, hour, minute):
+    conn = build_v3_db(tmp_path / "t.db")
+    group = add_group(conn, "Open")
+    now = local_ts("2026-11-10", hour=hour) + minute * 60
+    monkeypatch.setattr(db, "_clock", lambda: now)
+    add_session(conn, group, now - 60, 0, planned=900, ended=False)
+    add_session(conn, group, now - 3600, 0, planned=900, ended=False)
+
+    db.migrate(conn, TZ)
+
+    rows = list(conn.execute("SELECT used_seconds FROM sessions ORDER BY id"))
+    assert [row["used_seconds"] for row in rows] == [60, 900]
+    assert usage(conn, group, "2026-11-09") == 900  # the hour that started yesterday
+    assert usage(conn, group, "2026-11-10") == 60
     conn.close()
 
 
@@ -194,11 +216,15 @@ def test_failed_v4_leaves_v3_intact(tmp_path, monkeypatch):
     conn = build_v3_db(path)
     group = add_group(conn, "Sessions")
     add_session(conn, group, local_ts("2026-11-10"), 300)
-    add_session(conn, group, int(time.time()) - 600, 0, planned=900, ended=False)
+    # a fixed clock two weeks later: the open session is billed to its own day,
+    # never to the 10th, so the closed row's day cannot drift with the wall clock
+    later = local_ts("2026-11-24", hour=12)
+    add_session(conn, group, later - 600, 0, planned=900, ended=False)
+    monkeypatch.setattr(db, "_clock", lambda: later)
     conn.commit()
 
     def failing(connection, tz):
-        db._close_open_sessions(connection, int(time.time()))
+        db._close_open_sessions(connection, db._clock())
         db._backfill_session_usage(connection, tz)
         raise RuntimeError("boom")
 
