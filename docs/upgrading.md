@@ -38,7 +38,7 @@ steps below are the safe order.
   charged less than in 0.3.0, so the same daily minutes can last longer.
   Blocked answers and free-allow windows are never charged.
 - **New features, nothing to configure.** Bedtime windows per group, alerts
-  (off by default, one ntfy topic or webhook), a History tab with a CSV export,
+  (off by default; one Telegram bot, ntfy topic or webhook), a History tab with a CSV export,
   and a phone-first kid screen.
 - **The default-password check runs once per schema version.** If an admin still
   uses the default password `admin`, first-run setup is required again; change
