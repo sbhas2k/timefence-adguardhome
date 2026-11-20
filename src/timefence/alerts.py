@@ -456,7 +456,9 @@ def _target_for(config: dict) -> Target | None:
         if config["channel"] == "telegram":
             token = config["telegram"]["token"]
             chat = config["telegram"]["chat"]
-            if not token or not chat:
+            # write_config validated these; a row edited by hand must not
+            # reshape the request path, so re-check before building the URL.
+            if not (TELEGRAM_TOKEN_RE.match(token) and TELEGRAM_CHAT_RE.match(chat)):
                 return None
             # A fixed host and a fixed path: no admin-supplied URL is involved.
             return Target(
