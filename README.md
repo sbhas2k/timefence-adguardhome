@@ -218,6 +218,9 @@ ruff check src tests && ruff format --check src tests
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
+Deploying from a checkout on the host (no CI): `sudo -E ./deploy/update.sh`
+(rollback: `--rollback <version>`), see [docs/upgrading.md](docs/upgrading.md).
+
 ## License
 
 MIT — see [LICENSE](LICENSE). The bundled Public Suffix List

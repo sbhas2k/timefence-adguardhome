@@ -19,7 +19,29 @@ Back up first if you are jumping several versions:
 sudo cp /var/lib/timefence/timefence.db /root/timefence-pre-upgrade.db
 ```
 
-## Docker
+## Manual deployment on the host (no CI)
+
+If you run TimeFence from a git checkout on the same host (the setup this
+project was developed on), the whole update is one command:
+
+```bash
+cd ~/timefence-adguardhome
+sudo -E ./deploy/update.sh
+```
+
+It does: `git pull --ff-only` → read the version from `pyproject.toml` → build
+`timefence:<version>` → point `/opt/timefence-docker/compose.yaml` at it →
+`docker compose up -d` → wait for `/timer/healthz`. The previous tag is kept
+locally, so rolling back is:
+
+```bash
+sudo -E ./deploy/update.sh --rollback 0.2.1
+```
+
+Nothing is fetched from a registry, so no GitHub Actions/CI is required. The
+`pre-push` hook still lints and tests everything you push to git.
+
+## Docker (image from a registry)
 
 ```bash
 docker compose pull timefence
