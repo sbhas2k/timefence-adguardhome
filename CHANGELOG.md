@@ -70,6 +70,8 @@ together and is released as one version, so this entry covers everything a
   `MAX_CATCHUP` after downtime, and a `querylog_*` health warning set.
 - Remote VM guide (`docs/remote-vm.md`), a DDNS allow-list helper with a systemd
   timer, and `shellcheck` in CI.
+- A manual update script (`deploy/update.sh`): pull, build from the checkout,
+  restart, health-check, and `--rollback <tag>` to the image you had before.
 - `requirements.lock` with hashes, a digest-pinned base image, SHA-pinned
   actions, `pip-audit`, `gitleaks` and CodeQL CI jobs, and Dependabot
   configuration.

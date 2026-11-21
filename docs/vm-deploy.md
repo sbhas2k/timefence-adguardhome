@@ -76,9 +76,9 @@ docker compose up -d
 docker compose logs --tail 20 timefence
 ```
 
-If you build the image yourself instead of pulling a released one, run
-`docker build -t timefence:local .` and change the `image:` line of the compose
-file to `timefence:local`.
+The bundled compose files build the image from the checkout (`build:` plus
+`image: timefence:local`), so this works before any release exists. After the
+code changes, `docker compose up -d --build` rebuilds and restarts TimeFence.
 
 Open the TimeFence UI through a second tunnel and sign in as `admin` / `admin`;
 it makes you choose a new password straight away:
@@ -212,7 +212,14 @@ caches and AdGuard client settings in the order they usually apply.
   once to prove the path from the VM works. See the [README](../README.md#alerts-telegram-ntfy-or-a-webhook).
 - **Backups:** [backup-restore.md](backup-restore.md). The database holds password
   hashes and alert secrets.
-- **Upgrades:** [upgrading.md](upgrading.md).
+- **Updating:** [upgrading.md](upgrading.md#manual-update-from-a-git-checkout-no-registry-no-ci)
+  covers the manual route for the checkout on the VM: `sudo -E ./deploy/update.sh`
+  pulls, builds, restarts and waits for `/healthz`, and `--rollback <tag>` goes
+  back to an image you built earlier. Back up the data and configuration first.
+  If the clone on the VM predates a rewritten history, a diverged `git pull`
+  refuses to run; fix it with `git fetch origin && git reset --hard origin/main`
+  instead of forcing the pull, after taking that backup (local commits are
+  discarded).
 - **If DNS stops working,** set the router's DNS back to the ISP's resolvers so
   the house is online, then follow "If DNS stops working" in
   [remote-vm.md](remote-vm.md#if-dns-stops-working). Keep SSH reachable and the
