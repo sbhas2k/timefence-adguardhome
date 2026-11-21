@@ -80,7 +80,7 @@ regenerate it are in [`docs/screenshots/`](docs/screenshots/).
 
 ## Quick start
 
-### Docker (next to the official AdGuard Home image)
+### Docker (built from the checkout)
 
 ```bash
 git clone https://github.com/sbhas2k/timefence-adguardhome.git
@@ -340,6 +340,9 @@ ruff check src tests scripts && ruff format --check src tests scripts
 The runtime dependencies are pinned in `requirements.lock` (with hashes); the
 image installs from it. See [CONTRIBUTING.md](CONTRIBUTING.md) and
 [SECURITY.md](SECURITY.md).
+
+Deploying from a checkout on the host (no CI): `sudo -E ./deploy/update.sh`
+(rollback: `--rollback <version>`), see [docs/upgrading.md](docs/upgrading.md).
 
 ## License
 
