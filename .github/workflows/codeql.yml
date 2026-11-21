@@ -22,3 +22,17 @@ jobs:
         with:
           languages: python
       - uses: github/codeql-action/analyze@9418214df1f2c4b8128c770156c409013b07d6b9  # v3
+        with:
+          # Code scanning results can only be uploaded from a public repository
+          # (or one with GitHub Advanced Security). While the repository is private
+          # the scan still runs and keeps its results as a downloadable artifact.
+          upload: ${{ github.event.repository.private && 'never' || 'always' }}
+          output: sarif-results
+      - name: Keep the results while the repository is private
+        if: ${{ github.event.repository.private }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: codeql-sarif
+          path: sarif-results
+          retention-days: 14
+
