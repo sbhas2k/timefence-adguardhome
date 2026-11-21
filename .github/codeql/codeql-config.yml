@@ -1,0 +1,4 @@
+name: TimeFence CodeQL
+paths-ignore:
+  # Test assertions that look for a domain name inside a string are not shipped code.
+  - tests
