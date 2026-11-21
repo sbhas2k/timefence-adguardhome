@@ -86,7 +86,35 @@ sudo journalctl -u timefence -n 50 --no-pager
 built-in migration on start (`PRAGMA user_version`), and a failure leaves the
 previous schema intact.
 
-### Docker
+### Manual update from a git checkout (no registry, no CI)
+
+If TimeFence runs from a git checkout on the same host, `deploy/update.sh` does the
+whole update. It pulls (fast-forward only), builds `timefence:<version>` from the
+checkout, points the compose file at that tag, restarts, and waits for `/healthz`.
+Nothing is fetched from a registry.
+
+```bash
+cd timefence-adguardhome
+sudo -E ./deploy/update.sh                  # pull, build, restart, health-check
+sudo -E ./deploy/update.sh --rollback 1.0.0 # switch back to a tag you built earlier
+```
+
+It reads these environment variables (all optional):
+
+| variable | default | meaning |
+|---|---|---|
+| `COMPOSE_FILE` | `docker-compose.yml` in the checkout | the compose file that runs TimeFence; its `image:` line must read `timefence:<tag>` |
+| `BASE_PATH` | `/` | your `BASE_PATH` (for example `/timer`), used to build the health URL |
+| `LISTEN_PORT` | `8099` | the port TimeFence listens on |
+| `HEALTH_URL` | derived from the two above | override the full URL if a proxy is in the way |
+
+Take a database copy first (the recipe above); the script does not. It keeps the
+previous image tag, so a rollback restarts the old image, but the database may
+already have been migrated: restore the copy as described under *Rollback*.
+If `git pull --ff-only` refuses because the local history has diverged from the
+remote's, nothing is changed and the script stops.
+
+### Docker (image from a registry)
 
 ```bash
 docker compose pull timefence
