@@ -20,7 +20,10 @@ services:
     restart: unless-stopped
 
   timefence:
-    image: ghcr.io/sbhas2k/timefence-adguardhome:latest
+    # build from this checkout (no image is published to a registry yet);
+    # replace with  image: ghcr.io/...  if you publish one
+    build: .
+    image: timefence:local
     container_name: timefence
     environment:
       ADGUARD_URL: http://host.docker.internal:3000

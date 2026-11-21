@@ -10,7 +10,9 @@
 #   docker compose up -d
 services:
   timefence:
-    image: ghcr.io/sbhas2k/timefence-adguardhome:latest
+    # build from the repo (or set image: ghcr.io/... once you publish one)
+    build: ..
+    image: timefence:local
     container_name: timefence
     network_mode: host
     environment:

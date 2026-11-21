@@ -1,7 +1,8 @@
 # Running in Docker
 
-TimeFence ships as a small image (`ghcr.io/sbhas2k/timefence-adguardhome`) and
-works in two shapes.
+TimeFence is a small Python image. It works in two shapes. The examples build
+it from the checkout (`build: .`); if you publish an image, swap that for
+`image: ghcr.io/<you>/timefence-adguardhome:<tag>`.
 
 ## A. Everything in one compose project (bridge network)
 

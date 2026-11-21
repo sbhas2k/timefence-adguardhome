@@ -45,7 +45,7 @@ the time is up.
 
 ## Quick start
 
-### Docker (next to the official AdGuard Home image)
+### Docker (built from the checkout)
 
 ```bash
 git clone https://github.com/sbhas2k/timefence-adguardhome.git
