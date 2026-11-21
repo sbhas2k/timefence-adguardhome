@@ -124,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
         "release",
         help="lift TimeFence's blocks in AdGuard Home",
         description=(
-            "Stop TimeFence first; a running service re-applies its blocks " "within one interval."
+            "Stop TimeFence first; a running service re-applies its blocks within one interval."
         ),
     )
     release.add_argument("--env-file", default=None, help="read settings from this KEY=VALUE file")
