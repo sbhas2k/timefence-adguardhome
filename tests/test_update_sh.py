@@ -344,3 +344,20 @@ def test_a_failed_build_leaves_the_compose_file_alone(shell: str, tmp_path: Path
     assert proc.returncode != 0
     assert harness.tag() == PENDING
     assert harness.compose_calls() == []
+
+
+@pytest.mark.parametrize("args", [[], ["--rollback", "0.8.0"]])
+def test_a_compose_file_without_a_timefence_image_line_is_refused(
+    shell: str, tmp_path: Path, args: list[str]
+) -> None:
+    """Without `image: timefence:<tag>` the tag rewrite would silently do nothing."""
+    harness = Harness(shell, tmp_path)
+    original = COMPOSE.replace(f"image: timefence:{PENDING}", "image: ghcr.io/example/timefence:1")
+    harness.compose.write_text(original, encoding="utf-8", newline="\n")
+
+    proc = harness.run(*args)
+
+    assert proc.returncode == 1
+    assert "image: timefence:<tag>" in proc.stderr
+    assert harness.raw_calls() == []
+    assert harness.compose.read_text(encoding="utf-8") == original

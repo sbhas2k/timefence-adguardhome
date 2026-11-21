@@ -35,6 +35,11 @@ current_tag() {
     sed -nE 's/^[[:space:]]*image: timefence:([^[:space:]]+).*/\1/p' "$COMPOSE_FILE" | head -1
 }
 
+if [ -z "$(current_tag)" ]; then
+    echo "the compose file has no 'image: timefence:<tag>' line, so the tag cannot be switched: $COMPOSE_FILE" >&2
+    exit 1
+fi
+
 check_tag() {
     case "$1" in
         "" | *[!A-Za-z0-9._-]*)
