@@ -321,8 +321,11 @@ def test_content_match_accepts_injected_zoneinfo_dirs(tmp_path):
     ) == ("Europe/London", "system")
 
 
-def test_an_identical_alias_is_returned_when_it_is_all_there_is(tmp_path):
+def test_an_identical_alias_is_returned_when_it_is_all_there_is(tmp_path, monkeypatch):
+    # GB is a legacy name some distributions no longer ship, so a name counts as a
+    # zone when the fake tree has it, not when the host's database does.
     tree = zone_tree(tmp_path, {"GB": LONDON})
+    monkeypatch.setattr(config, "_valid_zone", lambda name: (tree / name).is_file())
     localtime = localtime_file(tmp_path, LONDON)
 
     assert detect_timezone(
@@ -333,11 +336,12 @@ def test_an_identical_alias_is_returned_when_it_is_all_there_is(tmp_path):
     ) == ("GB", "system")
 
 
-def test_reserved_zone_names_are_skipped(tmp_path):
+def test_reserved_zone_names_are_skipped(tmp_path, monkeypatch):
     tree = zone_tree(
         tmp_path,
         {"localtime": LONDON, "posixrules": LONDON, "Factory": LONDON, "GB": LONDON},
     )
+    monkeypatch.setattr(config, "_valid_zone", lambda name: (tree / name).is_file())
     localtime = localtime_file(tmp_path, LONDON)
 
     assert detect_timezone(
