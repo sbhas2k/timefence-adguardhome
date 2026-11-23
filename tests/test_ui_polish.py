@@ -356,14 +356,14 @@ def test_the_alerts_hint_is_one_slim_dismissible_banner():
     assert 'data-action="hint-dismiss"' in html
     for key in ("alerts.hint_dismiss", "alerts.hint_dismiss_label"):
         assert re.search(r"""t\(["']""" + re.escape(key) + r"""["']\)""", html), key
-    assert i18n.t("alerts.hint_dismiss") == "Hide"
+    assert i18n.t("alerts.hint_dismiss") == "✕"  # an icon; the label names it
     assert i18n.t("alerts.hint_dismiss_label") != i18n.t("alerts.hint_dismiss")
 
     css = css_text()
     hint = rule(css, ".hint")
     assert "display: flex" in hint
     assert "align-items: center" in hint
-    assert "flex-wrap: wrap" in hint
+    assert "flex-wrap: nowrap" in hint  # one row: the buttons never drop below the text
     assert "min-height: 44px" in rule(css, ".hint .btn")
 
 
