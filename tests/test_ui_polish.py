@@ -217,3 +217,39 @@ def test_the_today_tab_offers_one_alerts_setup_hint():
 
     for key in ("alerts.hint", "alerts.setup"):
         assert i18n.t(key) != key, key
+
+
+def js_function(text: str, name: str) -> str:
+    """The source of one top-level `function name(...)` in app.js."""
+    start = text.index(f"  function {name}(")
+    stop = text.find("\n  function ", start + 1)
+    return text[start : stop if stop != -1 else len(text)]
+
+
+def test_the_today_card_has_stable_header_live_and_controls_regions():
+    """The header is patched in place, so a control placed there survives a poll."""
+    js = read("static", "app.js")
+    render = js_function(js, "renderToday")
+    assert "card.appendChild(buildHeader());" in render
+    assert "paintHeader(card, group);" in render
+    assert "live.dataset.html !== liveMarkup" in render
+    assert "header.innerHTML" not in js
+
+    build = js_function(js, "buildHeader")
+    for marker in (
+        'dataset.headerEmoji = "1"',
+        'dataset.headerName = "1"',
+        'dataset.headerStatus = "1"',
+        'dataset.headerCoverage = "1"',
+    ):
+        assert marker in build, marker
+
+    paint = js_function(js, "paintHeader")
+    for token in ("textContent = group.name", 'className = "pill " + status.cls', "dataset.status"):
+        assert token in paint, token
+    assert "[data-header-status]" in paint
+
+    # the coverage line moved into the header; the live part keeps the numbers
+    live = js_function(js, "liveHtml")
+    assert "coverage(" not in live
+    assert "group.name" not in live
