@@ -852,7 +852,10 @@ def test_the_pressed_segment_follows_the_server_on_every_poll():
     assert "\n      paintMode(card, group);\n" in render
     # a pending Free panel or an edited time counts as typing, so the time box is
     # never rebuilt under the admin; a group that is merely Free does not
-    assert "Boolean(pendingFree[id]) || Boolean(freeTimeChoice[id])" in render
+    assert (
+        "Boolean(pendingFree[id]) ||" in render
+        and '(modeFor(group) === "free" && Boolean(freeTimeChoice[id]))' in render
+    )
     assert "|| openFree;" in render
 
     signature = js_function(js, "signatureFor")
@@ -922,7 +925,7 @@ def test_a_group_that_loads_already_free_still_gets_its_controls():
     assert "var built = " in block
     assert "!built ||" in block
     # a group that is merely Free is not "typing": only a pending panel or an edited time is
-    assert 'modeFor(group) === "free"' not in block
+    assert '|| modeFor(group) === "free"' not in block
     assert "freeTimeChoice[id]" in block
 
 
@@ -1090,3 +1093,32 @@ def test_the_header_reset_icon_keeps_a_44_pixel_target():
     assert "min-width: 44px" in icon
     assert "min-height: 44px" in icon
     assert "margin-left: auto" in icon
+
+
+def test_cancelling_the_free_panel_releases_the_controls():
+    """A cancelled edit must not leave the card's controls frozen for good."""
+    js = read("static", "app.js")
+    cancel = js[js.index('action === "free-cancel"') : js.index('action === "resume"')]
+    assert "delete freeTimeChoice[String(groupId)]" in cancel
+    # tapping Block or Auto abandons a half-edited Free time as well
+    mode = js[js.index('if (action === "mode")') : js.index('action === "free-apply"')]
+    assert "delete freeTimeChoice[String(groupId)]" in mode
+    # an edited time only protects the controls while the group is Free or the panel is pending
+    render = js_function(js, "renderToday")
+    assert '(modeFor(group) === "free" && Boolean(freeTimeChoice[id]))' in render
+
+
+def test_renaming_a_group_rebuilds_its_card_controls():
+    """The buttons carry the group name in their accessible names."""
+    js = read("static", "app.js")
+    assert "group.name" in js_function(js, "signatureFor")
+
+
+def test_the_free_segment_names_its_panel_and_moves_focus_into_it():
+    js = read("static", "app.js")
+    button = js_function(js, "modeButton")
+    assert 'aria-controls="free-panel-' in button
+    controls = js_function(js, "controlsHtml")
+    assert "id=\"free-panel-' + group.id" in controls
+    mode = js[js.index('if (action === "mode")') : js.index('action === "free-apply"')]
+    assert "[data-free-time=" in mode and ".focus()" in mode

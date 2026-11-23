@@ -507,7 +507,8 @@
         ? t("admin.mode_free")
         : t("admin.mode_auto");
     return '<button type="button" class="btn seg-btn" data-action="mode" data-mode="' + mode +
-      '" data-group="' + group.id + '" aria-pressed="' + (pressed ? "true" : "false") + '">' +
+      '" data-group="' + group.id + '" aria-pressed="' + (pressed ? "true" : "false") + '"' +
+      (mode === "free" ? ' aria-controls="free-panel-' + group.id + '"' : "") + ">" +
       esc(text) + "</button>";
   }
 
@@ -533,7 +534,7 @@
       modeButton(group, "free", free) +
       "</div>" +
       '<div class="row tight mt free-panel' + (open ? "" : " hidden") +
-      '" data-free-panel="' + group.id + '">' +
+      '" id="free-panel-' + group.id + '" data-free-panel="' + group.id + '">' +
       '<input type="time" data-free-time="' + group.id + '" value="' + esc(until) +
       '" aria-label="' + esc(t("admin.free_label")) + '">' +
       '<span class="muted small' + (tomorrow ? "" : " hidden") +
@@ -605,6 +606,7 @@
 
   function signatureFor(group) {
     return [
+      group.name,
       group.paused ? "paused" : "",
       modeFor(group),
       group.free_until ? String(group.free_until) : "",
@@ -664,10 +666,12 @@
 
       var controls = card.querySelector("[data-controls]");
       var input = controls.querySelector("[data-custom-bonus]");
-      /* A pending Free panel, or a time the admin edited, counts as typing: the
-         time box is never rebuilt under them, and the pressed segments are patched
-         in place anyway. A group that is merely Free is not typing. */
-      var openFree = Boolean(pendingFree[id]) || Boolean(freeTimeChoice[id]);
+      /* A pending Free panel, or a time edited in a Free group's panel, counts as
+         typing: the time box is never rebuilt under them, and the pressed segments
+         are patched in place anyway. A group that is merely Free is not typing, and
+         a time left over from a cancelled edit protects nothing. */
+      var openFree = Boolean(pendingFree[id]) ||
+        (modeFor(group) === "free" && Boolean(freeTimeChoice[id]));
       var typing = controls.contains(document.activeElement) ||
         (input && input.value !== "") || openFree;
       var signature = signatureFor(group);
@@ -1613,9 +1617,14 @@
            panel open, so a tap on it changes nothing. */
         pendingFree[String(groupId)] = group ? modeFor(group) !== "free" : false;
         paintMode(target.closest("[data-card-group]"), group);
+        /* The panel was just revealed: move into it so a keyboard or screen-reader
+           user lands on the time they have to choose. */
+        var timeBox = document.querySelector('[data-free-time="' + groupId + '"]');
+        if (pendingFree[String(groupId)] && timeBox) { timeBox.focus(); }
         return;
       }
       pendingFree[String(groupId)] = false;
+      delete freeTimeChoice[String(groupId)];
       setMode(groupId, to);
     } else if (action === "free-apply") {
       var freeInput = document.querySelector('[data-free-time="' + groupId + '"]');
@@ -1624,6 +1633,7 @@
       setMode(groupId, "free", until);
     } else if (action === "free-cancel") {
       pendingFree[String(groupId)] = false;
+      delete freeTimeChoice[String(groupId)];
       paintMode(target.closest("[data-card-group]"), group);
     } else if (action === "resume") {
       adminAction("pause", groupId, { paused: false }, t("toast.resumed", { name: name }));
