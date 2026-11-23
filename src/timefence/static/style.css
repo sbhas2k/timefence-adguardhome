@@ -111,7 +111,7 @@ a { color: var(--accent); }
 .mt { margin-top: 12px; }
 
 /* The bonus row: minus fifteen, plus fifteen and a Custom disclosure, one line. */
-.bonus-row > * { flex: 0 1 auto; min-width: 0; }
+.bonus-row > * { flex: 0 1 auto; min-width: 0; white-space: nowrap; }
 .custom-toggle .chev { display: inline-block; margin-left: 6px; }
 .custom-toggle[aria-expanded="true"] .chev { transform: rotate(180deg); }
 .bonus-panel > input[type="number"] { flex: 1 1 0; min-width: 0; }
@@ -343,4 +343,10 @@ tbody tr:last-child td { border-bottom: none; }
 @media (max-width: 390px) {
   .kid-card { padding: 14px; border-radius: 12px; }
   .kid-big { font-size: 2rem; }
+}
+
+/* A 320 px phone: three labels share one row, so they get less padding. */
+@media (max-width: 360px) {
+  .row.bonus-row > .btn { padding-left: 4px; padding-right: 4px; font-size: 13px; }
+  .custom-toggle .chev { margin-left: 3px; }
 }

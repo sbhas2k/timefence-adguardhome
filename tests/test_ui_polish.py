@@ -538,3 +538,9 @@ def test_a_busy_card_refuses_a_second_tap_without_losing_focus():
     style = rule(css, '.btn[aria-disabled="true"]')
     assert "opacity" in style
     assert "cursor: not-allowed" in style
+
+
+def test_the_bonus_row_labels_never_wrap_on_a_narrow_phone():
+    css = css_text()
+    assert "white-space: nowrap" in rule(css, ".bonus-row > *")
+    assert "max-width: 360px" in css
