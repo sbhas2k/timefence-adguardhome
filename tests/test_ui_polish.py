@@ -813,8 +813,8 @@ def test_a_paused_group_shows_one_resume_button():
 
 def test_arrow_keys_move_focus_between_the_segments_only():
     js = read("static", "app.js")
-    start = js.index("var button = event.target.closest('[data-action=\"mode\"]')")
-    handler = js[start : js.index('document.addEventListener("click"', start)]
+    start = js.index("/* Arrow keys move focus")
+    handler = js[start : start + 1100]
     for key in ('"ArrowRight"', '"ArrowLeft"', '"Home"', '"End"'):
         assert key in handler, key
     assert "event.preventDefault();" in handler
