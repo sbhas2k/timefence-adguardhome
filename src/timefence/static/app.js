@@ -239,22 +239,59 @@
   }
 
   function liveHtml(group) {
-    var status = statusFor(group);
     var total = Math.max(0, (Number(group.minutes_today) || 0) + (Number(group.bonus_minutes) || 0));
     var used = Number(group.used_minutes) || 0;
     var usedPercent = total > 0 ? Math.min(100, (used / total) * 100) : 0;
     var leftover = Math.max(0, total - used);
     var usedText = esc(t("budget.used", { used: fmtMinutes(used) }));
-    return '<h2><span aria-hidden="true">' + esc(group.emoji || "⏳") + "</span> " + esc(group.name) +
-      ' <span class="pill ' + status.cls + '" data-status="' + group.id + '">' +
-      esc(status.text) + "</span></h2>" +
-      '<div class="sub wrap-anywhere">' + esc(coverage(group)) + "</div>" +
-      '<div class="between mt"><div class="big">' + fmtMinutes(group.remaining_minutes) +
+    return '<div class="between mt"><div class="big">' + fmtMinutes(group.remaining_minutes) +
       '<span class="muted small"> ' + esc(t("common.minutes")) + "</span></div>" +
       '<div class="muted small center">' +
       esc(t("budget.left", { left: fmtMinutes(leftover), total: fmtMinutes(total) })) +
       "<br>" + usedText + "</div></div>" +
       '<progress max="100" value="' + usedPercent.toFixed(1) + '" aria-label="' + usedText + '"></progress>';
+  }
+
+  /* A card is three regions: a header that is patched in place, a live part that
+     is redrawn when its markup changes, and controls that belong to a signature.
+     Anything that has to survive a poll lives in the header or in a JS map. */
+  function buildHeader() {
+    var header = document.createElement("header");
+    header.dataset.header = "1";
+    var title = document.createElement("h2");
+    var emoji = document.createElement("span");
+    emoji.dataset.headerEmoji = "1";
+    emoji.setAttribute("aria-hidden", "true");
+    var name = document.createElement("span");
+    name.dataset.headerName = "1";
+    var status = document.createElement("span");
+    status.dataset.headerStatus = "1";
+    title.appendChild(emoji);
+    title.appendChild(document.createTextNode(" "));
+    title.appendChild(name);
+    title.appendChild(document.createTextNode(" "));
+    title.appendChild(status);
+    var line = document.createElement("div");
+    line.className = "sub wrap-anywhere";
+    line.dataset.headerCoverage = "1";
+    header.appendChild(title);
+    header.appendChild(line);
+    return header;
+  }
+
+  /* Header updates touch textContent and className only: no node is replaced,
+     so a control placed here later survives the five-second poll. */
+  function paintHeader(card, group) {
+    var header = card.querySelector("[data-header]");
+    if (!header) { return; }
+    var status = statusFor(group);
+    header.querySelector("[data-header-emoji]").textContent = group.emoji || "⏳";
+    header.querySelector("[data-header-name]").textContent = group.name;
+    header.querySelector("[data-header-coverage]").textContent = coverage(group);
+    var pill = header.querySelector("[data-header-status]");
+    pill.textContent = status.text;
+    pill.className = "pill " + status.cls;
+    pill.dataset.status = String(group.id);
   }
 
   function controlsHtml(group) {
@@ -317,6 +354,7 @@
         card = document.createElement("article");
         card.className = "card";
         card.dataset.cardGroup = id;
+        card.appendChild(buildHeader());
         var live = document.createElement("div");
         live.dataset.live = "1";
         var controls = document.createElement("div");
@@ -336,6 +374,8 @@
           container.insertBefore(card, previous ? previous.nextSibling : container.firstChild);
         }
       }
+
+      paintHeader(card, group);
 
       var live = card.querySelector("[data-live]");
       var liveMarkup = liveHtml(group);
