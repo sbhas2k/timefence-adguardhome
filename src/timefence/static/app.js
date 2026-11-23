@@ -392,6 +392,8 @@
   function buildHeader() {
     var header = document.createElement("header");
     header.dataset.header = "1";
+    var row = document.createElement("div");
+    row.className = "card-head";
     var title = document.createElement("h2");
     var emoji = document.createElement("span");
     emoji.dataset.headerEmoji = "1";
@@ -405,10 +407,23 @@
     title.appendChild(name);
     title.appendChild(document.createTextNode(" "));
     title.appendChild(status);
+    /* Reset is one icon next to the title, built once: the poll patches its
+       label and group, so the dialog's opener is never a stale node. */
+    var reset = document.createElement("button");
+    reset.type = "button";
+    reset.className = "btn card-reset";
+    reset.dataset.action = "reset";
+    reset.dataset.headerReset = "1";
+    var glyph = document.createElement("span");
+    glyph.setAttribute("aria-hidden", "true");
+    glyph.textContent = "↺";
+    reset.appendChild(glyph);
+    row.appendChild(title);
+    row.appendChild(reset);
     var line = document.createElement("div");
     line.className = "sub wrap-anywhere";
     line.dataset.headerCoverage = "1";
-    header.appendChild(title);
+    header.appendChild(row);
     header.appendChild(line);
     return header;
   }
@@ -416,8 +431,9 @@
   /* Header updates touch textContent and className only: no node is replaced,
      so a control placed here later survives the five-second poll. */
   function paintHeader(card, group) {
-    var header = card.querySelector("[data-header]");
-    if (!header) { return; }
+    var header = card ? card.querySelector("[data-header]") : null;
+    if (!header || !group) { return; }
+    var id = String(group.id);
     var status = statusFor(group);
     header.querySelector("[data-header-emoji]").textContent = group.emoji || "⏳";
     header.querySelector("[data-header-name]").textContent = group.name;
@@ -426,6 +442,9 @@
     pill.textContent = status.text;
     pill.className = "pill " + status.cls;
     pill.dataset.status = String(group.id);
+    var reset = header.querySelector("[data-header-reset]");
+    reset.dataset.group = id;
+    reset.setAttribute("aria-label", t("admin.reset_for", { name: group.name }));
   }
 
   /* One segment of the mode control: a plain button with aria-pressed, never a
@@ -498,10 +517,6 @@
       '<button class="btn primary" data-action="bonus-custom" data-group="' + group.id +
       '" aria-label="' + esc(t("admin.apply_for", { name: group.name })) + '">' +
       esc(t("admin.apply")) + "</button>" +
-      "</div>" +
-      '<div class="row tight mt">' +
-      '<button type="button" class="btn ghost" data-action="reset" data-group="' + group.id + '">' +
-      esc(t("admin.reset_today")) + "</button>" +
       "</div>";
   }
 

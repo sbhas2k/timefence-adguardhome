@@ -801,9 +801,11 @@ def test_the_controls_markup_is_balanced_and_ordered():
         allowed.index("data-free-panel="),
         allowed.index("free-note"),
         allowed.index("bonus-row"),
-        allowed.index('data-action="reset"'),
     ]
     assert order == sorted(order)
+    # the reset trigger moved into the header, so the controls carry none at all
+    for card in (allowed, free, paused):
+        assert 'data-action="reset"' not in card, card
     # a free card shows its panel open, with no Cancel, and the stored-block note
     assert 'data-free-panel="2"' in free
     assert 'class="row tight mt free-panel' in free
@@ -922,3 +924,51 @@ def test_a_group_that_loads_already_free_still_gets_its_controls():
     # a group that is merely Free is not "typing": only a pending panel or an edited time is
     assert 'modeFor(group) === "free"' not in block
     assert "freeTimeChoice[id]" in block
+
+
+# --------------------------------------- the card header: reset + coverage
+
+
+def test_the_reset_trigger_is_one_icon_button_in_the_card_header():
+    """Reset moved out of the controls into the node that survives every poll."""
+    js = read("static", "app.js")
+    build = js_function(js, "buildHeader")
+    assert 'reset.dataset.action = "reset";' in build
+    assert 'reset.type = "button";' in build
+    assert 'reset.className = "btn card-reset";' in build
+    assert 'reset.dataset.headerReset = "1";' in build
+    assert "↺" in build
+    assert 'glyph.setAttribute("aria-hidden", "true");' in build
+
+    paint = js_function(js, "paintHeader")
+    assert "reset.dataset.group = id;" in paint
+    assert 't("admin.reset_for", { name: group.name })' in paint
+    assert 'reset.setAttribute("aria-label"' in paint
+
+    # nothing of it is left in the controls, in any state
+    controls = js_function(js, "controlsHtml")
+    assert 'data-action="reset"' not in controls
+    assert 't("admin.reset_today")' not in controls
+    assert 't("admin.reset_confirm")' not in controls
+
+    # the same dialog, opened by a node the poll never replaces
+    start = js.index('} else if (action === "reset") {')
+    branch = js[start : js.index("} else if", start + 5)]
+    assert "resetGroup(groupId, name);" in branch
+    assert 'if (modal.classList.contains("hidden")) { modalOpener = document.activeElement; }' in js
+
+    assert "{name}" in i18n.STRINGS["en"]["admin.reset_for"]
+    assert i18n.STRINGS["en"]["admin.reset_for"].startswith("Reset today")
+
+
+def test_the_header_reset_icon_keeps_a_44_pixel_target():
+    css = css_text()
+    head = rule(css, ".card-head")
+    assert "display: flex" in head
+    assert "gap" in head
+    title = rule(css, ".card-head h2")
+    assert "min-width: 0" in title  # a long name wraps instead of pushing the icon away
+    icon = rule(css, ".card-reset")
+    assert "min-width: 44px" in icon
+    assert "min-height: 44px" in icon
+    assert "margin-left: auto" in icon
