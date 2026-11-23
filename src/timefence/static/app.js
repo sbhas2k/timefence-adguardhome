@@ -17,6 +17,10 @@
   var alertsConfig = null;
   var alertsTabLoaded = false;
   var alertsHintLoaded = false;
+  /* A dismissed reminder comes back after two weeks, while alerts stay off. */
+  var HINT_HIDDEN_KEY = "tf.alertsHintHiddenAt";
+  var HINT_HIDDEN_MS = 14 * 24 * 60 * 60 * 1000;
+  var hintHiddenFor = 0;  /* the same dismissal, kept for a view without storage */
   var usageDays = 7;
   var usageData = null;
   var usageLoading = false;
@@ -1167,8 +1171,37 @@
     var el = $("#alerts-hint");
     if (!el) { return; }
     var config = alertsConfig;
-    var wanted = !config || !config.channel || config.enabled === false;
+    var wanted = (!config || !config.channel || config.enabled === false) &&
+      !hintDismissed();
     el.classList.toggle("hidden", !(role === "admin" && wanted));
+  }
+
+  /* Storage can throw (private mode, blocked site data); failing only means
+     the reminder is back on the next page, never a broken Today tab. */
+  function hintHiddenAt() {
+    var at = 0;
+    try {
+      var raw = window.localStorage.getItem(HINT_HIDDEN_KEY);
+      var stored = Number(raw);
+      if (raw && isFinite(stored) && stored > 0) { at = stored; }
+    } catch (error) {
+      at = 0;
+    }
+    return Math.max(at, hintHiddenFor);
+  }
+
+  function hintDismissed() {
+    var at = hintHiddenAt();
+    return at > 0 && Date.now() - at < HINT_HIDDEN_MS;
+  }
+
+  function rememberHintDismissal() {
+    hintHiddenFor = Date.now();
+    try {
+      window.localStorage.setItem(HINT_HIDDEN_KEY, String(Date.now()));
+    } catch (error) {
+      /* no storage: the banner stays hidden for this view only */
+    }
   }
 
   function maybeLoadAlertsHint() {
@@ -1330,6 +1363,9 @@
       });
     } else if (action === "reset") {
       resetGroup(groupId, name);
+    } else if (action === "hint-dismiss") {
+      rememberHintDismissal();
+      paintAlertsHint();
     } else if (action === "free") {
       /* The displayed default can be hours old: recompute it at click time
          unless the admin picked a time themselves. */
