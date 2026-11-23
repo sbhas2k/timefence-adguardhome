@@ -750,6 +750,74 @@ def test_the_mode_derivation_and_every_transition_in_order():
     assert got["modes"] == ["", "free", "block", "auto", "auto", "auto"]
 
 
+def controls_probe_script(js: str) -> str:
+    """controlsHtml with stubs, so node can check the markup it really builds."""
+    return "".join(
+        [
+            "var pendingFree = {};",
+            "function t(key) { return key; }",
+            'function esc(value) { return String(value == null ? "" : value); }',
+            'function freeTimeValue() { return "21:00"; }',
+            "function freeTimeIsTomorrow() { return false; }",
+            js_function(js, "modeFor"),
+            js_function(js, "modeButton"),
+            js_function(js, "controlsHtml"),
+            "var cases = [",
+            '  { id: 1, name: "YouTube", paused: false, status: "allowed", force_block_until: 0 },',
+            '  { id: 2, name: "Games", paused: false, status: "free",',
+            "    force_block_until: 1999999999 },",
+            '  { id: 3, name: "Tablet", paused: true, status: "paused", force_block_until: 0 }',
+            "];",
+            "var out = cases.map(function (group) {",
+            "  var html = controlsHtml(group);",
+            "  var open = (html.match(/<div/g) || []).length;",
+            r"  var close = (html.match(/<\/div>/g) || []).length;",
+            "  return { open: open, close: close, html: html };",
+            "});",
+            "console.log(JSON.stringify(out));",
+        ]
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_the_controls_markup_is_balanced_and_ordered():
+    """Rendered with stubs: every region is closed, and the order is the ruling's."""
+    js = read("static", "app.js")
+    done = subprocess.run(
+        [shutil.which("node"), "-e", controls_probe_script(js)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    cards = json.loads(done.stdout)
+    for card in cards:
+        assert card["open"] == card["close"], card["html"]
+
+    allowed, free, paused = (card["html"] for card in cards)
+    order = [
+        allowed.index('data-action="mode"'),
+        allowed.index("data-free-panel="),
+        allowed.index("free-note"),
+        allowed.index("bonus-row"),
+        allowed.index('data-action="reset"'),
+    ]
+    assert order == sorted(order)
+    # a free card shows its panel open, with no Cancel, and the stored-block note
+    assert 'data-free-panel="2"' in free
+    assert 'class="row tight mt free-panel' in free
+    assert "free-panel hidden" not in free
+    assert 'class="btn hidden" data-action="free-cancel"' in free
+    assert 'free-note" data-free-note="2"' in free
+    assert "free-note hidden" not in free
+    # a paused card keeps one button and nothing else
+    assert 'data-action="resume"' in paused
+    assert 'data-action="mode"' not in paused
+    for token in ("bonus-row", 'data-action="reset"', "data-free-time"):
+        assert token not in paused, token
+
+
 def test_midnight_makes_the_stored_block_invisible():
     """The payload reports force_block_until 0 once it expired, so Auto is shown."""
     js = read("static", "app.js")

@@ -499,6 +499,7 @@
       '" aria-label="' + esc(t("admin.apply_for", { name: group.name })) + '">' +
       esc(t("admin.apply")) + "</button>" +
       "</div>" +
+      '<div class="row tight mt">' +
       '<button type="button" class="btn ghost" data-action="reset" data-group="' + group.id + '">' +
       esc(t("admin.reset_today")) + "</button>" +
       "</div>";
