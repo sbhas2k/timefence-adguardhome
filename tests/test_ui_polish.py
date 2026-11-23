@@ -763,6 +763,9 @@ def test_midnight_makes_the_stored_block_invisible():
 def test_the_pressed_segment_follows_the_server_on_every_poll():
     """Patched in place outside the typing guard, so an expiry flips at once."""
     js = read("static", "app.js")
+    # the three segments share data-action, so the focus key needs the mode
+    names = js[js.index("var names = [") : js.index("];", js.index("var names = ["))]
+    assert '"data-mode"' in names
     paint = js_function(js, "paintMode")
     assert "modeFor(group)" in paint
     assert 'button.dataset.mode === mode ? "true" : "false"' in paint
