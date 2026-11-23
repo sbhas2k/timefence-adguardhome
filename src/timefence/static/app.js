@@ -596,13 +596,18 @@
 
       var controls = card.querySelector("[data-controls]");
       var input = controls.querySelector("[data-custom-bonus]");
-      var typing = controls.contains(document.activeElement) || (input && input.value !== "");
+      /* An open Free panel counts as typing: its time box is never rebuilt under
+         the admin, and the pressed segments are patched in place anyway. */
+      var openFree = Boolean(pendingFree[id]) || modeFor(group) === "free";
+      var typing = controls.contains(document.activeElement) ||
+        (input && input.value !== "") || openFree;
       var signature = signatureFor(group);
       if (card.dataset.signature !== signature && !typing) {
         controls.innerHTML = controlsHtml(group);
         card.dataset.signature = signature;
       }
 
+      paintMode(card, group);
       paintCustom(card, group.id);
       refreshFreeDefault(card, group);
     });
