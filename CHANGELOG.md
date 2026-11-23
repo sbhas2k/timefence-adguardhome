@@ -139,6 +139,14 @@ together and is released as one version, so this entry covers everything a
 - **Mobile polish**: the header stays on one line at 390 px, checkbox rows and
   icon-only buttons are 44 px targets, and the Settings save buttons have
   distinct accessible names.
+- **A simpler Today card.** Each group has one Block | Auto | Free control
+  instead of a row of buttons (Free asks until when before anything changes),
+  the bonus buttons share one line with a Custom box for any number of minutes,
+  Reset is a single icon in the card header next to the group name, and a long
+  list of apps and domains collapses to "4 apps · 2 domains" until it is
+  opened. A paused group keeps only Resume. The four admin tabs stay on one row
+  on a phone, and the alerts reminder is one dismissible line that comes back
+  after two weeks while alerts stay off.
 - **Readable alert status**: the Settings card shows "Delivered at HH:MM" or a
   plain reason instead of the internal category, and a stored secret as
   "Saved (ends with ab)".
