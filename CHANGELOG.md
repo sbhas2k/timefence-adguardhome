@@ -147,6 +147,11 @@ together and is released as one version, so this entry covers everything a
   opened. A paused group keeps only Resume. The four admin tabs stay on one row
   on a phone, and the alerts reminder is one dismissible line that comes back
   after two weeks while alerts stay off.
+- **A group must block something.** Creating or saving a group with no AdGuard
+  service and no domain is refused with a clear message, and sending an empty
+  domain list through the API now really clears the domains (it used to keep the
+  old ones). An update that leaves out `services` or `domains` keeps what the
+  group already has.
 - **Readable alert status**: the Settings card shows "Delivered at HH:MM" or a
   plain reason instead of the internal category, and a stored secret as
   "Saved (ends with ab)".

@@ -81,6 +81,61 @@ def test_static_files_are_revalidated_so_an_upgrade_is_not_served_stale(ready):
     assert revalidated.headers["cache-control"] == "no-cache"
 
 
+def test_a_group_needs_a_service_or_a_domain(ready):
+    client = ready["client"]
+    created = client.post("/api/groups", json={"name": "Nothing", "weekday_minutes": 30})
+    assert created.status_code == 400
+    assert created.json()["code"] == "no_targets"
+    empty_lists = client.post(
+        "/api/groups",
+        json={"name": "Nothing", "weekday_minutes": 30, "services": [], "domains": []},
+    )
+    assert empty_lists.status_code == 400
+    blank_text = client.post(
+        "/api/groups", json={"name": "Nothing", "weekday_minutes": 30, "domains_text": "  \n "}
+    )
+    assert blank_text.status_code == 400
+    assert client.get("/api/state").json()["groups"] == []
+
+
+def test_emptying_the_last_service_and_domain_is_refused(ready):
+    client = ready["client"]
+    group = make_group(client, services=[], domains=["only.example"])
+    gid = group["id"]
+    for emptying in ({"domains": []}, {"domains_text": ""}):
+        response = client.put(f"/api/groups/{gid}", json={"name": group["name"], **emptying})
+        assert response.status_code == 400, emptying
+        assert response.json()["code"] == "no_targets"
+    kept = next(g for g in client.get("/api/state").json()["groups"] if g["id"] == gid)
+    assert kept["domains"] == ["only.example"]
+
+
+def test_an_empty_domain_list_clears_the_domains(ready):
+    client = ready["client"]
+    group = make_group(client, services=["roblox"], domains=["extra.example"])
+    gid = group["id"]
+    cleared = client.put(
+        f"/api/groups/{gid}", json={"name": group["name"], "services": ["roblox"], "domains": []}
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["group"]["domains"] == []
+    assert cleared.json()["group"]["services"] == ["roblox"]
+    again = client.put(
+        f"/api/groups/{gid}",
+        json={"name": group["name"], "services": ["roblox"], "domains_text": "back.example"},
+    )
+    assert again.json()["group"]["domains"] == ["back.example"]
+
+
+def test_an_update_that_leaves_out_services_or_domains_keeps_them(ready):
+    client = ready["client"]
+    group = make_group(client, services=["roblox"], domains=["extra.example"])
+    renamed = client.put(f"/api/groups/{group['id']}", json={"name": "Renamed"})
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["group"]["services"] == ["roblox"]
+    assert renamed.json()["group"]["domains"] == ["extra.example"]
+
+
 def test_csrf_is_required_for_writes(ready):
     client = ready["client"]
     response = client.post("/api/groups/1/block", json={}, headers={"X-CSRF-Token": "x"})
