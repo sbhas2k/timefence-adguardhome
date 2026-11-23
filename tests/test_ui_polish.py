@@ -438,8 +438,8 @@ def test_the_bonus_row_is_three_controls_with_a_custom_disclosure():
     tag_start = controls.rindex("<div", 0, panel_start)
     assert "hidden" in controls[tag_start : controls.index(">", panel_start)]
 
-    # the separate Block now / Allow again buttons are Phase 3 work: the mode
-    # control replaced them, and the free time box moved into its own panel
+    # one mode control replaced the separate Block now / Allow again buttons,
+    # and the free time box moved into its own panel
     assert 'data-action="unblock"' not in controls
     assert 'data-action="mode"' not in controls  # the segment helper draws it
     assert 'modeButton(group, "block"' in controls
@@ -555,7 +555,7 @@ def test_the_bonus_row_labels_never_wrap_on_a_narrow_phone():
     assert "max-width: 360px" in css
 
 
-# ---------------------------------------------------------- phase 3: mode
+# ------------------------------------------------- the card's mode control
 
 
 def test_the_mode_control_is_three_named_pressed_buttons():
@@ -579,7 +579,7 @@ def test_the_mode_control_is_three_named_pressed_buttons():
     assert 'data-mode="' in button
     assert 'aria-pressed="' in button
 
-    # Block, Auto, Free: the owner's order
+    # the segments read Block, Auto, Free
     order = [controls.index(f'modeButton(group, "{m}"') for m in ("block", "auto", "free")]
     assert order == sorted(order)
 
@@ -722,7 +722,7 @@ def mode_probe_script(js: str) -> str:
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
 def test_the_mode_derivation_and_every_transition_in_order():
-    """Section 2's table, executed: the mode from the payload and the call order."""
+    """The whole transition table, executed: the mode shown and the call order."""
     js = read("static", "app.js")
     done = subprocess.run(
         [shutil.which("node"), "-e", mode_probe_script(js)],
@@ -781,7 +781,7 @@ def controls_probe_script(js: str) -> str:
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
 def test_the_controls_markup_is_balanced_and_ordered():
-    """Rendered with stubs: every region is closed, and the order is the ruling's."""
+    """Rendered with stubs: every region is closed, and the regions keep their order."""
     js = read("static", "app.js")
     done = subprocess.run(
         [shutil.which("node"), "-e", controls_probe_script(js)],
