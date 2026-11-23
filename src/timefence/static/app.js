@@ -122,9 +122,33 @@
     return chosen <= minutes;
   }
 
-  /* A time the admin typed wins over the default for the life of the page. */
+  /* HH:MM in the server zone, whatever the browser's own clock looks like: a
+     time input only ever accepts 24-hour text. */
+  function hhmm(ts) {
+    var seconds = Number(ts);
+    if (!seconds) { return ""; }
+    try {
+      return new Intl.DateTimeFormat("en-GB", {
+        timeZone: timezone,
+        hourCycle: "h23",
+        hour: "2-digit",
+        minute: "2-digit"
+      }).format(new Date(seconds * 1000));
+    } catch (err) {
+      return "";
+    }
+  }
+
+  /* A time the admin typed wins over the default for the life of the page. A
+     group that is already free starts at the end of its window, so Allow
+     changes that window instead of offering a fresh default. */
   function freeTimeValue(group) {
-    return freeTimeChoice[String(group.id)] || defaultFreeTime();
+    var id = String(group.id);
+    if (freeTimeChoice[id]) { return freeTimeChoice[id]; }
+    if (group.status === "free" && group.free_until) {
+      return hhmm(group.free_until) || defaultFreeTime();
+    }
+    return defaultFreeTime();
   }
 
   /* The default drifts with the server clock, so an input nobody has touched is
@@ -135,7 +159,7 @@
     if (freeTimeChoice[id]) { return; }
     var input = card.querySelector("[data-free-time]");
     if (!input || document.activeElement === input) { return; }
-    var value = defaultFreeTime();
+    var value = freeTimeValue(group);
     if (!value) { return; }
     if (input.value !== value) { input.value = value; }
     var hint = card.querySelector("[data-free-tomorrow]");
@@ -403,11 +427,57 @@
     pill.dataset.status = String(group.id);
   }
 
+  /* One segment of the mode control: a plain button with aria-pressed, never a
+     radio, because an arrow key must move focus without applying anything. */
+  function modeButton(group, mode, pressed) {
+    var text = mode === "block"
+      ? t("admin.mode_block")
+      : mode === "free"
+        ? t("admin.mode_free")
+        : t("admin.mode_auto");
+    return '<button type="button" class="btn seg-btn" data-action="mode" data-mode="' + mode +
+      '" data-group="' + group.id + '" aria-pressed="' + (pressed ? "true" : "false") + '">' +
+      esc(text) + "</button>";
+  }
+
   function controlsHtml(group) {
+    var id = String(group.id);
+    if (group.paused) {
+      return '<div class="row tight mt resume-row">' +
+        '<button type="button" class="btn primary" data-action="resume" data-group="' + group.id +
+        '" aria-label="' + esc(t("admin.resume_for", { name: group.name })) + '">' +
+        esc(t("admin.resume")) + "</button></div>";
+    }
+    var mode = modeFor(group);
+    var free = mode === "free";
+    var storedBlock = Number(group.force_block_until) > 0;
     var until = freeTimeValue(group);
     var tomorrow = freeTimeIsTomorrow(until);
+    var open = free || Boolean(pendingFree[id]);
     var panelId = "custom-bonus-" + group.id;
-    return '<div class="row tight mt bonus-row">' +
+    return '<div class="seg" role="group" aria-label="' +
+      esc(t("admin.mode_label", { name: group.name })) + '" data-mode-group="' + group.id + '">' +
+      modeButton(group, "block", mode === "block") +
+      modeButton(group, "auto", mode === "auto") +
+      modeButton(group, "free", free) +
+      "</div>" +
+      '<div class="row tight mt free-panel' + (open ? "" : " hidden") +
+      '" data-free-panel="' + group.id + '">' +
+      '<input type="time" data-free-time="' + group.id + '" value="' + esc(until) +
+      '" aria-label="' + esc(t("admin.free_label")) + '">' +
+      '<span class="muted small' + (tomorrow ? "" : " hidden") +
+      '" data-free-tomorrow="' + group.id + '">' + esc(t("admin.free_tomorrow")) + "</span>" +
+      '<button type="button" class="btn primary" data-action="free-apply" data-group="' +
+      group.id + '" aria-label="' +
+      esc(t("admin.free_allow_for", { name: group.name })) + '">' +
+      esc(t("admin.free_allow")) + "</button>" +
+      '<button type="button" class="btn' + (free ? " hidden" : "") +
+      '" data-action="free-cancel" data-free-cancel="' + group.id + '" data-group="' + group.id +
+      '">' + esc(t("common.cancel")) + "</button>" +
+      "</div>" +
+      '<p class="muted small free-note' + (free && storedBlock ? "" : " hidden") +
+      '" data-free-note="' + group.id + '">' + esc(t("admin.free_then_note")) + "</p>" +
+      '<div class="row tight mt bonus-row">' +
       '<button class="btn" data-action="bonus" data-group="' + group.id + '" data-minutes="-15"' +
       ' aria-label="' + esc(t("admin.decrease_for", { name: group.name })) + '">' +
       esc(t("admin.decrease")) + "</button>" +
@@ -428,24 +498,7 @@
       '" aria-label="' + esc(t("admin.apply_for", { name: group.name })) + '">' +
       esc(t("admin.apply")) + "</button>" +
       "</div>" +
-      '<div class="row tight mt">' +
-      '<button class="btn" data-action="block" data-group="' + group.id + '">' +
-      esc(t("admin.block_now")) + "</button>" +
-      '<input type="time" data-free-time="' + group.id + '" value="' + esc(until) +
-      '" aria-label="' + esc(t("admin.free_label")) + '">' +
-      '<span class="muted small' + (tomorrow ? "" : " hidden") +
-      '" data-free-tomorrow="' + group.id + '">' + esc(t("admin.free_tomorrow")) + "</span>" +
-      '<button class="btn" data-action="free" data-group="' + group.id + '">' +
-      esc(t("admin.free_apply")) + "</button>" +
-      (group.free_until
-        ? '<button class="btn" data-action="clearfree" data-group="' + group.id + '">' +
-          esc(t("admin.clear_free")) + "</button>"
-        : "") +
-      (group.status === "blocked_admin"
-        ? '<button class="btn" data-action="unblock" data-group="' + group.id + '">' +
-          esc(t("admin.unblock")) + "</button>"
-        : "") +
-      '<button class="btn ghost" data-action="reset" data-group="' + group.id + '">' +
+      '<button type="button" class="btn ghost" data-action="reset" data-group="' + group.id + '">' +
       esc(t("admin.reset_today")) + "</button>" +
       "</div>";
   }
@@ -462,11 +515,32 @@
     if (toggle) { toggle.setAttribute("aria-expanded", open ? "true" : "false"); }
   }
 
+  /* Server truth, patched in place on every poll: the pressed segment, the Free
+     panel and its note. No node is replaced, so focus stays on a segment while
+     a free window or a block expires. Only an open pending panel is local. */
+  function paintMode(card, group) {
+    if (!card || !group) { return; }
+    var id = String(group.id);
+    var mode = modeFor(group);
+    var storedBlock = Number(group.force_block_until) > 0;
+    $$('[data-action="mode"]', card).forEach(function (button) {
+      button.setAttribute("aria-pressed", button.dataset.mode === mode ? "true" : "false");
+    });
+    var open = mode === "free" || Boolean(pendingFree[id]);
+    var panel = card.querySelector('[data-free-panel="' + id + '"]');
+    if (panel) { panel.classList.toggle("hidden", !open); }
+    var cancel = card.querySelector('[data-free-cancel="' + id + '"]');
+    if (cancel) { cancel.classList.toggle("hidden", mode === "free"); }
+    var note = card.querySelector('[data-free-note="' + id + '"]');
+    if (note) { note.classList.toggle("hidden", !(mode === "free" && storedBlock)); }
+  }
+
   function signatureFor(group) {
     return [
       group.paused ? "paused" : "",
-      group.status === "blocked_admin" ? "blocked" : "",
-      group.free_until ? "free" : ""
+      modeFor(group),
+      group.free_until ? String(group.free_until) : "",
+      Number(group.force_block_until) > 0 ? "stored" : ""
     ].join("|");
   }
 
@@ -1455,8 +1529,28 @@
     var group = groupId ? findGroup(groupId) : null;
     var name = group ? group.name : "";
 
-    if (action === "block") {
-      adminAction("block", groupId, null, t("toast.blocked", { name: name }));
+    if (action === "mode") {
+      var to = target.dataset.mode || "";
+      if (to === "free") {
+        /* Free is two-step: the tap only opens the time panel, and nothing is
+           sent until Allow is pressed. A group that is already free keeps its
+           panel open, so a tap on it changes nothing. */
+        pendingFree[String(groupId)] = group ? modeFor(group) !== "free" : false;
+        paintMode(target.closest("[data-card-group]"), group);
+        return;
+      }
+      pendingFree[String(groupId)] = false;
+      setMode(groupId, to);
+    } else if (action === "free-apply") {
+      var freeInput = document.querySelector('[data-free-time="' + groupId + '"]');
+      var until = freeTimeChoice[String(groupId)] || defaultFreeTime() ||
+        (freeInput ? freeInput.value : "");
+      setMode(groupId, "free", until);
+    } else if (action === "free-cancel") {
+      pendingFree[String(groupId)] = false;
+      paintMode(target.closest("[data-card-group]"), group);
+    } else if (action === "resume") {
+      adminAction("pause", groupId, { paused: false }, t("toast.resumed", { name: name }));
     } else if (action === "custom") {
       openCustom[String(groupId)] = !openCustom[String(groupId)];
       paintCustom(target.closest("[data-card-group]"), groupId);
@@ -1483,17 +1577,6 @@
     } else if (action === "hint-dismiss") {
       rememberHintDismissal();
       paintAlertsHint();
-    } else if (action === "free") {
-      /* The displayed default can be hours old: recompute it at click time
-         unless the admin picked a time themselves. */
-      var freeInput = document.querySelector('[data-free-time="' + groupId + '"]');
-      var until = freeTimeChoice[String(groupId)] || defaultFreeTime() ||
-        (freeInput ? freeInput.value : "");
-      adminAction("free", groupId, { until: until }, t("toast.free", { name: name, time: until }));
-    } else if (action === "clearfree") {
-      adminAction("free/clear", groupId, null, t("toast.free_cleared", { name: name }));
-    } else if (action === "unblock") {
-      adminAction("force/clear", groupId, null, t("toast.unblocked", { name: name }));
     } else if (action === "user-password") {
       resetUserPassword(Number(target.dataset.user), target.dataset.username);
     } else if (action === "user-role") {

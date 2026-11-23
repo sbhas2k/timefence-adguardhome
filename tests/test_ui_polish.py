@@ -323,8 +323,8 @@ def test_an_untouched_free_time_follows_the_server_clock():
     assert render.index("refreshFreeDefault(card, group);") > render.index("controls.innerHTML")
 
     # the click recomputes when nothing was edited, and uses the edit when there is one
-    start = js.index('} else if (action === "free") {')
-    stop = js.index('} else if (action === "clearfree") {')
+    start = js.index('} else if (action === "free-apply") {')
+    stop = js.index('} else if (action === "free-cancel") {')
     branch = js[start:stop]
     assert "freeTimeChoice[String(groupId)] || defaultFreeTime()" in branch
     assert "freeInput.value" in branch  # only as the last resort
@@ -438,8 +438,12 @@ def test_the_bonus_row_is_three_controls_with_a_custom_disclosure():
     tag_start = controls.rindex("<div", 0, panel_start)
     assert "hidden" in controls[tag_start : controls.index(">", panel_start)]
 
-    # the unblock control is Phase 3/4 work and stays exactly where it was, just outside the row
-    assert 'data-action="unblock"' in controls
+    # the separate Block now / Allow again buttons are Phase 3 work: the mode
+    # control replaced them, and the free time box moved into its own panel
+    assert 'data-action="unblock"' not in controls
+    assert 'data-action="mode"' not in controls  # the segment helper draws it
+    assert 'modeButton(group, "block"' in controls
+    assert 'data-free-time="' in controls
 
 
 def test_the_custom_disclosure_stays_open_across_a_poll():
@@ -562,12 +566,12 @@ def test_the_mode_control_is_three_named_pressed_buttons():
     assert 'role="group"' in controls
     assert 'data-mode-group="' in controls
     assert 't("admin.mode_label", { name: group.name })' in controls
-    assert 'aria-pressed="' in controls
     # three plain buttons, never a native radio group that an arrow key drives
-    assert 'type="button"' in controls
     assert 'type="radio"' not in js
 
     button = js_function(js, "modeButton")
+    assert 'type="button"' in button
+    assert 'aria-pressed="' in button
     for key in ("admin.mode_block", "admin.mode_auto", "admin.mode_free"):
         assert f't("{key}")' in button, key
         assert i18n.t(key) != key, key
