@@ -167,6 +167,7 @@
       "data-free-time",
       "data-group",
       "data-action",
+      "data-minutes",
       "data-user",
       "data-role"
     ];

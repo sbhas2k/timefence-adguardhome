@@ -253,3 +253,12 @@ def test_the_today_card_has_stable_header_live_and_controls_regions():
     live = js_function(js, "liveHtml")
     assert "coverage(" not in live
     assert "group.name" not in live
+
+
+def test_the_bonus_buttons_keep_focus_apart():
+    """-15 and +15 are distinct after a re-render, so focus cannot move between them."""
+    js = read("static", "app.js")
+    names = js[js.index("var names = [") : js.index("];", js.index("var names = ["))]
+    assert '"data-minutes"' in names
+    assert 'data-minutes="-15"' in js
+    assert 'data-minutes="15"' in js
