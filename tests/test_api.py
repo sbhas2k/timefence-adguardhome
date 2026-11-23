@@ -75,10 +75,10 @@ def test_static_files_are_revalidated_so_an_upgrade_is_not_served_stale(ready):
         assert response.status_code == 200
         assert response.headers["cache-control"] == "no-cache"
         assert response.headers.get("etag")
-    revalidated = client.get(
-        "/static/style.css", headers={"If-None-Match": response.headers["etag"]}
-    )
-    assert revalidated.status_code in {200, 304}
+    css = client.get("/static/style.css")
+    revalidated = client.get("/static/style.css", headers={"If-None-Match": css.headers["etag"]})
+    assert revalidated.status_code == 304
+    assert revalidated.headers["cache-control"] == "no-cache"
 
 
 def test_csrf_is_required_for_writes(ready):
