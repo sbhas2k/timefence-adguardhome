@@ -365,3 +365,42 @@ def test_the_alerts_hint_is_one_slim_dismissible_banner():
     assert "align-items: center" in hint
     assert "flex-wrap: wrap" in hint
     assert "min-height: 44px" in rule(css, ".hint .btn")
+
+
+def test_the_alerts_hint_can_be_hidden_for_fourteen_days():
+    js = read("static", "app.js")
+    assert 'var HINT_HIDDEN_KEY = "tf.alertsHintHiddenAt";' in js
+    assert "var HINT_HIDDEN_MS = 14 * 24 * 60 * 60 * 1000;" in js
+
+    hidden_at = js_function(js, "hintHiddenAt")
+    assert "localStorage.getItem(HINT_HIDDEN_KEY)" in hidden_at
+    assert "isFinite(" in hidden_at
+
+    dismissed = js_function(js, "hintDismissed")
+    assert "hintHiddenAt()" in dismissed
+    assert "Date.now()" in dismissed
+    assert "HINT_HIDDEN_MS" in dismissed
+
+    remembered = js_function(js, "rememberHintDismissal")
+    assert "localStorage.setItem(HINT_HIDDEN_KEY" in remembered
+    assert "Date.now()" in remembered
+
+    paint = js_function(js, "paintAlertsHint")
+    assert 'role === "admin"' in paint
+    assert "!config.channel || config.enabled === false" in paint
+    assert "!hintDismissed()" in paint
+
+    start = js.index('} else if (action === "hint-dismiss") {')
+    branch = js[start : js.index("} else if", start + 5)]
+    assert "rememberHintDismissal();" in branch
+    assert "paintAlertsHint();" in branch
+
+
+def test_no_localstorage_call_escapes_its_try_block():
+    js = read("static", "app.js")
+    calls = list(re.finditer(r"localStorage\.(?:get|set|remove)Item", js))
+    assert len(calls) >= 2
+    for call in calls:
+        guard = js.rindex("try {", 0, call.start())
+        assert "}" not in js[guard : call.start()], "the call sits inside its try block"
+        assert "} catch" in js[call.start() : call.start() + 400], "and the block has a catch"
