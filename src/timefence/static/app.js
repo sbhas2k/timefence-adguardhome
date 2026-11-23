@@ -299,6 +299,7 @@
       "data-free-time",
       "data-group",
       "data-action",
+      "data-mode",
       "data-minutes",
       "data-user",
       "data-role"
