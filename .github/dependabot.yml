@@ -12,6 +12,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # The app targets Python 3.12. Move the base image on purpose, after a test
+      # run on the new version, not through an automatic pull request.
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   - package-ecosystem: github-actions
     directory: "/"
