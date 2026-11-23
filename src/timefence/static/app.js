@@ -35,6 +35,9 @@
   /* Whether a group's Custom minutes box is open: the poll rebuilds the
      controls, so the disclosure state cannot live in the markup. */
   var openCustom = {};
+  /* Whether a group's apps-and-domains line is open: the header is patched in
+     place, so the server can redraw it on every poll without closing it. */
+  var openCoverage = {};
   /* A Free tap that has not been confirmed with a time yet. The poll rebuilds
      the controls, so an open panel has to live outside the markup too. */
   var pendingFree = {};
@@ -372,6 +375,23 @@
     return parts.join(" · ");
   }
 
+  function coverageCount(group) {
+    return (group.services ? group.services.length : 0) +
+      (group.domains ? group.domains.length : 0);
+  }
+
+  /* The collapsed line: how many apps and how many domains, never a zero part. */
+  function coverageSummary(group) {
+    var apps = group.services ? group.services.length : 0;
+    var domains = group.domains ? group.domains.length : 0;
+    var parts = [];
+    if (apps === 1) { parts.push(t("card.apps_one", { count: apps })); }
+    if (apps > 1) { parts.push(t("card.apps_other", { count: apps })); }
+    if (domains === 1) { parts.push(t("card.domains_one", { count: domains })); }
+    if (domains > 1) { parts.push(t("card.domains_other", { count: domains })); }
+    return parts.join(" · ");
+  }
+
   function liveHtml(group) {
     var total = Math.max(0, (Number(group.minutes_today) || 0) + (Number(group.bonus_minutes) || 0));
     var used = Number(group.used_minutes) || 0;
@@ -423,7 +443,25 @@
     var line = document.createElement("div");
     line.className = "sub wrap-anywhere";
     line.dataset.headerCoverage = "1";
+    /* The summary button and the list are both built once: paintHeader only
+       swaps their text and the hidden class, so an open list stays open. */
+    var toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "coverage-toggle";
+    toggle.dataset.action = "coverage";
+    toggle.dataset.headerToggle = "1";
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.classList.add("hidden");
+    var summary = document.createElement("span");
+    summary.dataset.headerSummary = "1";
+    var chev = document.createElement("span");
+    chev.className = "chev";
+    chev.setAttribute("aria-hidden", "true");
+    chev.textContent = "▾";
+    toggle.appendChild(summary);
+    toggle.appendChild(chev);
     header.appendChild(row);
+    header.appendChild(toggle);
     header.appendChild(line);
     return header;
   }
@@ -437,7 +475,6 @@
     var status = statusFor(group);
     header.querySelector("[data-header-emoji]").textContent = group.emoji || "⏳";
     header.querySelector("[data-header-name]").textContent = group.name;
-    header.querySelector("[data-header-coverage]").textContent = coverage(group);
     var pill = header.querySelector("[data-header-status]");
     pill.textContent = status.text;
     pill.className = "pill " + status.cls;
@@ -445,6 +482,20 @@
     var reset = header.querySelector("[data-header-reset]");
     reset.dataset.group = id;
     reset.setAttribute("aria-label", t("admin.reset_for", { name: group.name }));
+    /* More than three items is longer than one line, so the list collapses
+       behind a summary; the open state belongs to the group, not the markup. */
+    var list = header.querySelector("[data-header-coverage]");
+    list.id = "coverage-" + id;
+    list.textContent = coverage(group);
+    var toggle = header.querySelector("[data-header-toggle]");
+    var collapsible = coverageCount(group) > 3;
+    var open = Boolean(openCoverage[id]);
+    toggle.dataset.group = id;
+    toggle.setAttribute("aria-controls", "coverage-" + id);
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    toggle.querySelector("[data-header-summary]").textContent = coverageSummary(group);
+    toggle.classList.toggle("hidden", !collapsible);
+    list.classList.toggle("hidden", collapsible && !open);
   }
 
   /* One segment of the mode control: a plain button with aria-pressed, never a
@@ -1599,6 +1650,9 @@
       });
     } else if (action === "reset") {
       resetGroup(groupId, name);
+    } else if (action === "coverage") {
+      openCoverage[String(groupId)] = !openCoverage[String(groupId)];
+      paintHeader(target.closest("[data-card-group]"), group);
     } else if (action === "hint-dismiss") {
       rememberHintDismissal();
       paintAlertsHint();

@@ -929,6 +929,124 @@ def test_a_group_that_loads_already_free_still_gets_its_controls():
 # --------------------------------------- the card header: reset + coverage
 
 
+def coverage_probe_script(js: str) -> str:
+    """coverageCount and coverageSummary with the real English plural strings."""
+    keys = ("card.apps_one", "card.apps_other", "card.domains_one", "card.domains_other")
+    return "".join(
+        [
+            "var i18n = " + json.dumps({key: i18n.STRINGS["en"][key] for key in keys}) + ";",
+            "function t(key, vars) {",
+            r"  return String(i18n[key] || key).replace(/\{(\w+)\}/g, function (whole, name) {",
+            "    return vars && Object.prototype.hasOwnProperty.call(vars, name)",
+            "      ? String(vars[name]) : whole;",
+            "  });",
+            "}",
+            js_function(js, "coverageCount"),
+            js_function(js, "coverageSummary"),
+            "var cases = [",
+            '  { services: ["YouTube"], domains: [] },',
+            '  { services: ["YouTube", "Netflix", "TikTok"], domains: ["a.com", "b.com"] },',
+            '  { services: [], domains: ["x.com"] },',
+            "  { services: [], domains: [] }",
+            "];",
+            "console.log(JSON.stringify(cases.map(function (group) {",
+            "  return [coverageCount(group), coverageSummary(group)];",
+            "})));",
+        ]
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_the_coverage_summary_counts_apps_and_domains_in_words():
+    """Executed: the one-line summary omits a zero part and gets singulars right."""
+    js = read("static", "app.js")
+    done = subprocess.run(
+        [shutil.which("node"), "-e", coverage_probe_script(js)],
+        capture_output=True,
+        text=True,
+        # the summary carries a middle dot, so the decode must not be the locale
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == [
+        [1, "1 app"],
+        [5, "3 apps · 2 domains"],
+        [1, "1 domain"],
+        [0, ""],
+    ]
+
+
+def test_the_coverage_summary_strings_are_plural_pairs():
+    for one, other in (
+        ("card.apps_one", "card.apps_other"),
+        ("card.domains_one", "card.domains_other"),
+    ):
+        assert one in i18n.STRINGS["en"], one
+        assert other in i18n.STRINGS["en"], other
+        singular = i18n.STRINGS["en"][one]
+        plural = i18n.STRINGS["en"][other]
+        assert singular.startswith("{count} ")
+        assert plural == singular + "s"
+    summary = js_function(read("static", "app.js"), "coverageSummary")
+    for key in (
+        "card.apps_one",
+        "card.apps_other",
+        "card.domains_one",
+        "card.domains_other",
+    ):
+        assert f't("{key}"' in summary, key
+
+
+def test_the_coverage_line_collapses_above_three_items():
+    """More than three items gets a one-line summary; the open state is local."""
+    js = read("static", "app.js")
+    assert "var openCoverage = {};" in js
+
+    count = js_function(js, "coverageCount")
+    assert "services" in count
+    assert "domains" in count
+
+    # built once, patched afterwards: a poll can neither collapse nor replace it
+    build = js_function(js, "buildHeader")
+    assert 'toggle.dataset.action = "coverage";' in build
+    assert 'toggle.setAttribute("aria-expanded", "false");' in build
+    assert 'chev.setAttribute("aria-hidden", "true");' in build
+    assert 'line.dataset.headerCoverage = "1"' in build
+
+    paint = js_function(js, "paintHeader")
+    assert "coverageCount(group) > 3" in paint
+    assert "Boolean(openCoverage[id])" in paint
+    assert 'toggle.setAttribute("aria-expanded", open ? "true" : "false");' in paint
+    assert 'toggle.setAttribute("aria-controls", "coverage-" + id);' in paint
+    assert 'list.id = "coverage-" + id;' in paint
+    assert 'toggle.querySelector("[data-header-summary]").textContent =' in paint
+    assert "coverageSummary(group)" in paint
+    assert "list.textContent = coverage(group);" in paint
+    assert 'toggle.classList.toggle("hidden", !collapsible);' in paint
+    assert 'list.classList.toggle("hidden", collapsible && !open);' in paint
+    assert "innerHTML" not in paint
+
+    # the toggle is reachable per group, like the reset icon beside it
+    assert "toggle.dataset.group = id;" in paint
+
+    start = js.index('} else if (action === "coverage") {')
+    branch = js[start : js.index("} else if", start + 5)]
+    assert "openCoverage[String(groupId)] = !openCoverage[String(groupId)];" in branch
+    assert "paintHeader(" in branch
+
+
+def test_the_coverage_toggle_is_a_44_pixel_target():
+    css = css_text()
+    toggle = rule(css, ".coverage-toggle")
+    assert "min-height: 44px" in toggle
+    assert "inline-flex" in toggle
+    assert "background: none" in toggle
+    opened = rule(css, '.coverage-toggle[aria-expanded="true"] .chev')
+    assert "rotate(" in opened
+
+
 def test_the_reset_trigger_is_one_icon_button_in_the_card_header():
     """Reset moved out of the controls into the node that survives every poll."""
     js = read("static", "app.js")
