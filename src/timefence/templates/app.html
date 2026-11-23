@@ -16,9 +16,11 @@
 </div>
 
 <section id="panel-today" aria-label="{{ t('user.heading') }}">
-  <div class="card hidden" id="alerts-hint">
-    <p class="sub">{{ t("alerts.hint") }}</p>
-    <button type="button" class="btn" id="alerts-setup">{{ t("alerts.setup") }}</button>
+  <div class="alert hint hidden" id="alerts-hint">
+    <p class="hint-text">{{ t("alerts.hint") }}</p>
+    <button type="button" class="btn primary" id="alerts-setup">{{ t("alerts.setup") }}</button>
+    <button type="button" class="btn ghost" data-action="hint-dismiss"
+            aria-label="{{ t('alerts.hint_dismiss_label') }}">{{ t("alerts.hint_dismiss") }}</button>
   </div>
   <div id="groups" class="stack"></div>
   <p class="muted small center hidden" id="no-groups">{{ t("groups.empty") }}</p>

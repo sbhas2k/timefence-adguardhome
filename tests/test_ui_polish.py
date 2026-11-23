@@ -342,3 +342,26 @@ def test_the_admin_tabs_are_one_scrolling_row_on_a_phone():
 
     # a tab reached programmatically is scrolled into the strip, not the page
     assert 'inline: "nearest"' in read("static", "app.js")
+
+
+def test_the_alerts_hint_is_one_slim_dismissible_banner():
+    html = read("templates", "app.html")
+    assert 'id="alerts-hint"' in html
+    assert 'id="alerts-setup"' in html
+    assert 't("alerts.hint")' in html
+    assert 't("alerts.setup")' in html
+
+    # a slim banner, not a full card
+    assert re.search(r'<div class="[^"]*\bhint\b[^"]*" id="alerts-hint"', html)
+    assert 'data-action="hint-dismiss"' in html
+    for key in ("alerts.hint_dismiss", "alerts.hint_dismiss_label"):
+        assert re.search(r"""t\(["']""" + re.escape(key) + r"""["']\)""", html), key
+    assert i18n.t("alerts.hint_dismiss") == "Hide"
+    assert i18n.t("alerts.hint_dismiss_label") != i18n.t("alerts.hint_dismiss")
+
+    css = css_text()
+    hint = rule(css, ".hint")
+    assert "display: flex" in hint
+    assert "align-items: center" in hint
+    assert "flex-wrap: wrap" in hint
+    assert "min-height: 44px" in rule(css, ".hint .btn")

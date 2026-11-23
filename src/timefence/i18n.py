@@ -268,6 +268,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "alerts.busy": "A test message is already on its way. Try again in a moment.",
         "alerts.hint": "Get a message when a budget runs out or AdGuard Home stops answering.",
         "alerts.setup": "Set up alerts",
+        "alerts.hint_dismiss": "Hide",
+        "alerts.hint_dismiss_label": "Hide the alerts reminder",
         "alert.low": "{group}: {minutes} min left today",
         "alert.exhausted": "{group}: no minutes left today",
         "alert.bedtime_started": "{group}: bedtime until {time}",
