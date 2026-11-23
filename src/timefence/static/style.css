@@ -85,6 +85,20 @@ a { color: var(--accent); }
 }
 
 .card h2 { margin: 0; font-size: 17px; display: flex; align-items: center; gap: 8px; }
+/* One header row: the title wraps, so a long name never pushes the reset icon
+   off the card. The icon keeps a 44 px target while its glyph stays small. */
+.card-head { display: flex; align-items: flex-start; gap: 8px; }
+.card-head h2 { flex: 1 1 auto; min-width: 0; }
+.card-reset {
+  flex: 0 0 auto;
+  margin-left: auto;
+  width: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+}
 #alerts-card { scroll-margin-top: 96px; }
 .card .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
 
