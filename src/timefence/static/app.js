@@ -116,6 +116,21 @@
     return freeTimeChoice[String(group.id)] || defaultFreeTime();
   }
 
+  /* The default drifts with the server clock, so an input nobody has touched is
+     re-pointed on every render: the controls markup stays, and a focused input
+     is left alone. An edited value wins for the life of the page. */
+  function refreshFreeDefault(card, group) {
+    var id = String(group.id);
+    if (freeTimeChoice[id]) { return; }
+    var input = card.querySelector("[data-free-time]");
+    if (!input || document.activeElement === input) { return; }
+    var value = defaultFreeTime();
+    if (!value) { return; }
+    if (input.value !== value) { input.value = value; }
+    var hint = card.querySelector("[data-free-tomorrow]");
+    if (hint) { hint.classList.toggle("hidden", !freeTimeIsTomorrow(value)); }
+  }
+
   function toast(message) {
     var el = $("#toast");
     if (!el || !message) { return; }
@@ -447,6 +462,8 @@
         controls.innerHTML = controlsHtml(group);
         card.dataset.signature = signature;
       }
+
+      refreshFreeDefault(card, group);
     });
 
     var empty = $("#no-groups");
@@ -1301,8 +1318,11 @@
     } else if (action === "reset") {
       resetGroup(groupId, name);
     } else if (action === "free") {
+      /* The displayed default can be hours old: recompute it at click time
+         unless the admin picked a time themselves. */
       var freeInput = document.querySelector('[data-free-time="' + groupId + '"]');
-      var until = freeInput && freeInput.value ? freeInput.value : defaultFreeTime();
+      var until = freeTimeChoice[String(groupId)] || defaultFreeTime() ||
+        (freeInput ? freeInput.value : "");
       adminAction("free", groupId, { until: until }, t("toast.free", { name: name, time: until }));
     } else if (action === "clearfree") {
       adminAction("free/clear", groupId, null, t("toast.free_cleared", { name: name }));
