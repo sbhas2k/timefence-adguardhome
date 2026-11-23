@@ -598,13 +598,16 @@
 
       var controls = card.querySelector("[data-controls]");
       var input = controls.querySelector("[data-custom-bonus]");
-      /* An open Free panel counts as typing: its time box is never rebuilt under
-         the admin, and the pressed segments are patched in place anyway. */
-      var openFree = Boolean(pendingFree[id]) || modeFor(group) === "free";
+      /* A pending Free panel, or a time the admin edited, counts as typing: the
+         time box is never rebuilt under them, and the pressed segments are patched
+         in place anyway. A group that is merely Free is not typing. */
+      var openFree = Boolean(pendingFree[id]) || Boolean(freeTimeChoice[id]);
       var typing = controls.contains(document.activeElement) ||
         (input && input.value !== "") || openFree;
       var signature = signatureFor(group);
-      if (card.dataset.signature !== signature && !typing) {
+      /* The guard only protects controls that exist: the first build always runs. */
+      var built = card.dataset.signature !== undefined;
+      if (card.dataset.signature !== signature && (!built || !typing)) {
         controls.innerHTML = controlsHtml(group);
         card.dataset.signature = signature;
       }

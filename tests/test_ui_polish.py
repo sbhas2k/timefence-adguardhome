@@ -480,7 +480,7 @@ def test_a_half_typed_custom_number_still_holds_the_controls():
     assert 'var input = controls.querySelector("[data-custom-bonus]");' in render
     assert "controls.contains(document.activeElement)" in render
     assert '(input && input.value !== "")' in render
-    assert "if (card.dataset.signature !== signature && !typing) {" in render
+    assert "if (card.dataset.signature !== signature && (!built || !typing)) {" in render
 
     # painted, never removed: a closed box keeps whatever was typed in it
     paint = js_function(js, "paintCustom")
@@ -848,8 +848,9 @@ def test_the_pressed_segment_follows_the_server_on_every_poll():
     # outside the guard, and after the controls may have been rebuilt
     assert render.index("paintMode(card, group);") > render.index("controls.innerHTML")
     assert "\n      paintMode(card, group);\n" in render
-    # an open Free panel counts as typing, so the time box is never rebuilt
-    assert 'Boolean(pendingFree[id]) || modeFor(group) === "free"' in render
+    # a pending Free panel or an edited time counts as typing, so the time box is
+    # never rebuilt under the admin; a group that is merely Free does not
+    assert "Boolean(pendingFree[id]) || Boolean(freeTimeChoice[id])" in render
     assert "|| openFree;" in render
 
     signature = js_function(js, "signatureFor")
@@ -908,3 +909,16 @@ def test_the_mode_control_is_44_pixels_and_never_colour_only():
     assert "box-shadow" in pressed  # a ring, not colour alone
     assert "font-weight" in pressed
     assert "color-mix(" in pressed
+
+
+def test_a_group_that_loads_already_free_still_gets_its_controls():
+    """The typing guard protects built controls; it must never block the first build."""
+    js = read("static", "app.js")
+    start = js.index("var openFree =")
+    block = js[start : js.index("paintMode(card, group);", start)]
+    # the first build is never blocked by the guard
+    assert "var built = " in block
+    assert "!built ||" in block
+    # a group that is merely Free is not "typing": only a pending panel or an edited time is
+    assert 'modeFor(group) === "free"' not in block
+    assert "freeTimeChoice[id]" in block
