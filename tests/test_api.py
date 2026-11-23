@@ -67,6 +67,20 @@ def test_setup_validates_and_completes(admin):
     assert client.get("/api/state").status_code == 200
 
 
+def test_static_files_are_revalidated_so_an_upgrade_is_not_served_stale(ready):
+    """A browser keeps heuristically cached CSS/JS across an upgrade otherwise."""
+    client = ready["client"]
+    for name in ("style.css", "app.js", "kid.js"):
+        response = client.get(f"/static/{name}")
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-cache"
+        assert response.headers.get("etag")
+    revalidated = client.get(
+        "/static/style.css", headers={"If-None-Match": response.headers["etag"]}
+    )
+    assert revalidated.status_code in {200, 304}
+
+
 def test_csrf_is_required_for_writes(ready):
     client = ready["client"]
     response = client.post("/api/groups/1/block", json={}, headers={"X-CSRF-Token": "x"})
