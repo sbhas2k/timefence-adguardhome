@@ -262,3 +262,18 @@ def test_the_bonus_buttons_keep_focus_apart():
     assert '"data-minutes"' in names
     assert 'data-minutes="-15"' in js
     assert 'data-minutes="15"' in js
+
+
+def test_the_custom_bonus_box_is_cleared_only_after_a_successful_apply():
+    js = read("static", "app.js")
+    start = js.index('} else if (action === "bonus-custom") {')
+    stop = js.index('} else if (action === "reset") {')
+    custom = js[start:stop]
+    assert "adminAction(" in custom
+    assert custom.count('input.value = "";') == 1
+    assert custom.index("adminAction(") < custom.index('input.value = "";')
+    # the clear runs in the success callback, never on the invalid or failed path
+    assert "function () {" in custom[custom.index("adminAction(") :]
+    admin = js_function(js, "adminAction")
+    assert "if (done) { done(data); }" in admin
+    assert admin.index("done(data)") < admin.index(".catch(")

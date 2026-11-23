@@ -562,8 +562,9 @@
     });
   }
 
-  /* One action per button at a time: a double tap must not apply twice. */
-  function adminAction(action, groupId, extra, message) {
+  /* One action per button at a time: a double tap must not apply twice.
+     `done` runs only when the server accepted the call. */
+  function adminAction(action, groupId, extra, message, done) {
     var key = action + ":" + groupId;
     if (inflight[key]) { return; }
     inflight[key] = true;
@@ -573,7 +574,10 @@
       Object.keys(extra).forEach(function (name) { payload[name] = extra[name]; });
     }
     api("POST", "/api/groups/" + groupId + "/" + action, payload)
-      .then(function () { return refresh(); })
+      .then(function (data) {
+        if (done) { done(data); }
+        return refresh();
+      })
       .then(function () { if (message) { toast(message); } })
       .catch(function (error) { toast(error.message); })
       .then(function () {
@@ -1219,7 +1223,11 @@
         toast(t("admin.custom_invalid"));
         return;
       }
-      adminAction("bonus", groupId, { minutes: value }, bonusMessage(name, value));
+      adminAction("bonus", groupId, { minutes: value }, bonusMessage(name, value), function () {
+        /* A number left in the box counts as "typing" and would freeze this
+           card's controls, so it goes only once the server accepted it. */
+        input.value = "";
+      });
     } else if (action === "reset") {
       resetGroup(groupId, name);
     } else if (action === "free") {
