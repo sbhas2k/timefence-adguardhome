@@ -26,6 +26,7 @@
   var modalOpener = null;
   var inflight = {};
   var busy = {};
+  var freeTimeChoice = {};
 
   var $ = function (sel) { return document.querySelector(sel); };
   var $$ = function (sel, root) {
@@ -64,6 +65,55 @@
   function fmtMinutes(value) {
     var n = Math.round(Number(value) * 10) / 10;
     return (n % 1 === 0 ? String(n) : n.toFixed(1));
+  }
+
+  /* Minutes since midnight for an HH:MM value, or null when it is not one. */
+  function minutesOfDay(value) {
+    var match = /^(\d{1,2}):(\d{2})$/.exec(String(value || ""));
+    if (!match) { return null; }
+    return (Number(match[1]) % 24) * 60 + Number(match[2]);
+  }
+
+  function pad2(value) {
+    return (value < 10 ? "0" : "") + value;
+  }
+
+  /* The server's clock, not the browser's: a free window ends at the server's
+     local midnight, so both sides must agree on what "today" means. */
+  function serverNowMinutes() {
+    if (!state || !state.app || !state.app.now) { return null; }
+    try {
+      var text = new Intl.DateTimeFormat("en-GB", {
+        timeZone: state.app.timezone || timezone,
+        hourCycle: "h23",
+        hour: "2-digit",
+        minute: "2-digit"
+      }).format(new Date(Number(state.app.now) * 1000));
+      return minutesOfDay(text);
+    } catch (err) {
+      return null;
+    }
+  }
+
+  /* An hour ahead, rounded up to the next quarter hour, in the server zone. */
+  function defaultFreeTime() {
+    var minutes = serverNowMinutes();
+    if (minutes === null) { return ""; }
+    var ahead = (Math.ceil((minutes + 60) / 15) * 15) % 1440;
+    return pad2(Math.floor(ahead / 60)) + ":" + pad2(ahead % 60);
+  }
+
+  /* The server rolls a time that is not later than now to tomorrow. */
+  function freeTimeIsTomorrow(value) {
+    var chosen = minutesOfDay(value);
+    var minutes = serverNowMinutes();
+    if (chosen === null || minutes === null) { return false; }
+    return chosen <= minutes;
+  }
+
+  /* A time the admin typed wins over the default for the life of the page. */
+  function freeTimeValue(group) {
+    return freeTimeChoice[String(group.id)] || defaultFreeTime();
   }
 
   function toast(message) {
@@ -296,6 +346,8 @@
   }
 
   function controlsHtml(group) {
+    var until = freeTimeValue(group);
+    var tomorrow = freeTimeIsTomorrow(until);
     return '<div class="row tight mt">' +
       '<button class="btn" data-action="block" data-group="' + group.id + '">' +
       esc(t("admin.block_now")) + "</button>" +
@@ -314,8 +366,10 @@
         : "") +
       "</div>" +
       '<div class="row tight mt">' +
-      '<input type="time" data-free-time="' + group.id + '" value="21:00" aria-label="' +
-      esc(t("admin.free_label")) + '">' +
+      '<input type="time" data-free-time="' + group.id + '" value="' + esc(until) +
+      '" aria-label="' + esc(t("admin.free_label")) + '">' +
+      '<span class="muted small' + (tomorrow ? "" : " hidden") +
+      '" data-free-tomorrow="' + group.id + '">' + esc(t("admin.free_tomorrow")) + "</span>" +
       '<button class="btn" data-action="free" data-group="' + group.id + '">' +
       esc(t("admin.free_apply")) + "</button>" +
       (group.free_until
@@ -1201,6 +1255,22 @@
       });
   }
 
+  /* The server zone decides "tomorrow", so the hint is refreshed here and not
+     recomputed from the browser clock. */
+  function noteFreeTime(event) {
+    var input = event.target && event.target.closest
+      ? event.target.closest("[data-free-time]")
+      : null;
+    if (!input) { return; }
+    var groupId = String(input.dataset.freeTime);
+    freeTimeChoice[groupId] = input.value;
+    var hint = document.querySelector('[data-free-tomorrow="' + groupId + '"]');
+    if (hint) { hint.classList.toggle("hidden", !freeTimeIsTomorrow(input.value)); }
+  }
+
+  document.addEventListener("input", noteFreeTime);
+  document.addEventListener("change", noteFreeTime);
+
   // ---------------------------------------------------------------- wiring
   document.addEventListener("click", function (event) {
     var target = event.target.closest("[data-action]");
@@ -1232,7 +1302,7 @@
       resetGroup(groupId, name);
     } else if (action === "free") {
       var freeInput = document.querySelector('[data-free-time="' + groupId + '"]');
-      var until = freeInput ? freeInput.value : "21:00";
+      var until = freeInput && freeInput.value ? freeInput.value : defaultFreeTime();
       adminAction("free", groupId, { until: until }, t("toast.free", { name: name, time: until }));
     } else if (action === "clearfree") {
       adminAction("free/clear", groupId, null, t("toast.free_cleared", { name: name }));
