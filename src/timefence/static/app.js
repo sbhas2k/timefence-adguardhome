@@ -666,6 +666,9 @@
   }
 
   // ---------------------------------------------------------------- actions
+  /* A busy card refuses another action, but it never disables its buttons: a
+     focused element that becomes disabled loses focus to <body>, and the next
+     poll cannot put it back. aria-disabled is inert, so focus stays put. */
   function setBusy(groupId, delta) {
     busy[groupId] = Math.max(0, (busy[groupId] || 0) + delta);
     var card = document.querySelector('[data-card-group="' + groupId + '"]');
@@ -673,7 +676,11 @@
     var isBusy = busy[groupId] > 0;
     card.setAttribute("aria-busy", isBusy ? "true" : "false");
     $$('button[data-group="' + groupId + '"]', card).forEach(function (button) {
-      button.disabled = isBusy;
+      if (isBusy) {
+        button.setAttribute("aria-disabled", "true");
+      } else {
+        button.removeAttribute("aria-disabled");
+      }
     });
   }
 
@@ -1365,6 +1372,9 @@
   document.addEventListener("click", function (event) {
     var target = event.target.closest("[data-action]");
     if (!target) { return; }
+    /* A busy card keeps its focus: the tap is ignored here instead of being
+       blocked by the disabled attribute, which would drop focus to <body>. */
+    if (target.getAttribute("aria-disabled") === "true") { return; }
     var action = target.dataset.action;
     var groupId = target.dataset.group ? Number(target.dataset.group) : null;
     var group = groupId ? findGroup(groupId) : null;

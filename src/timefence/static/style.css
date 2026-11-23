@@ -135,6 +135,11 @@ a { color: var(--accent); }
 .btn:active { filter: brightness(.95); }
 .btn:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 2px; }
 .btn[disabled] { opacity: .45; cursor: not-allowed; }
+/* A busy card refuses a second tap without disabling its buttons: a disabled
+   element loses focus to <body>, and the poll cannot put it back. */
+.btn[aria-disabled="true"] { opacity: .45; cursor: not-allowed; border-color: var(--border); }
+.btn[aria-disabled="true"]:hover,
+.btn[aria-disabled="true"]:active { opacity: .45; cursor: not-allowed; border-color: var(--border); filter: none; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); }
 .btn.danger { background: var(--bad-bg); border-color: var(--bad); color: var(--bad); }
 .btn.big-btn { min-height: 60px; font-size: 18px; padding: 14px 18px; flex: 1; }

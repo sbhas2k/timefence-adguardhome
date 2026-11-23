@@ -514,3 +514,27 @@ def test_every_bonus_control_is_named_for_its_group():
     assert 'esc(t("admin.bonus"))' in controls
     assert 'esc(t("admin.apply"))' in controls
     assert i18n.t("admin.custom") == "Custom"
+
+
+def test_a_busy_card_refuses_a_second_tap_without_losing_focus():
+    """Disabling the pressed button drops focus to <body>; aria-disabled does not."""
+    js = read("static", "app.js")
+    busy = js_function(js, "setBusy")
+    assert 'card.setAttribute("aria-busy", isBusy ? "true" : "false");' in busy
+    assert '"aria-disabled"' in busy
+    assert "button.disabled" not in busy
+
+    # the inflight key is the double-submit protection now that nothing is disabled
+    admin = js_function(js, "adminAction")
+    assert "if (inflight[key]) { return; }" in admin
+    assert "setBusy(groupId, 1);" in admin
+    assert "setBusy(groupId, -1);" in admin
+
+    start = js.index('document.addEventListener("click", function (event) {')
+    handler = js[start : js.index('document.addEventListener("keydown"', start)]
+    assert ('if (target.getAttribute("aria-disabled") === "true") { return; }') in handler
+
+    css = css_text()
+    style = rule(css, '.btn[aria-disabled="true"]')
+    assert "opacity" in style
+    assert "cursor: not-allowed" in style
