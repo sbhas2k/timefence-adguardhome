@@ -277,3 +277,26 @@ def test_the_custom_bonus_box_is_cleared_only_after_a_successful_apply():
     admin = js_function(js, "adminAction")
     assert "if (done) { done(data); }" in admin
     assert admin.index("done(data)") < admin.index(".catch(")
+
+
+def test_the_free_time_default_is_an_hour_ahead_in_the_server_zone():
+    js = read("static", "app.js")
+    assert 'value="21:00"' not in js
+    assert '"21:00"' not in js_function(js, "controlsHtml")
+    assert "freeTimeValue(group)" in js_function(js, "controlsHtml")
+    assert "defaultFreeTime()" in js_function(js, "freeTimeValue")
+
+    minutes = js_function(js, "serverNowMinutes")
+    assert "state.app.now" in minutes
+    assert "state.app.timezone" in minutes
+
+    default = js_function(js, "defaultFreeTime")
+    assert "Math.ceil(" in default
+    assert "/ 15" in default
+
+    # a time that is not later than now is rolled to tomorrow by the server
+    assert "freeTimeIsTomorrow" in js_function(js, "controlsHtml")
+    assert 'data-free-tomorrow="' in js_function(js, "controlsHtml")
+    assert "freeTimeIsTomorrow(input.value)" in js
+    assert '"admin.free_tomorrow"' in js
+    assert i18n.t("admin.free_tomorrow") != "admin.free_tomorrow"

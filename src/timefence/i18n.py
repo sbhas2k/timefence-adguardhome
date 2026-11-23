@@ -114,6 +114,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "admin.reset_confirm": "Reset today for {name}? This clears today's metered minutes, bonus minutes and any free window.",
         "admin.free_label": "Allow freely until",
         "admin.free_apply": "Allow freely",
+        "admin.free_tomorrow": "(tomorrow)",
         "admin.clear_free": "End free time",
         "account.password_title": "Change my password",
         "account.current": "Current password",
