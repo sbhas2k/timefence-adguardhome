@@ -24,6 +24,7 @@
   var applied = 0;
   var renderedSignature = null;
   var modalOpener = null;
+  var shownTab = "";
   var inflight = {};
   var busy = {};
   var freeTimeChoice = {};
@@ -575,6 +576,17 @@
     });
   }
 
+  /* The strip scrolls sideways on a phone, so the selected tab is brought back
+     into view whenever the shown tab changes (never on every poll). */
+  function revealSelectedTab() {
+    if (tab === shownTab) { return; }
+    shownTab = tab;
+    var button = $('#admin-tabs .tab[aria-selected="true"]');
+    if (button && button.scrollIntoView) {
+      button.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }
+
   function render() {
     if (!state) { return; }
     var signature = viewSignature();
@@ -587,6 +599,7 @@
     $$("#admin-tabs .tab").forEach(function (button) {
       button.setAttribute("aria-selected", button.dataset.tab === tab ? "true" : "false");
     });
+    revealSelectedTab();
     if (!isAdmin) { tab = "today"; }
     $("#panel-groups").classList.toggle("hidden", !(isAdmin && tab === "groups"));
     $("#panel-history").classList.toggle("hidden", !(isAdmin && tab === "history"));

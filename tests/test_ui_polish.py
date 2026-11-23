@@ -324,3 +324,21 @@ def test_an_untouched_free_time_follows_the_server_clock():
     assert "freeTimeChoice[String(groupId)] || defaultFreeTime()" in branch
     assert "freeInput.value" in branch  # only as the last resort
     assert branch.index("defaultFreeTime()") < branch.index("freeInput.value")
+
+
+def test_the_admin_tabs_are_one_scrolling_row_on_a_phone():
+    """Four tabs, one row: a long translation scrolls sideways instead of stacking."""
+    css = css_text()
+    assert "grid-template-columns: 1fr 1fr" not in css
+    tabs = rule(css, ".tabs")
+    assert "display: flex" in tabs
+    assert "flex-wrap: nowrap" in tabs
+    assert "overflow-x: auto" in tabs
+
+    # the mobile block keeps the taller tap target and never turns the row into a grid
+    mobile = css[css.index("@media (max-width: 480px)") :]
+    assert ".tabs" not in mobile[: mobile.index("@media (max-width: 360px)")]
+    assert re.search(r"\.tab \{ font-size: 13px; padding: 10px 8px; \}", css)
+
+    # a tab reached programmatically is scrolled into the strip, not the page
+    assert 'inline: "nearest"' in read("static", "app.js")
