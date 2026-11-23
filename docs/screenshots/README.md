@@ -11,7 +11,7 @@ in any capture.
 | `kid-390.png` | the read-only kid screen on a phone: minutes left, a bedtime block |
 | `kid-390-dark.png` | the same kid screen in dark mode |
 | `kid-1280.png` | the kid screen at desktop width |
-| `admin-today-390.png` | the admin Today card on a phone, with status and quick actions |
+| `admin-today-390.png` | the admin Today card on a phone: reset icon, Block / Auto / Free and the bonus row |
 | `admin-today-1280.png` | the admin Today view at desktop width |
 | `admin-today-1280-dark.png` | the same view in dark mode |
 | `groups-1280.png` | the Groups tab: budgets, targets, owners and the AdGuard services picker |
