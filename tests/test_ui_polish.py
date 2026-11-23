@@ -404,3 +404,113 @@ def test_no_localstorage_call_escapes_its_try_block():
         guard = js.rindex("try {", 0, call.start())
         assert "}" not in js[guard : call.start()], "the call sits inside its try block"
         assert "} catch" in js[call.start() : call.start() + 400], "and the block has a catch"
+
+
+def test_the_bonus_row_is_three_controls_with_a_custom_disclosure():
+    """[-15 min] [+15 min] [Custom] on one row; the number box and Apply are disclosed."""
+    js = read("static", "app.js")
+    controls = js_function(js, "controlsHtml")
+
+    row_start = controls.index("bonus-row")
+    panel_start = controls.index("data-custom-panel")
+    row = controls[row_start:panel_start]
+    assert 'data-minutes="-15"' in row
+    assert 'data-minutes="15"' in row
+    assert 'data-action="custom"' in row  # the disclosure itself
+    assert 'aria-expanded="false"' in row  # closed by default, state exposed to AT
+    assert "aria-controls=" in row
+    # the number box and Apply are disclosed, not in the always-visible row
+    assert "data-custom-bonus" not in row
+    assert 'data-action="bonus-custom"' not in row
+
+    panel = controls[panel_start:]
+    assert 'data-custom-bonus="' in panel
+    assert 'data-action="bonus-custom"' in panel
+    assert 'inputmode="numeric"' in panel
+    assert 'step="5"' in panel
+    assert 't("admin.custom_placeholder")' in panel
+    # it starts collapsed (hidden class, never omitted from the markup)
+    tag_start = controls.rindex("<div", 0, panel_start)
+    assert "hidden" in controls[tag_start : controls.index(">", panel_start)]
+
+    # the unblock control is Phase 3/4 work and stays exactly where it was, just outside the row
+    assert 'data-action="unblock"' in controls
+
+
+def test_the_custom_disclosure_stays_open_across_a_poll():
+    """The open state belongs to the group, so a rebuilt controls region reopens it."""
+    js = read("static", "app.js")
+    assert "var openCustom = {};" in js
+
+    paint = js_function(js, "paintCustom")
+    assert "openCustom[id]" in paint
+    assert 'classList.toggle("hidden", !open)' in paint
+    assert 'setAttribute("aria-expanded"' in paint
+
+    render = js_function(js, "renderToday")
+    assert "paintCustom(card, group.id);" in render
+    # re-applied after the controls markup was rebuilt
+    assert render.index("paintCustom(card, group.id);") > render.index("controls.innerHTML")
+
+    start = js.index('} else if (action === "custom") {')
+    branch = js[start : js.index("} else if", start + 5)]
+    assert "openCustom[String(groupId)] = !openCustom[String(groupId)];" in branch
+    assert "paintCustom(" in branch
+
+    # a successful Apply closes it again, right next to the cleared box
+    start = js.index('} else if (action === "bonus-custom") {')
+    custom = js[start : js.index('} else if (action === "reset") {')]
+    assert "openCustom[String(groupId)] = false;" in custom
+    assert custom.index("adminAction(") < custom.index("openCustom[String(groupId)] = false;")
+
+
+def test_a_half_typed_custom_number_still_holds_the_controls():
+    """The typing guard reads the box's value, whether the disclosure is open or closed."""
+    js = read("static", "app.js")
+    render = js_function(js, "renderToday")
+    assert 'var input = controls.querySelector("[data-custom-bonus]");' in render
+    assert "controls.contains(document.activeElement)" in render
+    assert '(input && input.value !== "")' in render
+    assert "if (card.dataset.signature !== signature && !typing) {" in render
+
+    # painted, never removed: a closed box keeps whatever was typed in it
+    paint = js_function(js, "paintCustom")
+    assert "removeChild" not in paint
+    assert "innerHTML" not in paint
+
+
+def test_the_bonus_row_shares_the_width_on_a_phone():
+    css = css_text()
+    base = rule(css, ".bonus-row > *")
+    assert "flex:" in base
+    assert "min-width: 0" in base
+
+    mobile = css[css.index("@media (max-width: 480px)") :]
+    shared = rule(mobile, ".row.bonus-row > *")
+    assert "flex: 1 1 0" in shared
+    # every other wrapping row keeps its two-per-line rule
+    assert "flex: 1 1 40%" in rule(mobile, ".row > .btn")
+    assert "min-height: 44px" in rule(css, ".btn")
+
+
+def test_every_bonus_control_is_named_for_its_group():
+    """Five cards must not expose five identical "+15 min" buttons."""
+    js = read("static", "app.js")
+    controls = js_function(js, "controlsHtml")
+    for key in (
+        "admin.decrease_for",
+        "admin.bonus_for",
+        "admin.custom",
+        "admin.custom_for",
+        "admin.apply_for",
+    ):
+        assert f'"{key}"' in controls, key
+        assert i18n.t(key) != key, key
+    for key in ("admin.decrease_for", "admin.bonus_for", "admin.custom_for", "admin.apply_for"):
+        assert "{name}" in i18n.STRINGS["en"][key], key
+        assert f'esc(t("{key}", {{ name: group.name }}))' in controls, key
+    # the visible words are unchanged
+    assert 'esc(t("admin.decrease"))' in controls
+    assert 'esc(t("admin.bonus"))' in controls
+    assert 'esc(t("admin.apply"))' in controls
+    assert i18n.t("admin.custom") == "Custom"

@@ -32,6 +32,9 @@
   var inflight = {};
   var busy = {};
   var freeTimeChoice = {};
+  /* Whether a group's Custom minutes box is open: the poll rebuilds the
+     controls, so the disclosure state cannot live in the markup. */
+  var openCustom = {};
 
   var $ = function (sel) { return document.querySelector(sel); };
   var $$ = function (sel, root) {
@@ -368,24 +371,31 @@
   function controlsHtml(group) {
     var until = freeTimeValue(group);
     var tomorrow = freeTimeIsTomorrow(until);
-    return '<div class="row tight mt">' +
-      '<button class="btn" data-action="block" data-group="' + group.id + '">' +
-      esc(t("admin.block_now")) + "</button>" +
-      '<button class="btn" data-action="bonus" data-group="' + group.id + '" data-minutes="-15">' +
+    var panelId = "custom-bonus-" + group.id;
+    return '<div class="row tight mt bonus-row">' +
+      '<button class="btn" data-action="bonus" data-group="' + group.id + '" data-minutes="-15"' +
+      ' aria-label="' + esc(t("admin.decrease_for", { name: group.name })) + '">' +
       esc(t("admin.decrease")) + "</button>" +
-      '<button class="btn" data-action="bonus" data-group="' + group.id + '" data-minutes="15">' +
+      '<button class="btn" data-action="bonus" data-group="' + group.id + '" data-minutes="15"' +
+      ' aria-label="' + esc(t("admin.bonus_for", { name: group.name })) + '">' +
       esc(t("admin.bonus")) + "</button>" +
+      '<button class="btn custom-toggle" data-action="custom" data-group="' + group.id +
+      '" aria-expanded="false" aria-controls="' + panelId + '" aria-label="' +
+      esc(t("admin.custom_for", { name: group.name })) + '">' +
+      esc(t("admin.custom")) + '<span class="chev" aria-hidden="true">▾</span></button>' +
+      "</div>" +
+      '<div class="row tight mt bonus-panel hidden" id="' + panelId +
+      '" data-custom-panel="' + group.id + '">' +
       '<input type="number" inputmode="numeric" step="5" data-custom-bonus="' + group.id +
       '" placeholder="' + esc(t("admin.custom_placeholder")) + '" aria-label="' +
       esc(t("admin.custom_placeholder")) + '">' +
-      '<button class="btn" data-action="bonus-custom" data-group="' + group.id + '">' +
+      '<button class="btn primary" data-action="bonus-custom" data-group="' + group.id +
+      '" aria-label="' + esc(t("admin.apply_for", { name: group.name })) + '">' +
       esc(t("admin.apply")) + "</button>" +
-      (group.status === "blocked_admin"
-        ? '<button class="btn" data-action="unblock" data-group="' + group.id + '">' +
-          esc(t("admin.unblock")) + "</button>"
-        : "") +
       "</div>" +
       '<div class="row tight mt">' +
+      '<button class="btn" data-action="block" data-group="' + group.id + '">' +
+      esc(t("admin.block_now")) + "</button>" +
       '<input type="time" data-free-time="' + group.id + '" value="' + esc(until) +
       '" aria-label="' + esc(t("admin.free_label")) + '">' +
       '<span class="muted small' + (tomorrow ? "" : " hidden") +
@@ -396,9 +406,25 @@
         ? '<button class="btn" data-action="clearfree" data-group="' + group.id + '">' +
           esc(t("admin.clear_free")) + "</button>"
         : "") +
+      (group.status === "blocked_admin"
+        ? '<button class="btn" data-action="unblock" data-group="' + group.id + '">' +
+          esc(t("admin.unblock")) + "</button>"
+        : "") +
       '<button class="btn ghost" data-action="reset" data-group="' + group.id + '">' +
       esc(t("admin.reset_today")) + "</button>" +
       "</div>";
+  }
+
+  /* The disclosure's open state is painted from the map, so a rebuilt controls
+     region comes back open with whatever was typed in it. */
+  function paintCustom(card, groupId) {
+    if (!card) { return; }
+    var id = String(groupId);
+    var open = Boolean(openCustom[id]);
+    var panel = card.querySelector('[data-custom-panel="' + id + '"]');
+    var toggle = card.querySelector('[data-action="custom"][data-group="' + id + '"]');
+    if (panel) { panel.classList.toggle("hidden", !open); }
+    if (toggle) { toggle.setAttribute("aria-expanded", open ? "true" : "false"); }
   }
 
   function signatureFor(group) {
@@ -468,6 +494,7 @@
         card.dataset.signature = signature;
       }
 
+      paintCustom(card, group.id);
       refreshFreeDefault(card, group);
     });
 
@@ -1345,6 +1372,9 @@
 
     if (action === "block") {
       adminAction("block", groupId, null, t("toast.blocked", { name: name }));
+    } else if (action === "custom") {
+      openCustom[String(groupId)] = !openCustom[String(groupId)];
+      paintCustom(target.closest("[data-card-group]"), groupId);
     } else if (action === "bonus") {
       var minutes = Number(target.dataset.minutes || 15);
       adminAction("bonus", groupId, { minutes: minutes }, bonusMessage(name, minutes));
@@ -1360,6 +1390,8 @@
         /* A number left in the box counts as "typing" and would freeze this
            card's controls, so it goes only once the server accepted it. */
         input.value = "";
+        openCustom[String(groupId)] = false;
+        paintCustom(input.closest("[data-card-group]"), groupId);
       });
     } else if (action === "reset") {
       resetGroup(groupId, name);
