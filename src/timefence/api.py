@@ -583,6 +583,11 @@ def create_app(
         response.headers.setdefault(
             "Permissions-Policy", "geolocation=(), microphone=(), camera=()"
         )
+        if path.startswith(f"{base}/static/"):
+            # Revalidate on every load (ETag makes it a cheap 304): without it a
+            # browser may keep a heuristically cached script or stylesheet across an
+            # upgrade and run it against the new page.
+            response.headers.setdefault("Cache-Control", "no-cache")
         return response
 
     # ----------------------------------------------------------------- pages
