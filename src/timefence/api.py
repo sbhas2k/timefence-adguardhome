@@ -858,10 +858,16 @@ def create_app(
         weekend_raw = data.get("weekend_minutes")
         weekend = weekday if weekend_raw in (None, "") else int_or(weekend_raw, weekday)
         domains_text = data.get("domains_text")
-        if domains_text is None:
-            domains = data.get("domains") or (existing.domains if existing else [])
-        else:
+        if domains_text is not None:
             domains = budget.normalize_domains(str(domains_text))
+        elif "domains" in data:
+            domains = data["domains"] or []  # an explicit empty list clears them
+        else:
+            domains = existing.domains if existing else []
+        if "services" in data:
+            services = [str(s).strip().lower() for s in (data["services"] or []) if str(s).strip()]
+        else:
+            services = list(existing.services) if existing else []
         owner_raw = data.get("owner_id", existing.owner_id if existing else None)
         if owner_raw in ("", None):
             owner_id = None
@@ -881,13 +887,18 @@ def create_app(
             "weekend_minutes": weekend,
             "owner_id": owner_id,
             "set_owner": "owner_id" in data,
-            "services": [
-                str(s).strip().lower() for s in (data.get("services") or []) if str(s).strip()
-            ],
+            "services": services,
             "domains": domains,
             "windows": data.get("windows"),
             "paused": bool(data.get("paused", existing.paused if existing else False)),
         }
+
+    def group_targets_problem(fields: dict) -> JSONResponse | None:
+        """A group with no AdGuard service and no domain would block nothing."""
+        has_domain = any(str(domain).strip() for domain in fields.get("domains") or [])
+        if fields.get("services") or has_domain:
+            return None
+        return json_error(400, i18n.t("error.group_targets"), "no_targets")
 
     @app.post(f"{base}/api/groups")
     def api_group_create(request: Request, data: dict = Depends(json_body)):
@@ -898,6 +909,9 @@ def create_app(
         if problem is not None:
             return problem
         fields = group_from_payload(data)
+        no_targets = group_targets_problem(fields)
+        if no_targets is not None:
+            return no_targets
         hits = critical_hits(fields["domains"])
         if hits and not data.get("confirm_critical"):
             return json_error(
@@ -931,6 +945,9 @@ def create_app(
             if not existing or existing.deleted:
                 return json_error(404, i18n.t("error.not_found"), "not_found")
             fields = group_from_payload(data, existing)
+            no_targets = group_targets_problem(fields)
+            if no_targets is not None:
+                return no_targets
             hits = critical_hits(fields["domains"])
             if hits and not data.get("confirm_critical"):
                 return json_error(

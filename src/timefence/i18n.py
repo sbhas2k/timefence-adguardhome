@@ -316,6 +316,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "error.usage_days": "Choose 7, 14 or 30 days.",
         "error.invalid_group": "{detail}",
         "error.group_fields": "Services and domains must be lists.",
+        "error.group_targets": "Add at least one AdGuard service or domain: a group with neither blocks nothing.",
         "error.body_too_large": "The request body is too large.",
     }
 }
