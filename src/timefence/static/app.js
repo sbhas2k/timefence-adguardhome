@@ -1637,6 +1637,32 @@
     }
   });
 
+  /* Arrow keys move focus between the three segments and apply nothing: Enter
+     or Space presses the focused one, which is why these are buttons and not
+     native radios. */
+  document.addEventListener("keydown", function (event) {
+    var button = event.target.closest ? event.target.closest('[data-action="mode"]') : null;
+    if (!button) { return; }
+    var group = button.closest("[data-mode-group]");
+    if (!group) { return; }
+    var items = $$('[data-action="mode"]', group);
+    if (items.length < 2) { return; }
+    var index = items.indexOf(button);
+    var next = null;
+    if (event.key === "ArrowRight") {
+      next = items[(index + 1) % items.length];
+    } else if (event.key === "ArrowLeft") {
+      next = items[(index - 1 + items.length) % items.length];
+    } else if (event.key === "Home") {
+      next = items[0];
+    } else if (event.key === "End") {
+      next = items[items.length - 1];
+    }
+    if (!next) { return; }
+    event.preventDefault();
+    next.focus();
+  });
+
   $$("#admin-tabs .tab").forEach(function (button) {
     button.addEventListener("click", function () {
       if (button.dataset.tab !== tab) { alertsTabLoaded = false; }
