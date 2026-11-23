@@ -35,6 +35,9 @@
   /* Whether a group's Custom minutes box is open: the poll rebuilds the
      controls, so the disclosure state cannot live in the markup. */
   var openCustom = {};
+  /* A Free tap that has not been confirmed with a time yet. The poll rebuilds
+     the controls, so an open panel has to live outside the markup too. */
+  var pendingFree = {};
 
   var $ = function (sel) { return document.querySelector(sel); };
   var $$ = function (sel, root) {
@@ -137,6 +140,38 @@
     if (input.value !== value) { input.value = value; }
     var hint = card.querySelector("[data-free-tomorrow]");
     if (hint) { hint.classList.toggle("hidden", !freeTimeIsTomorrow(value)); }
+  }
+
+  /* One displayed mode per group, straight from the server payload: a paused
+     card shows no segments, a free window wins over everything and every other
+     status (bedtime and a used-up budget included) follows the daily budget. */
+  function modeFor(group) {
+    if (!group || group.paused) { return ""; }
+    if (group.status === "free") { return "free"; }
+    if (group.status === "blocked_admin") { return "block"; }
+    return "auto";
+  }
+
+  /* The calls a move from one mode to another needs, in order, as route
+     suffixes. Free and a stored block can coexist, so a few moves are two
+     calls; the order is chosen so a failed second call still leaves the screen
+     telling the truth about the first one. */
+  function modeSequence(from, to, group) {
+    var stored = Boolean(group && Number(group.force_block_until) > 0);
+    if (to === "block") { return from === "block" ? [] : ["block"]; }
+    if (to === "auto") {
+      if (from === "free") { return stored ? ["force/clear", "free/clear"] : ["free/clear"]; }
+      return from === "block" ? ["force/clear"] : [];
+    }
+    if (to === "free") { return from === "block" ? ["free", "force/clear"] : ["free"]; }
+    return [];
+  }
+
+  function modeMessage(from, to, name, until) {
+    if (to === "block") { return t("toast.blocked", { name: name }); }
+    if (to === "free") { return t("toast.free", { name: name, time: until }); }
+    if (from === "free") { return t("toast.free_cleared", { name: name }); }
+    return t("toast.unblocked", { name: name });
   }
 
   function toast(message) {
@@ -706,6 +741,46 @@
         delete inflight[key];
         setBusy(groupId, -1);
       });
+  }
+
+  /* Every mode change goes through here: sequential calls under one in-flight
+     key, the card stays busy across all of them, one refresh and one toast. */
+  function setMode(groupId, to, until) {
+    var key = "mode:" + groupId;
+    if (inflight[key]) { return; }
+    var group = findGroup(groupId);
+    if (!group) { return; }
+    var from = modeFor(group);
+    var steps = modeSequence(from, to, group);
+    if (!steps.length) { return; }  /* the pressed segment: nothing to do */
+    inflight[key] = true;
+    setBusy(groupId, 1);
+    var failed = false;
+    var chain = Promise.resolve();
+    steps.forEach(function (step) {
+      chain = chain.then(function () {
+        if (failed) { return null; }
+        var payload = step === "free" ? { until: until } : {};
+        return api("POST", "/api/groups/" + groupId + "/" + step, payload).catch(function (error) {
+          failed = true;
+          toast(error.message);
+          return null;
+        });
+      });
+    });
+    return chain.then(function () {
+      if (!failed) {
+        delete freeTimeChoice[String(groupId)];
+        pendingFree[String(groupId)] = false;
+      }
+      /* Even a failed second call refreshes: the screen shows the server. */
+      return refresh().then(function () {
+        if (!failed) { toast(modeMessage(from, to, group.name, until)); }
+      });
+    }).then(function () {
+      delete inflight[key];
+      setBusy(groupId, -1);
+    });
   }
 
   function bonusMessage(name, minutes) {

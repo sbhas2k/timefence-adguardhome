@@ -8,8 +8,13 @@ removed, so a regression is caught in CI as well as by eye.
 
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from timefence import i18n
 
@@ -544,3 +549,287 @@ def test_the_bonus_row_labels_never_wrap_on_a_narrow_phone():
     css = css_text()
     assert "white-space: nowrap" in rule(css, ".bonus-row > *")
     assert "max-width: 360px" in css
+
+
+# ---------------------------------------------------------- phase 3: mode
+
+
+def test_the_mode_control_is_three_named_pressed_buttons():
+    """Block | Auto | Free: buttons with aria-pressed in one role=group."""
+    js = read("static", "app.js")
+    controls = js_function(js, "controlsHtml")
+
+    assert 'role="group"' in controls
+    assert 'data-mode-group="' in controls
+    assert 't("admin.mode_label", { name: group.name })' in controls
+    assert 'aria-pressed="' in controls
+    # three plain buttons, never a native radio group that an arrow key drives
+    assert 'type="button"' in controls
+    assert 'type="radio"' not in js
+
+    button = js_function(js, "modeButton")
+    for key in ("admin.mode_block", "admin.mode_auto", "admin.mode_free"):
+        assert f't("{key}")' in button, key
+        assert i18n.t(key) != key, key
+    assert 'data-action="mode"' in button
+    assert 'data-mode="' in button
+    assert 'aria-pressed="' in button
+
+    # Block, Auto, Free: the owner's order
+    order = [controls.index(f'modeButton(group, "{m}"') for m in ("block", "auto", "free")]
+    assert order == sorted(order)
+
+    for key in ("admin.mode_label", "admin.mode_block", "admin.mode_auto", "admin.mode_free"):
+        assert i18n.t(key) != key, key
+    assert i18n.t("admin.mode_auto") == "Auto"
+    assert "{name}" in i18n.STRINGS["en"]["admin.mode_label"]
+
+
+def test_the_old_instant_mode_buttons_are_gone_from_the_card():
+    """One control replaces Block now / Allow freely / Allow again / End free."""
+    js = read("static", "app.js")
+    controls = js_function(js, "controlsHtml")
+    for key in ("admin.block_now", "admin.free_apply", "admin.unblock", "admin.clear_free"):
+        assert key not in controls, key
+    for action in ("block", "free", "clearfree", "unblock"):
+        assert f'data-action="{action}"' not in controls, action
+
+    # the handler no longer has a branch of its own for them
+    for branch in ('action === "clearfree"', 'action === "unblock"'):
+        assert branch not in js, branch
+
+
+def test_the_free_segment_only_opens_a_panel():
+    """Free is two-step: the tap stores a pending choice and sends nothing."""
+    js = read("static", "app.js")
+    assert "var pendingFree = {};" in js
+
+    start = js.index('if (action === "mode") {')
+    branch = js[start : js.index("} else if", start + 5)]
+    open_leg = branch[branch.index('if (to === "free") {') :]
+    open_leg = open_leg[: open_leg.index("return;")]
+    assert "pendingFree[String(groupId)]" in open_leg
+    assert "paintMode(" in open_leg
+    assert "api(" not in open_leg
+    assert "setMode(" not in open_leg
+
+    # the panel holds the time box, its hint, Allow and a Cancel, and Allow is the call
+    controls = js_function(js, "controlsHtml")
+    assert 'data-free-panel="' in controls
+    assert 'data-free-time="' in controls
+    assert 'data-free-tomorrow="' in controls
+    assert 'data-action="free-apply"' in controls
+    assert 'esc(t("admin.free_allow"))' in controls
+    assert 'data-action="free-cancel"' in controls
+    assert 'esc(t("common.cancel"))' in controls
+    assert i18n.t("admin.free_allow") != "admin.free_allow"
+
+    apply_start = js.index('if (action === "free-apply") {')
+    apply = js[apply_start : js.index("} else if", apply_start + 5)]
+    assert 'setMode(groupId, "free", until);' in apply
+    cancel_start = js.index('if (action === "free-cancel") {')
+    cancel = js[cancel_start : js.index("} else if", cancel_start + 5)]
+    assert "pendingFree[String(groupId)] = false;" in cancel
+    assert "api(" not in cancel
+
+
+def test_the_free_panel_shows_the_current_end_and_the_stored_block_note():
+    js = read("static", "app.js")
+    controls = js_function(js, "controlsHtml")
+    assert 'data-free-note="' in controls
+    assert 'esc(t("admin.free_then_note"))' in controls
+    assert i18n.t("admin.free_then_note") != "admin.free_then_note"
+    # no Cancel while the group is already free: only the time can change
+    assert 'free ? " hidden" : ""' in controls
+
+    # a free group's box shows its current end, in the server zone, as HH:MM
+    value = js_function(js, "freeTimeValue")
+    assert 'group.status === "free"' in value
+    assert "group.free_until" in value
+    assert "defaultFreeTime()" in value  # the pinned fallback survives
+    assert "hhmm(" in value
+    hhmm = js_function(js, "hhmm")
+    assert 'hourCycle: "h23"' in hhmm
+    assert 'minute: "2-digit"' in hhmm
+
+
+def test_set_mode_runs_the_calls_in_order_with_one_refresh_and_one_toast():
+    """Two-call moves are sequential under one key, one refresh, one toast."""
+    js = read("static", "app.js")
+    set_mode = js_function(js, "setMode")
+    assert 'var key = "mode:" + groupId;' in set_mode
+    assert "if (inflight[key]) { return; }" in set_mode
+    assert "modeSequence(from, to, group)" in set_mode
+    assert set_mode.count("refresh()") == 1
+    assert "toast(modeMessage(from, to, group.name, until));" in set_mode
+    assert "steps.forEach(" in set_mode
+    assert "if (failed) { return null; }" in set_mode
+    assert "delete inflight[key];" in set_mode
+    assert "setBusy(groupId, 1);" in set_mode
+    assert "setBusy(groupId, -1);" in set_mode
+    # the route is built from the suffix table, never hard-coded per transition
+    assert '"/api/groups/" + groupId + "/" + step' in set_mode
+    assert "force/clear" not in set_mode
+    assert "free/clear" not in set_mode
+
+    message = js_function(js, "modeMessage")
+    for key in ("toast.blocked", "toast.free", "toast.unblocked", "toast.free_cleared"):
+        assert f't("{key}"' in message, key
+        assert i18n.t(key) != key, key
+
+
+def mode_probe_script(js: str) -> str:
+    """The two pure helpers plus a table, so node can prove the behaviour."""
+    cases = [
+        ("auto", "block", 0),
+        ("block", "auto", 0),
+        ("auto", "free", 0),
+        ("block", "free", 0),
+        ("free", "block", 0),
+        ("free", "auto", 0),
+        ("free", "auto", 1999999999),
+        ("free", "free", 0),
+        ("block", "block", 0),
+        ("auto", "auto", 0),
+    ]
+    rows = ",".join(f"[{json.dumps(a)},{json.dumps(b)},{c}]" for a, b, c in cases)
+    return "\n".join(
+        [
+            js_function(js, "modeFor"),
+            js_function(js, "modeSequence"),
+            f"var cases = [{rows}];",
+            "var seq = cases.map(function (c) {",
+            "  return modeSequence(c[0], c[1], {",
+            '    paused: false, status: "allowed", force_block_until: c[2] });',
+            "});",
+            "var statuses = [",
+            '  { paused: true, status: "paused" },',
+            '  { paused: false, status: "free" },',
+            '  { paused: false, status: "blocked_admin" },',
+            '  { paused: false, status: "allowed" },',
+            '  { paused: false, status: "limit_reached" },',
+            '  { paused: false, status: "bedtime" }',
+            "];",
+            "var modes = statuses.map(modeFor);",
+            "console.log(JSON.stringify({ seq: seq, modes: modes }));",
+        ]
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_the_mode_derivation_and_every_transition_in_order():
+    """Section 2's table, executed: the mode from the payload and the call order."""
+    js = read("static", "app.js")
+    done = subprocess.run(
+        [shutil.which("node"), "-e", mode_probe_script(js)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    got = json.loads(done.stdout)
+
+    assert got["seq"] == [
+        ["block"],  # Auto -> Block
+        ["force/clear"],  # Block -> Auto
+        ["free"],  # Auto -> Free
+        ["free", "force/clear"],  # Block -> Free, then back to Auto after it
+        ["block"],  # Free -> Block, the server clears the free window
+        ["free/clear"],  # Free -> Auto, nothing stored underneath
+        ["force/clear", "free/clear"],  # Free + stored block -> Auto, this order
+        ["free"],  # Free -> Free, a new time
+        [],  # the pressed Block does nothing
+        [],  # the pressed Auto does nothing
+    ]
+    # paused wins; a free window beats a block; every other status is Auto
+    assert got["modes"] == ["", "free", "block", "auto", "auto", "auto"]
+
+
+def test_midnight_makes_the_stored_block_invisible():
+    """The payload reports force_block_until 0 once it expired, so Auto is shown."""
+    js = read("static", "app.js")
+    seq = js_function(js, "modeSequence")
+    assert "Number(group.force_block_until) > 0" in seq
+    # the note is driven by the same test, never by a clock in the browser
+    paint = js_function(js, "paintMode")
+    assert "Number(group.force_block_until) > 0" in paint
+
+
+def test_the_pressed_segment_follows_the_server_on_every_poll():
+    """Patched in place outside the typing guard, so an expiry flips at once."""
+    js = read("static", "app.js")
+    paint = js_function(js, "paintMode")
+    assert "modeFor(group)" in paint
+    assert 'button.dataset.mode === mode ? "true" : "false"' in paint
+    assert 'setAttribute("aria-pressed"' in paint
+    assert "innerHTML" not in paint
+    assert "removeChild" not in paint
+    assert 'data-free-panel="' in paint
+    assert 'classList.toggle("hidden", !open)' in paint
+
+    render = js_function(js, "renderToday")
+    assert "paintMode(card, group);" in render
+    # outside the guard, and after the controls may have been rebuilt
+    assert render.index("paintMode(card, group);") > render.index("controls.innerHTML")
+    assert "\n      paintMode(card, group);\n" in render
+    # an open Free panel counts as typing, so the time box is never rebuilt
+    assert 'Boolean(pendingFree[id]) || modeFor(group) === "free"' in render
+    assert "|| openFree;" in render
+
+    signature = js_function(js, "signatureFor")
+    assert "modeFor(group)" in signature
+    assert "group.free_until" in signature
+    assert "Number(group.force_block_until) > 0" in signature
+
+
+def test_a_paused_group_shows_one_resume_button():
+    js = read("static", "app.js")
+    controls = js_function(js, "controlsHtml")
+    paused = controls[
+        controls.index("if (group.paused)") : controls.index("var mode = modeFor(group)")
+    ]
+    assert 'data-action="resume"' in paused
+    assert 'esc(t("admin.resume"))' in paused
+    assert 't("admin.resume_for", { name: group.name })' in paused
+    for token in ('role="group"', 'data-action="bonus"', 'data-action="reset"', "data-free-time"):
+        assert token not in paused, token
+    assert i18n.t("admin.resume") == "Resume"
+    assert "{name}" in i18n.STRINGS["en"]["admin.resume_for"]
+
+    start = js.index('if (action === "resume") {')
+    branch = js[start : js.index("} else if", start + 5)]
+    assert 'adminAction("pause", groupId, { paused: false }' in branch
+    assert 't("toast.resumed", { name: name })' in branch
+
+    # the controls of a paused card carry no mode at all, so nothing is patched
+    paint = js_function(js, "paintMode")
+    assert 'data-action="mode"' in paint
+
+
+def test_arrow_keys_move_focus_between_the_segments_only():
+    js = read("static", "app.js")
+    start = js.index("var button = event.target.closest('[data-action=\"mode\"]')")
+    handler = js[start : js.index('document.addEventListener("click"', start)]
+    for key in ('"ArrowRight"', '"ArrowLeft"', '"Home"', '"End"'):
+        assert key in handler, key
+    assert "event.preventDefault();" in handler
+    assert "next.focus();" in handler
+    assert "click()" not in handler  # arrows never apply a mode
+    assert "setMode(" not in handler
+    assert "data-mode-group" in handler
+
+
+def test_the_mode_control_is_44_pixels_and_never_colour_only():
+    css = css_text()
+    seg = rule(css, ".seg")
+    assert "display: flex" in seg
+    button = rule(css, ".seg > .seg-btn")
+    assert "flex: 1 1 0" in button
+    assert "min-height: 44px" in button or "min-height: 46px" in button
+    assert "min-width: 0" in button
+    pressed = rule(css, '.seg-btn[aria-pressed="true"]')
+    assert "border-color" in pressed
+    assert "box-shadow" in pressed  # a ring, not colour alone
+    assert "font-weight" in pressed
+    assert "color-mix(" in pressed
