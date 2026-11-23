@@ -300,3 +300,27 @@ def test_the_free_time_default_is_an_hour_ahead_in_the_server_zone():
     assert "freeTimeIsTomorrow(input.value)" in js
     assert '"admin.free_tomorrow"' in js
     assert i18n.t("admin.free_tomorrow") != "admin.free_tomorrow"
+
+
+def test_an_untouched_free_time_follows_the_server_clock():
+    """A card drawn hours ago must not send a stale default when Allow is tapped."""
+    js = read("static", "app.js")
+    refresh = js_function(js, "refreshFreeDefault")
+    # an edited value wins, and a focused input is never written to
+    assert "if (freeTimeChoice[id]) { return; }" in refresh
+    assert "document.activeElement === input" in refresh
+    assert "input.value = value" in refresh
+    assert "freeTimeIsTomorrow(value)" in refresh
+
+    # it runs from the render path, after the controls are settled
+    render = js_function(js, "renderToday")
+    assert "refreshFreeDefault(card, group);" in render
+    assert render.index("refreshFreeDefault(card, group);") > render.index("controls.innerHTML")
+
+    # the click recomputes when nothing was edited, and uses the edit when there is one
+    start = js.index('} else if (action === "free") {')
+    stop = js.index('} else if (action === "clearfree") {')
+    branch = js[start:stop]
+    assert "freeTimeChoice[String(groupId)] || defaultFreeTime()" in branch
+    assert "freeInput.value" in branch  # only as the last resort
+    assert branch.index("defaultFreeTime()") < branch.index("freeInput.value")
