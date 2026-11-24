@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project uses [Semantic Versioning](https://semver.org/).
 
-## [1.0.0] - 2026-11-19
+## [1.0.0] - 2026-11-24
 
 The first public release since 0.3.0. The 0.4 and 0.5 work was developed
 together and is released as one version, so this entry covers everything a
