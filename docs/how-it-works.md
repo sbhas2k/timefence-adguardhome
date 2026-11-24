@@ -39,6 +39,9 @@ Friday night. Windows may cross midnight and overlapping windows are a union; a
 windows has no restriction and is always open — it can still be blocked, paused
 or freed like any other group.
 
+To allow a group all day, give it no windows: a window cannot end at 24:00, so
+`00:00 – 23:59` would close the group for the last minute of the day.
+
 ```
 open_now = any(window contains (local date, local minute-of-day))
 ```
