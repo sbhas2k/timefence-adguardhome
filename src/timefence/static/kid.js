@@ -39,50 +39,29 @@
     }
   }
 
-  function history(list) {
+  function asList(list) {
     return Array.isArray(list) ? list : [];
   }
 
-  function progressFor(group) {
-    var total = Math.max(0, (Number(group.minutes_today) || 0) + (Number(group.bonus_minutes) || 0));
-    var remaining = Math.max(0, Number(group.remaining_minutes) || 0);
-    var progress = document.createElement("progress");
-    progress.className = "kid-bar";
-    progress.max = total > 0 ? total : 1;
-    progress.value = Math.min(remaining, progress.max);
-    return progress;
-  }
-
+  /* One sentence per group, straight from the reduced payload: the server
+     already decided whether the group is open, so no clock maths here. */
   function bigLine(group) {
-    if (group.status === "bedtime") {
-      var until = group.bedtime_until;
-      return {
-        main: until ? t("kid.bedtime", { time: until }) : t("kid.bedtime_any"),
-        detail: ""
-      };
-    }
-    var remaining = Math.max(0, Number(group.remaining_minutes) || 0);
-    if (group.status === "limit_reached") {
-      return { main: t("kid.time_up"), detail: t("kid.back_tomorrow") };
-    }
-    if (group.status === "blocked_admin") {
-      return { main: t("kid.blocked_by_parent", { time: clock(group.blocked_until) }), detail: "" };
-    }
-    if (group.status === "paused") {
-      return { main: t("kid.paused"), detail: "" };
-    }
     if (group.status === "free") {
-      return { main: t("kid.free_until", { time: clock(group.free_until) }), detail: "" };
+      return t("kid.free_until", { time: clock(group.free_until) });
     }
-    if (remaining > 0 && remaining < 1) {
-      return { main: t("kid.less_than_minute"), detail: "" };
+    if (group.status === "blocked_admin") { return t("kid.blocked"); }
+    if (group.status === "paused") { return t("kid.paused"); }
+    if (group.status === "outside_hours") {
+      return t("kid.opens_at", { time: group.opens_at || "" });
     }
-    return { main: t("kid.minutes_left", { minutes: Math.floor(remaining) }), detail: "" };
+    if (group.open_until) { return t("kid.open_until", { time: group.open_until }); }
+    return t("kid.open_all_day");
   }
 
   function card(group) {
     var article = document.createElement("article");
-    article.className = "kid-card" + (group.status === "bedtime" ? " bedtime" : "");
+    /* Closed outside the allowed times is calm, not a punishment. */
+    article.className = "kid-card" + (group.status === "outside_hours" ? " closed" : "");
 
     var emoji = document.createElement("span");
     emoji.className = "kid-emoji";
@@ -93,31 +72,13 @@
     name.className = "kid-name";
     name.textContent = group.name || "";
 
-    var line = bigLine(group);
     var main = document.createElement("p");
     main.className = "kid-big";
-    main.textContent = line.main;
-
-    var bar = progressFor(group);
-    bar.setAttribute("aria-label", line.main);
-
-    var used = document.createElement("p");
-    used.className = "kid-used";
-    used.textContent = t("kid.used_today", {
-      minutes: Math.round(Number(group.used_minutes) || 0)
-    });
+    main.textContent = bigLine(group);
 
     article.appendChild(emoji);
     article.appendChild(name);
     article.appendChild(main);
-    article.appendChild(bar);
-    article.appendChild(used);
-    if (line.detail) {
-      var detail = document.createElement("p");
-      detail.className = "kid-detail";
-      detail.textContent = line.detail;
-      article.appendChild(detail);
-    }
     return article;
   }
 
@@ -125,7 +86,7 @@
     var list = $("#kid-groups");
     if (!list) { return; }
     while (list.firstChild) { list.removeChild(list.firstChild); }
-    var groups = history(state.groups);
+    var groups = asList(state.groups);
     for (var index = 0; index < groups.length; index += 1) {
       list.appendChild(card(groups[index]));
     }

@@ -21,9 +21,6 @@
   var HINT_HIDDEN_KEY = "tf.alertsHintHiddenAt";
   var HINT_HIDDEN_MS = 14 * 24 * 60 * 60 * 1000;
   var hintHiddenFor = 0;  /* the same dismissal, kept for a view without storage */
-  var usageDays = 7;
-  var usageData = null;
-  var usageLoading = false;
   var sequence = 0;
   var applied = 0;
   var renderedSignature = null;
@@ -32,9 +29,6 @@
   var inflight = {};
   var busy = {};
   var freeTimeChoice = {};
-  /* Whether a group's Custom minutes box is open: the poll rebuilds the
-     controls, so the disclosure state cannot live in the markup. */
-  var openCustom = {};
   /* Whether a group's apps-and-domains line is open: the header is patched in
      place, so the server can redraw it on every poll without closing it. */
   var openCoverage = {};
@@ -74,11 +68,6 @@
     } catch (err) {
       return "";
     }
-  }
-
-  function fmtMinutes(value) {
-    var n = Math.round(Number(value) * 10) / 10;
-    return (n % 1 === 0 ? String(n) : n.toFixed(1));
   }
 
   /* Minutes since midnight for an HH:MM value, or null when it is not one. */
@@ -171,7 +160,7 @@
 
   /* One displayed mode per group, straight from the server payload: a paused
      card shows no segments, a free window wins over everything and every other
-     status (bedtime and a used-up budget included) follows the daily budget. */
+     status (closed outside its allowed times included) is Auto. */
   function modeFor(group) {
     if (!group || group.paused) { return ""; }
     if (group.status === "free") { return "free"; }
@@ -298,12 +287,10 @@
     if (!element || element === document.body || !element.getAttribute) { return ""; }
     var names = [
       "id",
-      "data-custom-bonus",
       "data-free-time",
       "data-group",
       "data-action",
       "data-mode",
-      "data-minutes",
       "data-user",
       "data-role"
     ];
@@ -347,25 +334,38 @@
   }
 
   // ------------------------------------------------------------------ render
-  /* One status per group, straight from the server: no clock maths here. */
+  /* One sentence per group, straight from the server payload: no clock maths
+     here. `status` comes from the single predicate the API and the kid page
+     share, and `opens_at`/`open_until` are already local HH:MM. */
   function statusFor(group) {
-    if (group.status === "bedtime") {
-      var until = group.bedtime_until;
+    if (group.status === "paused") {
+      return { cls: "warn", short: t("status.short_paused"), text: t("status.paused") };
+    }
+    if (group.status === "free") {
       return {
         cls: "warn",
-        text: until ? t("status.bedtime", { time: until }) : t("status.bedtime_any")
+        short: t("status.short_free"),
+        text: t("status.free", { time: clock(group.free_until) })
       };
     }
-    if (group.status === "paused") { return { cls: "warn", text: t("status.paused") }; }
-    if (group.status === "blocked_admin") { return { cls: "bad", text: t("status.forced") }; }
-    if (group.status === "free") {
-      return { cls: "warn", text: t("status.free", { time: clock(group.free_until) }) };
+    if (group.status === "blocked_admin") {
+      return { cls: "bad", short: t("status.short_blocked"), text: t("status.forced") };
     }
-    if (group.status === "limit_reached") { return { cls: "bad", text: t("status.limit_reached") }; }
-    return {
-      cls: "ok",
-      text: t("status.allowed_auto", { minutes: fmtMinutes(group.remaining_minutes) })
-    };
+    if (group.status === "outside_hours") {
+      return {
+        cls: "warn",
+        short: t("status.short_closed"),
+        text: t("status.opens_at", { time: group.opens_at || "" })
+      };
+    }
+    if (group.open_until) {
+      return {
+        cls: "ok",
+        short: t("status.short_open"),
+        text: t("status.open_until", { time: group.open_until })
+      };
+    }
+    return { cls: "ok", short: t("status.short_open"), text: t("status.open_all_day") };
   }
 
   function coverage(group) {
@@ -393,17 +393,8 @@
   }
 
   function liveHtml(group) {
-    var total = Math.max(0, (Number(group.minutes_today) || 0) + (Number(group.bonus_minutes) || 0));
-    var used = Number(group.used_minutes) || 0;
-    var usedPercent = total > 0 ? Math.min(100, (used / total) * 100) : 0;
-    var leftover = Math.max(0, total - used);
-    var usedText = esc(t("budget.used", { used: fmtMinutes(used) }));
-    return '<div class="between mt"><div class="big">' + fmtMinutes(group.remaining_minutes) +
-      '<span class="muted small"> ' + esc(t("common.minutes")) + "</span></div>" +
-      '<div class="muted small center">' +
-      esc(t("budget.left", { left: fmtMinutes(leftover), total: fmtMinutes(total) })) +
-      "<br>" + usedText + "</div></div>" +
-      '<progress max="100" value="' + usedPercent.toFixed(1) + '" aria-label="' + usedText + '"></progress>';
+    var status = statusFor(group);
+    return '<p class="live-line ' + status.cls + '">' + esc(status.text) + "</p>";
   }
 
   /* A card is three regions: a header that is patched in place, a live part that
@@ -427,19 +418,7 @@
     title.appendChild(name);
     title.appendChild(document.createTextNode(" "));
     title.appendChild(status);
-    /* Reset is one icon next to the title, built once: the poll patches its
-       label and group, so the dialog's opener is never a stale node. */
-    var reset = document.createElement("button");
-    reset.type = "button";
-    reset.className = "btn card-reset";
-    reset.dataset.action = "reset";
-    reset.dataset.headerReset = "1";
-    var glyph = document.createElement("span");
-    glyph.setAttribute("aria-hidden", "true");
-    glyph.textContent = "↺";
-    reset.appendChild(glyph);
     row.appendChild(title);
-    row.appendChild(reset);
     var line = document.createElement("div");
     line.className = "sub wrap-anywhere";
     line.dataset.headerCoverage = "1";
@@ -476,12 +455,11 @@
     header.querySelector("[data-header-emoji]").textContent = group.emoji || "⏳";
     header.querySelector("[data-header-name]").textContent = group.name;
     var pill = header.querySelector("[data-header-status]");
-    pill.textContent = status.text;
+    /* The pill is the one-word state; the live line below carries the sentence,
+       so the card never says the same thing twice. */
+    pill.textContent = status.short;
     pill.className = "pill " + status.cls;
     pill.dataset.status = String(group.id);
-    var reset = header.querySelector("[data-header-reset]");
-    reset.dataset.group = id;
-    reset.setAttribute("aria-label", t("admin.reset_for", { name: group.name }));
     /* More than three items is longer than one line, so the list collapses
        behind a summary; the open state belongs to the group, not the markup. */
     var list = header.querySelector("[data-header-coverage]");
@@ -526,7 +504,6 @@
     var until = freeTimeValue(group);
     var tomorrow = freeTimeIsTomorrow(until);
     var open = free || Boolean(pendingFree[id]);
-    var panelId = "custom-bonus-" + group.id;
     return '<div class="seg" role="group" aria-label="' +
       esc(t("admin.mode_label", { name: group.name })) + '" data-mode-group="' + group.id + '">' +
       modeButton(group, "block", mode === "block") +
@@ -548,40 +525,7 @@
       '">' + esc(t("common.cancel")) + "</button>" +
       "</div>" +
       '<p class="muted small free-note' + (free && storedBlock ? "" : " hidden") +
-      '" data-free-note="' + group.id + '">' + esc(t("admin.free_then_note")) + "</p>" +
-      '<div class="row tight mt bonus-row">' +
-      '<button class="btn" data-action="bonus" data-group="' + group.id + '" data-minutes="-15"' +
-      ' aria-label="' + esc(t("admin.decrease_for", { name: group.name })) + '">' +
-      esc(t("admin.decrease")) + "</button>" +
-      '<button class="btn" data-action="bonus" data-group="' + group.id + '" data-minutes="15"' +
-      ' aria-label="' + esc(t("admin.bonus_for", { name: group.name })) + '">' +
-      esc(t("admin.bonus")) + "</button>" +
-      '<button class="btn custom-toggle" data-action="custom" data-group="' + group.id +
-      '" aria-expanded="false" aria-controls="' + panelId + '" aria-label="' +
-      esc(t("admin.custom_for", { name: group.name })) + '">' +
-      esc(t("admin.custom")) + '<span class="chev" aria-hidden="true">▾</span></button>' +
-      "</div>" +
-      '<div class="row tight mt bonus-panel hidden" id="' + panelId +
-      '" data-custom-panel="' + group.id + '">' +
-      '<input type="number" inputmode="numeric" step="5" data-custom-bonus="' + group.id +
-      '" placeholder="' + esc(t("admin.custom_placeholder")) + '" aria-label="' +
-      esc(t("admin.custom_placeholder")) + '">' +
-      '<button class="btn primary" data-action="bonus-custom" data-group="' + group.id +
-      '" aria-label="' + esc(t("admin.apply_for", { name: group.name })) + '">' +
-      esc(t("admin.apply")) + "</button>" +
-      "</div>";
-  }
-
-  /* The disclosure's open state is painted from the map, so a rebuilt controls
-     region comes back open with whatever was typed in it. */
-  function paintCustom(card, groupId) {
-    if (!card) { return; }
-    var id = String(groupId);
-    var open = Boolean(openCustom[id]);
-    var panel = card.querySelector('[data-custom-panel="' + id + '"]');
-    var toggle = card.querySelector('[data-action="custom"][data-group="' + id + '"]');
-    if (panel) { panel.classList.toggle("hidden", !open); }
-    if (toggle) { toggle.setAttribute("aria-expanded", open ? "true" : "false"); }
+      '" data-free-note="' + group.id + '">' + esc(t("admin.free_then_note")) + "</p>";
   }
 
   /* Server truth, patched in place on every poll: the pressed segment, the Free
@@ -665,15 +609,13 @@
       }
 
       var controls = card.querySelector("[data-controls]");
-      var input = controls.querySelector("[data-custom-bonus]");
       /* A pending Free panel, or a time edited in a Free group's panel, counts as
          typing: the time box is never rebuilt under them, and the pressed segments
          are patched in place anyway. A group that is merely Free is not typing, and
          a time left over from a cancelled edit protects nothing. */
       var openFree = Boolean(pendingFree[id]) ||
         (modeFor(group) === "free" && Boolean(freeTimeChoice[id]));
-      var typing = controls.contains(document.activeElement) ||
-        (input && input.value !== "") || openFree;
+      var typing = controls.contains(document.activeElement) || openFree;
       var signature = signatureFor(group);
       /* The guard only protects controls that exist: the first build always runs. */
       var built = card.dataset.signature !== undefined;
@@ -683,12 +625,18 @@
       }
 
       paintMode(card, group);
-      paintCustom(card, group.id);
       refreshFreeDefault(card, group);
     });
 
     var empty = $("#no-groups");
     if (empty) { empty.classList.toggle("hidden", groups.length > 0); }
+  }
+
+  /* "Always open" or "2 allowed times": the schedule in a few words. */
+  function windowsSummary(group) {
+    var count = group.windows ? group.windows.length : 0;
+    if (!count) { return t("groups.windows_none"); }
+    return t(count === 1 ? "groups.windows_one" : "groups.windows_other", { count: count });
   }
 
   function renderGroupList() {
@@ -703,8 +651,8 @@
         '<div class="item">' +
         '<span aria-hidden="true">' + esc(g.emoji || "⏳") + "</span>" +
         '<div class="grow"><div class="name">' + esc(g.name) + "</div>" +
-        '<div class="muted small">' + g.weekday_minutes + "/" + g.weekend_minutes + " " +
-        esc(t("common.minutes")) + " · " + esc(g.owner || t("groups.owner_shared")) +
+        '<div class="muted small">' + esc(windowsSummary(g)) + " · " +
+        esc(g.owner || t("groups.owner_shared")) +
         " · " + esc([].concat(g.services, g.domains).join(", ").slice(0, 70)) + "</div></div>" +
         (g.paused ? '<span class="pill warn">' + esc(t("status.paused")) + "</span>" : "") +
         '<button class="btn ghost" data-action="edit" data-group="' + g.id + '">' +
@@ -714,67 +662,6 @@
         "</div>"
       );
     }).join("");
-  }
-
-  function usageGroups() {
-    var seen = {};
-    var out = [];
-    ((usageData && usageData.rows) || []).forEach(function (row) {
-      var key = String(row.group_id);
-      if (seen[key]) { return; }
-      seen[key] = true;
-      out.push({ id: row.group_id, name: row.group });
-    });
-    return out;
-  }
-
-  function renderHistory() {
-    var table = $("#history-table");
-    if (!table) { return; }
-    var select = $("#history-days");
-    if (select) { select.value = String(usageDays); }
-    var link = $("#history-csv");
-    if (link) { link.href = base + "/api/usage.csv?days=" + usageDays; }
-    if (!usageData) {
-      table.innerHTML = '<tbody><tr><td class="muted small">' + esc(t("common.loading")) +
-        "</td></tr></tbody>";
-      return;
-    }
-    var groups = usageGroups();
-    if (!groups.length) {
-      table.innerHTML = '<tbody><tr><td class="muted small">' + esc(t("history.none")) +
-        "</td></tr></tbody>";
-      return;
-    }
-    var order = [];
-    var byDay = {};
-    usageData.rows.forEach(function (row) {
-      if (!byDay[row.day]) { byDay[row.day] = {}; order.push(row.day); }
-      byDay[row.day][String(row.group_id)] = row;
-    });
-    var head = '<thead><tr><th>' + esc(t("history.day")) + "</th>" +
-      groups.map(function (group) {
-        return "<th>" + esc(group.name) + "</th>";
-      }).join("") + "</tr></thead>";
-    var rows = order.map(function (day) {
-      return "<tr><td>" + esc(day) + "</td>" + groups.map(function (group) {
-        var row = byDay[day][String(group.id)];
-        var value = row ? Number(row.used_minutes) || 0 : 0;
-        return "<td>" + (value ? fmtMinutes(value) : "–") + "</td>";
-      }).join("") + "</tr>";
-    }).join("");
-    table.innerHTML = head + "<tbody>" + rows + "</tbody>";
-  }
-
-  function loadUsage() {
-    if (usageLoading) { return Promise.resolve(); }
-    usageLoading = true;
-    return api("GET", "/api/usage?days=" + usageDays).then(function (data) {
-      usageData = data || { days: usageDays, rows: [] };
-      renderHistory();
-    }).catch(function (error) {
-      toast(error.message);
-    }).then(function () { usageLoading = false; });
   }
 
   /* Everything the DOM shows, minus the ever-changing app.now: a poll that
@@ -790,9 +677,7 @@
       adguard_error: state.adguard_error || "",
       adguard_error_kind: state.adguard_error_kind || "",
       adguard_retry_seconds: state.adguard_retry_seconds || 0,
-      groups: state.groups || [],
-      usage: usageData ? { days: usageData.days, rows: usageData.rows } : null,
-      usageDays: usageDays
+      groups: state.groups || []
     });
   }
 
@@ -822,15 +707,10 @@
     revealSelectedTab();
     if (!isAdmin) { tab = "today"; }
     $("#panel-groups").classList.toggle("hidden", !(isAdmin && tab === "groups"));
-    $("#panel-history").classList.toggle("hidden", !(isAdmin && tab === "history"));
     $("#panel-settings").classList.toggle("hidden", !(isAdmin && tab === "settings"));
     $("#panel-today").classList.toggle("hidden", isAdmin && tab !== "today");
     renderToday();
     if (isAdmin && tab === "groups") { renderGroupList(); }
-    if (isAdmin && tab === "history") {
-      renderHistory();
-      if (!usageData) { loadUsage(); }
-    }
     if (isAdmin && tab === "settings") {
       loadUsers();
       if (!alertsTabLoaded) { alertsTabLoaded = true; loadAlerts(); }
@@ -937,36 +817,6 @@
     });
   }
 
-  function bonusMessage(name, minutes) {
-    return minutes < 0
-      ? t("toast.bonus_removed", { name: name, minutes: Math.abs(minutes) })
-      : t("toast.bonus", { name: name, minutes: minutes });
-  }
-
-  function resetGroup(groupId, name) {
-    openModal(
-      '<h2 class="wrap-anywhere">' + esc(t("admin.reset_today")) + " — " + esc(name) + "</h2>" +
-      '<p class="sub">' + esc(t("admin.reset_confirm", { name: name })) + "</p>" +
-      '<div class="row mt"><button class="btn" data-action="modal-close">' +
-      esc(t("common.cancel")) + "</button>" +
-      '<button class="btn danger" id="reset-confirm">' + esc(t("admin.reset_today")) + "</button></div>"
-    );
-    $("#reset-confirm").addEventListener("click", function (event) {
-      var button = event.currentTarget;
-      button.disabled = true;
-      api("POST", "/api/groups/" + groupId + "/reset", {})
-        .then(function (data) {
-          closeModal();
-          toast(t("toast.reset", { name: data.group.name }));
-          return refresh();
-        })
-        .catch(function (error) {
-          button.disabled = false;
-          toast(error.message);
-        });
-    });
-  }
-
   // ------------------------------------------------------------ group editor
   function criticalDialog(hits, retry) {
     var list = hits.map(function (h) {
@@ -1017,8 +867,7 @@
 
   function openGroupEditorWith(group, users) {
     group = group || {
-      name: "", emoji: "⏳", weekday_minutes: 60, weekend_minutes: 60,
-      services: [], domains: [], windows: [], paused: false, owner_id: null
+      name: "", emoji: "⏳", services: [], domains: [], windows: [], paused: false, owner_id: null
     };
     var selected = { services: (group.services || []).slice() };
     var windows = (group.windows || []).map(function (w) {
@@ -1027,9 +876,9 @@
 
     function dayOptions(selectedDay) {
       var days = [
-        { value: "all", label: t("groups.bedtime_days_all") },
-        { value: "weekday", label: t("groups.bedtime_days_weekday") },
-        { value: "weekend", label: t("groups.bedtime_days_weekend") }
+        { value: "all", label: t("groups.days_all") },
+        { value: "weekday", label: t("groups.days_weekday") },
+        { value: "weekend", label: t("groups.days_weekend") }
       ];
       return days.map(function (day) {
         return '<option value="' + day.value + '"' +
@@ -1037,26 +886,28 @@
       }).join("");
     }
 
+    /* One allowed time: from, until, which days. An empty list means always
+       open, which the helper text states. */
     function paintWindows() {
-      var list = $("#bedtime-windows");
+      var list = $("#allowed-windows");
       if (!list) { return; }
       list.innerHTML = windows.map(function (w, index) {
-        return '<div class="row tight" data-window="' + index + '">' +
+        return '<div class="row tight window-row" data-window="' + index + '">' +
           '<input type="time" data-window-start="' + index + '" value="' + esc(w.start) +
-          '" aria-label="' + esc(t("groups.bedtime_from")) + '">' +
+          '" aria-label="' + esc(t("groups.window_from")) + '">' +
           '<input type="time" data-window-end="' + index + '" value="' + esc(w.end) +
-          '" aria-label="' + esc(t("groups.bedtime_until")) + '">' +
+          '" aria-label="' + esc(t("groups.window_until")) + '">' +
           '<select data-window-days="' + index + '" aria-label="' +
-          esc(t("groups.bedtime_days")) + '">' + dayOptions(w.days) + "</select>" +
+          esc(t("groups.window_days")) + '">' + dayOptions(w.days) + "</select>" +
           '<button type="button" class="btn ghost" data-action="remove-window" data-window="' +
-          index + '">' + esc(t("groups.bedtime_remove")) + "</button></div>";
+          index + '">' + esc(t("groups.window_remove")) + "</button></div>";
       }).join("");
       var add = document.querySelector("[data-action='add-window']");
       if (add) { add.disabled = windows.length >= 4; }
     }
 
     function readWindows() {
-      var list = $("#bedtime-windows");
+      var list = $("#allowed-windows");
       if (!list) { return windows; }
       return windows.map(function (w, index) {
         var start = list.querySelector('[data-window-start="' + index + '"]');
@@ -1083,17 +934,11 @@
         '</label><input type="text" id="g-emoji" value="' + esc(group.emoji || "") + '" maxlength="8"></div>' +
         '<div class="grow1"><label for="g-name">' + esc(t("groups.name")) + "</label>" +
         '<input type="text" id="g-name" value="' + esc(group.name) + '" required></div></div>' +
-        '<div class="row"><div class="grow1"><label for="g-weekday">' + esc(t("groups.weekday")) +
-        '</label><input type="number" id="g-weekday" min="0" max="1440" value="' +
-        group.weekday_minutes + '"></div>' +
-        '<div class="grow1"><label for="g-weekend">' + esc(t("groups.weekend")) +
-        '</label><input type="number" id="g-weekend" min="0" max="1440" value="' +
-        group.weekend_minutes + '"></div></div>' +
-        '<fieldset class="bedtime"><legend>' + esc(t("groups.bedtime_heading")) + "</legend>" +
-        '<p class="sub">' + esc(t("groups.bedtime_help")) + "</p>" +
-        '<div class="stack" id="bedtime-windows"></div>' +
+        '<fieldset class="windows"><legend>' + esc(t("groups.allowed_heading")) + "</legend>" +
+        '<p class="sub">' + esc(t("groups.allowed_help")) + "</p>" +
+        '<div class="stack" id="allowed-windows"></div>' +
         '<button type="button" class="btn mt" data-action="add-window">' +
-        esc(t("groups.bedtime_add")) + "</button></fieldset>" +
+        esc(t("groups.allowed_add")) + "</button></fieldset>" +
         '<div><label>' + esc(t("groups.services")) +
         '</label><div class="row tight" id="service-chips">' + chips +
         ' <button type="button" class="btn" data-action="pick-services">+ ' +
@@ -1137,8 +982,6 @@
         var payload = {
           name: $("#g-name").value,
           emoji: $("#g-emoji").value,
-          weekday_minutes: Number($("#g-weekday").value),
-          weekend_minutes: Number($("#g-weekend").value),
           domains_text: $("#g-domains").value,
           services: selected.services,
           windows: readWindows(),
@@ -1151,11 +994,11 @@
         button.addEventListener("click", function () {
           windows = readWindows();
           if (windows.length >= 4) { return; }
-          windows.push({ start: "21:00", end: "07:00", days: "all" });
+          windows.push({ start: "16:00", end: "20:00", days: "all" });
           paintWindows();
         });
       });
-      var windowList = $("#bedtime-windows");
+      var windowList = $("#allowed-windows");
       if (windowList) {
         windowList.addEventListener("click", function (event) {
           var target = event.target.closest("[data-action='remove-window']");
@@ -1637,29 +1480,6 @@
       paintMode(target.closest("[data-card-group]"), group);
     } else if (action === "resume") {
       adminAction("pause", groupId, { paused: false }, t("toast.resumed", { name: name }));
-    } else if (action === "custom") {
-      openCustom[String(groupId)] = !openCustom[String(groupId)];
-      paintCustom(target.closest("[data-card-group]"), groupId);
-    } else if (action === "bonus") {
-      var minutes = Number(target.dataset.minutes || 15);
-      adminAction("bonus", groupId, { minutes: minutes }, bonusMessage(name, minutes));
-    } else if (action === "bonus-custom") {
-      var input = document.querySelector('[data-custom-bonus="' + groupId + '"]');
-      var value = input ? Number(input.value) : NaN;
-      if (!input || !input.value || !Number.isInteger(value) || value === 0 ||
-          Math.abs(value) > 1440) {
-        toast(t("admin.custom_invalid"));
-        return;
-      }
-      adminAction("bonus", groupId, { minutes: value }, bonusMessage(name, value), function () {
-        /* A number left in the box counts as "typing" and would freeze this
-           card's controls, so it goes only once the server accepted it. */
-        input.value = "";
-        openCustom[String(groupId)] = false;
-        paintCustom(input.closest("[data-card-group]"), groupId);
-      });
-    } else if (action === "reset") {
-      resetGroup(groupId, name);
     } else if (action === "coverage") {
       openCoverage[String(groupId)] = !openCoverage[String(groupId)];
       paintHeader(target.closest("[data-card-group]"), group);
@@ -1751,7 +1571,6 @@
     button.addEventListener("click", function () {
       if (button.dataset.tab !== tab) { alertsTabLoaded = false; }
       tab = button.dataset.tab;
-      if (tab === "history") { loadUsage(); }
       render();
     });
   });
@@ -1759,14 +1578,6 @@
   var newGroupButton = $("#new-group");
   if (newGroupButton) {
     newGroupButton.addEventListener("click", function () { openGroupEditor(null); });
-  }
-
-  var historyDaysSelect = $("#history-days");
-  if (historyDaysSelect) {
-    historyDaysSelect.addEventListener("change", function () {
-      usageDays = Number(historyDaysSelect.value) || 7;
-      loadUsage();
-    });
   }
 
   var discoverButton = $("#discover-run");
