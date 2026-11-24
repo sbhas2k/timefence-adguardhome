@@ -1,4 +1,4 @@
-"""Schema migrations: atomic steps, the session-mode removal and the backup."""
+"""Schema migrations: atomic steps, the session-mode removal, the budget removal."""
 
 from __future__ import annotations
 
@@ -20,11 +20,32 @@ def build_v3_db(path) -> sqlite3.Connection:
     return conn
 
 
+def build_v4_db(path) -> sqlite3.Connection:
+    conn = db.connect(path)
+    assert db.migrate(conn, TZ, target=4) == 4
+    return conn
+
+
+def build_v5_db(path) -> sqlite3.Connection:
+    conn = db.connect(path)
+    assert db.migrate(conn, TZ, target=5) == 5
+    return conn
+
+
 def add_group(conn, name, *, mode="session", deleted=0, created_at=0) -> int:
     cur = conn.execute(
         "INSERT INTO groups(name, emoji, weekday_minutes, weekend_minutes, paused, deleted, "
         "created_at, mode) VALUES(?,?,?,?,0,?,?,?)",
         (name, "", 60, 60, deleted, created_at, mode),
+    )
+    return int(cur.lastrowid)
+
+
+def normal_group(conn, name="YouTube") -> int:
+    cur = conn.execute(
+        "INSERT INTO groups(name, emoji, weekday_minutes, weekend_minutes, paused, deleted, "
+        "created_at) VALUES(?,?,?,?,0,0,0)",
+        (name, "", 60, 60),
     )
     return int(cur.lastrowid)
 
@@ -56,6 +77,19 @@ def usage(conn, group_id, day) -> int:
     return int(row[0]) if row else 0
 
 
+def table_names(conn) -> set[str]:
+    return {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+
+def group_columns(conn) -> set[str]:
+    return {row[1] for row in conn.execute("PRAGMA table_info(groups)")}
+
+
+# --------------------------------------------------------------------------- #
+# v4: sessions are gone
+# --------------------------------------------------------------------------- #
+
+
 def test_v3_session_groups_become_auto_with_usage_backfilled(tmp_path):
     conn = build_v3_db(tmp_path / "t.db")
     d1, d2 = "2026-11-10", "2026-11-11"
@@ -71,7 +105,7 @@ def test_v3_session_groups_become_auto_with_usage_backfilled(tmp_path):
     )
     conn.commit()
 
-    assert db.migrate(conn, TZ) == 5
+    assert db.migrate(conn, TZ, target=5) == 5
 
     assert db.current_version(conn) == 5
     assert {row[0] for row in conn.execute("SELECT DISTINCT mode FROM groups")} == {"auto"}
@@ -94,7 +128,7 @@ def test_open_sessions_are_closed_and_billed_elapsed(tmp_path, monkeypatch, hour
     add_session(conn, group, now - 600, 0, planned=900, ended=False)
     add_session(conn, group, now - 3600, 0, planned=900, ended=False)
 
-    db.migrate(conn, TZ)
+    db.migrate(conn, TZ, target=5)
 
     rows = list(
         conn.execute(
@@ -119,7 +153,7 @@ def test_open_sessions_are_billed_to_the_day_each_one_started(tmp_path, monkeypa
     add_session(conn, group, now - 60, 0, planned=900, ended=False)
     add_session(conn, group, now - 3600, 0, planned=900, ended=False)
 
-    db.migrate(conn, TZ)
+    db.migrate(conn, TZ, target=5)
 
     rows = list(conn.execute("SELECT used_seconds FROM sessions ORDER BY id"))
     assert [row["used_seconds"] for row in rows] == [60, 900]
@@ -134,7 +168,7 @@ def test_session_started_before_midnight_is_billed_to_its_start_day(tmp_path):
     late = local_ts("2026-11-10", hour=23) + 58 * 60
     add_session(conn, group, late, 300)
 
-    db.migrate(conn, TZ)
+    db.migrate(conn, TZ, target=5)
 
     assert usage(conn, group, "2026-11-10") == 300
     assert usage(conn, group, "2026-11-11") == 0
@@ -151,7 +185,7 @@ def test_v4_adds_session_epoch_and_logs_event(tmp_path):
     )
     conn.commit()
 
-    db.migrate(conn, TZ)
+    db.migrate(conn, TZ, target=5)
 
     columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
     assert "session_epoch" in columns
@@ -239,8 +273,9 @@ def test_failed_v4_leaves_v3_intact(tmp_path, monkeypatch):
     assert conn.execute("SELECT COUNT(*) FROM usage_seconds").fetchone()[0] == 0
     monkeypatch.undo()
 
-    assert db.migrate(conn, TZ) == 5
+    assert db.migrate(conn, TZ, target=5) == 5
     assert usage(conn, group, "2026-11-10") == 300
+    assert db.migrate(conn, TZ) == 6
     conn.close()
 
 
@@ -259,28 +294,37 @@ def test_failed_string_migration_is_atomic(tmp_path, monkeypatch):
         db.migrate(conn, TZ, target=3)
 
     assert db.current_version(conn) == 2
-    assert "owner_id" not in {row[1] for row in conn.execute("PRAGMA table_info(groups)")}
+    assert "owner_id" not in group_columns(conn)
     conn.close()
 
 
-def test_fresh_db_writes_no_backup(tmp_path):
+# --------------------------------------------------------------------------- #
+# the whole chain, idempotency, refusals
+# --------------------------------------------------------------------------- #
+
+
+def test_fresh_db_reaches_v6_without_a_backup(tmp_path):
     path = tmp_path / "fresh.db"
     conn = db.connect(path)
 
-    assert db.migrate(conn, TZ) == 5
-    assert not path.with_name(path.name + ".pre-v4.bak").exists()
-    assert not path.with_name(path.name + ".pre-v5.bak").exists()
+    assert db.migrate(conn, TZ) == 6
+    assert db.current_version(conn) == 6
+    for goal in (4, 5, 6):
+        assert not path.with_name(f"{path.name}.pre-v{goal}.bak").exists()
+    assert "bonus" not in table_names(conn)
+    assert "usage_seconds" not in table_names(conn)
+    assert not {"weekday_minutes", "weekend_minutes"} & group_columns(conn)
     conn.close()
 
 
 def test_newer_db_is_refused(tmp_path):
     conn = db.connect(tmp_path / "t.db")
-    conn.execute("PRAGMA user_version=6")
+    conn.execute("PRAGMA user_version=7")
     conn.commit()
 
     with pytest.raises(RuntimeError, match="newer than this build"):
         db.migrate(conn, TZ)
-    assert db.current_version(conn) == 6
+    assert db.current_version(conn) == 7
     conn.close()
 
 
@@ -290,15 +334,16 @@ def test_migrate_is_idempotent(tmp_path):
     normal_group(conn)
     conn.commit()
 
-    assert db.migrate(conn, TZ) == 5
-    backup = path.with_name(path.name + ".pre-v5.bak")
+    assert db.migrate(conn, TZ) == 6
+    backup = path.with_name(path.name + ".pre-v6.bak")
     assert backup.exists()
     stamp = backup.stat().st_mtime_ns
 
-    assert db.migrate(conn, TZ) == 5
+    assert db.migrate(conn, TZ) == 6
     # a second call applies nothing, so it must not rewrite the copy
     assert backup.stat().st_mtime_ns == stamp
     assert not path.with_name(path.name + ".pre-v4.bak").exists()
+    assert not path.with_name(path.name + ".pre-v5.bak").exists()
     conn.close()
 
 
@@ -318,43 +363,28 @@ def test_migrate_refuses_data_migration_when_not_allowed(tmp_path):
     conn.close()
 
 
-def test_passwd_works_on_v4_db(tmp_path):
-    """A pure-DDL v5 step still lets the CLI open and upgrade an older database."""
+def test_passwd_works_on_a_v4_db(tmp_path):
+    """A pure-DDL v5+v6 chain still lets the CLI open and upgrade an older database."""
     path = tmp_path / "t.db"
     conn = build_v4_db(path)
     normal_group(conn)
     conn.commit()
 
-    assert db.migrate(conn, TZ, allow_data_migration=False) == 5
-    assert db.current_version(conn) == 5
-    assert path.with_name(path.name + ".pre-v5.bak").exists()
+    assert db.migrate(conn, TZ, allow_data_migration=False) == 6
+    assert db.current_version(conn) == 6
+    assert path.with_name(path.name + ".pre-v6.bak").exists()
     conn.close()
 
 
 # --------------------------------------------------------------------------- #
-# schema v5: bedtime windows and alert de-duplication
+# schema v5: windows and alert de-duplication
 # --------------------------------------------------------------------------- #
-
-
-def build_v4_db(path) -> sqlite3.Connection:
-    conn = db.connect(path)
-    assert db.migrate(conn, TZ, target=4) == 4
-    return conn
-
-
-def normal_group(conn, name="YouTube") -> int:
-    cur = conn.execute(
-        "INSERT INTO groups(name, emoji, weekday_minutes, weekend_minutes, paused, deleted, "
-        "created_at) VALUES(?,?,?,?,0,0,0)",
-        (name, "", 60, 60),
-    )
-    return int(cur.lastrowid)
 
 
 def test_v5_creates_the_window_and_alert_tables(tmp_path):
     conn = build_v4_db(tmp_path / "t.db")
 
-    assert db.migrate(conn, TZ) == 5
+    assert db.migrate(conn, TZ, target=5) == 5
     assert db.current_version(conn) == 5
 
     window_columns = {row[1] for row in conn.execute("PRAGMA table_info(group_windows)")}
@@ -403,7 +433,7 @@ def test_v5_keeps_existing_rows(tmp_path):
     )
     conn.commit()
 
-    assert db.migrate(conn, TZ) == 5
+    assert db.migrate(conn, TZ, target=5) == 5
 
     assert conn.execute("SELECT name FROM groups").fetchone()[0] == "Games"
     assert usage(conn, group, "2026-11-10") == 600
@@ -420,7 +450,7 @@ def test_v4_to_v5_writes_pre_v5_backup(tmp_path):
     backup = path.with_name(path.name + ".pre-v5.bak")
     backup.write_bytes(b"corrupt, not a database")
 
-    db.migrate(conn, TZ)
+    db.migrate(conn, TZ, target=5)
 
     with sqlite3.connect(backup) as check:
         assert int(check.execute("PRAGMA user_version").fetchone()[0]) == 4
@@ -431,7 +461,7 @@ def test_v4_to_v5_writes_pre_v5_backup(tmp_path):
     conn.close()
 
 
-def test_migration_aborts_when_the_v5_backup_fails(tmp_path, monkeypatch):
+def test_migration_aborts_when_the_upgrade_backup_fails(tmp_path, monkeypatch):
     path = tmp_path / "t.db"
     conn = build_v4_db(path)
     normal_group(conn)
@@ -443,7 +473,7 @@ def test_migration_aborts_when_the_v5_backup_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(db.os, "replace", boom)
 
     with pytest.raises(RuntimeError) as excinfo:
-        db.migrate(conn, TZ)
+        db.migrate(conn, TZ, target=5)
 
     assert "pre-v5.bak" in str(excinfo.value)
     assert "TIMEFENCE_SKIP_MIGRATION_BACKUP=1" in str(excinfo.value)
@@ -462,7 +492,7 @@ def test_failed_v5_leaves_v4_intact(tmp_path, monkeypatch):
     )
 
     with pytest.raises(sqlite3.Error):
-        db.migrate(conn, TZ)
+        db.migrate(conn, TZ, target=5)
 
     assert db.current_version(conn) == 4
     assert (
@@ -470,3 +500,102 @@ def test_failed_v5_leaves_v4_intact(tmp_path, monkeypatch):
         == 0
     )
     conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# schema v6: the minutes budget and metering are gone
+# --------------------------------------------------------------------------- #
+
+
+def test_v6_drops_the_budget_tables_and_columns(tmp_path):
+    conn = build_v5_db(tmp_path / "t.db")
+    group = normal_group(conn, "Games")
+    conn.execute(
+        "INSERT INTO group_windows(group_id, start_min, end_min, days) VALUES(?,?,?,?)",
+        (group, 1260, 420, "all"),
+    )
+    conn.execute(
+        "INSERT INTO usage_seconds(day, group_id, seconds) VALUES('2026-11-10', ?, 600)", (group,)
+    )
+    conn.execute("INSERT INTO bonus(day, group_id, seconds) VALUES('2026-11-10', ?, 600)", (group,))
+    conn.execute("INSERT INTO free_allow(group_id, until_ts) VALUES(?, 1800000000)", (group,))
+    conn.commit()
+
+    assert db.migrate(conn, TZ) == 6
+    assert db.current_version(conn) == 6
+
+    assert "bonus" not in table_names(conn)
+    assert "usage_seconds" not in table_names(conn)
+    assert not {"weekday_minutes", "weekend_minutes"} & group_columns(conn)
+    # the old block windows would silently invert their meaning; they are cleared
+    assert conn.execute("SELECT COUNT(*) FROM group_windows").fetchone()[0] == 0
+
+    # everything else survives: the group, its owner slot and free time
+    row = conn.execute("SELECT name, emoji, paused, deleted, owner_id FROM groups").fetchone()
+    assert tuple(row) == ("Games", "", 0, 0, None)
+    assert conn.execute("SELECT COUNT(*) FROM free_allow").fetchone()[0] == 1
+    assert "alerts_sent" in table_names(conn)
+    conn.close()
+
+
+def test_v5_to_v6_writes_a_verified_pre_v6_backup(tmp_path):
+    path = tmp_path / "t.db"
+    conn = build_v5_db(path)
+    group = normal_group(conn, "Games")
+    conn.execute(
+        "INSERT INTO group_windows(group_id, start_min, end_min, days) VALUES(?,?,?,?)",
+        (group, 1260, 420, "weekday"),
+    )
+    conn.execute(
+        "INSERT INTO usage_seconds(day, group_id, seconds) VALUES('2026-11-10', ?, 900)", (group,)
+    )
+    conn.commit()
+    backup = path.with_name(path.name + ".pre-v6.bak")
+    backup.write_bytes(b"corrupt, not a database")
+
+    db.migrate(conn, TZ)
+
+    with sqlite3.connect(backup) as check:
+        assert int(check.execute("PRAGMA user_version").fetchone()[0]) == 5
+        assert check.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert check.execute("SELECT seconds FROM usage_seconds").fetchone()[0] == 900
+        assert check.execute("SELECT days FROM group_windows").fetchone()[0] == "weekday"
+    if os.name != "nt":
+        assert backup.stat().st_mode & 0o777 == 0o600
+    conn.close()
+
+
+def test_v6_step_is_a_plain_script_so_the_cli_can_open(tmp_path):
+    assert isinstance(db.MIGRATIONS[6], str)
+    path = tmp_path / "t.db"
+    conn = build_v5_db(path)
+    normal_group(conn)
+    conn.commit()
+
+    assert db.migrate(conn, TZ, allow_data_migration=False) == 6
+    assert path.with_name(path.name + ".pre-v6.bak").exists()
+    conn.close()
+
+
+def test_v6_failure_leaves_v5_intact(tmp_path, monkeypatch):
+    conn = build_v5_db(tmp_path / "t.db")
+    normal_group(conn)
+    conn.commit()
+    monkeypatch.setitem(
+        db.MIGRATIONS,
+        6,
+        "DROP TABLE usage_seconds;\nSELECT * FROM no_such_table;",
+    )
+
+    with pytest.raises(sqlite3.Error):
+        db.migrate(conn, TZ)
+
+    assert db.current_version(conn) == 5
+    assert "usage_seconds" in table_names(conn)
+    assert {"weekday_minutes", "weekend_minutes"} <= group_columns(conn)
+    conn.close()
+
+
+def test_the_runtime_sqlite_can_drop_a_column():
+    """`ALTER TABLE ... DROP COLUMN` needs SQLite 3.35 (Python 3.12 ships 3.40+)."""
+    assert sqlite3.sqlite_version_info >= (3, 35, 0), sqlite3.sqlite_version

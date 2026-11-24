@@ -78,7 +78,6 @@ def test_failed_group_update_rolls_back(settings, fake):
             "/api/groups",
             json={
                 "name": "Games",
-                "weekday_minutes": 45,
                 "services": ["roblox"],
                 "domains_text": "kept.example",
             },
@@ -90,7 +89,6 @@ def test_failed_group_update_rolls_back(settings, fake):
             f"/api/groups/{group['id']}",
             json={
                 "name": "Games",
-                "weekday_minutes": 45,
                 "services": ["youtube", "youtube"],
                 "domains_text": "kept.example",
             },

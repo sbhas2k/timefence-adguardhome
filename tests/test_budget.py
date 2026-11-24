@@ -1,4 +1,4 @@
-"""Budget maths, sessions, bonus/free time and input normalisation."""
+"""Group domain logic: validation, uniqueness, the status table and free time."""
 
 from __future__ import annotations
 
@@ -24,10 +24,9 @@ def conn(tmp_path):
 def make_group(
     conn,
     *,
-    minutes=60,
-    weekend=None,
     services=("youtube",),
     domains=(),
+    windows=(),
     name="YouTube",
     paused=False,
 ):
@@ -35,12 +34,15 @@ def make_group(
         conn,
         name=name,
         emoji="▶️",
-        weekday_minutes=minutes,
-        weekend_minutes=weekend,
         services=list(services),
         domains=list(domains),
+        windows=list(windows),
         paused=paused,
     )
+
+
+def a_window(start, end, days="all"):
+    return {"start": start, "end": end, "days": days}
 
 
 def ts_on(year, month, day, hour, minute=0):
@@ -88,18 +90,8 @@ def test_critical_match_covers_subdomains_and_prefix_wildcard():
 
 
 # --------------------------------------------------------------------------- #
-# weekday / weekend and midnight
+# local days
 # --------------------------------------------------------------------------- #
-
-
-def test_weekday_and_weekend_minutes(conn):
-    group = make_group(conn, minutes=60, weekend=120)
-    wednesday = ts_on(2026, 11, 11, 12)  # Wednesday
-    saturday = ts_on(2026, 11, 14, 12)
-    assert group.minutes_for(wednesday, TZ) == 60
-    assert group.minutes_for(saturday, TZ) == 120
-    assert budget.budget_seconds(conn, group, TZ, wednesday) == 3600
-    assert budget.budget_seconds(conn, group, TZ, saturday) == 7200
 
 
 def test_day_boundary_and_local_midnight():
@@ -108,49 +100,8 @@ def test_day_boundary_and_local_midnight():
     assert budget.day_str(late, TZ) == "2026-11-13"
     assert budget.day_str(early, TZ) == "2026-11-14"
     assert budget.local_midnight(early, TZ) == ts_on(2026, 11, 14, 0)
-    # a different day means a fresh budget
     assert budget.day_str(budget.local_midnight(early, TZ), TZ) == "2026-11-14"
-
-
-def test_usage_does_not_leak_across_midnight(conn):
-    group = make_group(conn, minutes=10)
-    before_midnight = ts_on(2026, 11, 13, 23, 50)
-    budget.add_metered_seconds(conn, group.id, budget.day_str(before_midnight, TZ), 300)
-
-    today = budget.day_str(before_midnight, TZ)
-    tomorrow = budget.day_str(before_midnight + 86400, TZ)
-    assert budget.used_seconds(conn, group, today) == 300
-    assert budget.used_seconds(conn, group, tomorrow) == 0
-    assert budget.remaining_seconds(conn, group, TZ, before_midnight + 86400) == 600
-
-
-# --------------------------------------------------------------------------- #
-# bonus and free-allow
-# --------------------------------------------------------------------------- #
-
-
-def test_bonus_minutes_extend_the_budget(conn):
-    group = make_group(conn, minutes=10)
-    now = ts_on(2026, 11, 11, 12)
-    assert budget.remaining_seconds(conn, group, TZ, now) == 600
-    budget.add_bonus(conn, group.id, 15, TZ, now)
-    assert budget.remaining_seconds(conn, group, TZ, now) == 600 + 900
-    # negative bonus is allowed (correction)
-    budget.add_bonus(conn, group.id, -5, TZ, now)
-    assert budget.remaining_seconds(conn, group, TZ, now) == 600 + 600
-
-
-def test_free_allow_does_not_charge_budget(conn):
-    group = make_group(conn, minutes=10)
-    now = ts_on(2026, 11, 11, 12)
-    budget.set_force_block(conn, group.id, now + 5000)
-    group = budget.get_group(conn, group.id)
-    assert not budget.is_permitted(conn, group, TZ, now)
-    budget.set_free_until(conn, group.id, now + 3600)
-    assert budget.is_permitted(conn, group, TZ, now)
-    assert not budget.is_permitted(conn, group, TZ, now + 3700)
-    assert budget.remaining_seconds(conn, group, TZ, now) == 600
-    assert budget.used_seconds(conn, group, budget.day_str(now, TZ)) == 0
+    assert budget.today(TZ, early).isoformat() == "2026-11-14"
 
 
 def test_parse_hhmm_rolls_to_tomorrow():
@@ -162,57 +113,6 @@ def test_parse_hhmm_rolls_to_tomorrow():
     with pytest.raises(budget.ValidationError):
         budget.parse_hhmm("25:00", now, TZ)
 
-
-# --------------------------------------------------------------------------- #
-# groups: uniqueness, soft delete, history
-# --------------------------------------------------------------------------- #
-
-
-def test_services_and_domains_are_unique_across_groups(conn):
-    make_group(conn, services=("youtube",), domains=("example.com",))
-    with pytest.raises(budget.ValidationError):
-        make_group(conn, name="Other", services=("youtube",))
-    with pytest.raises(budget.ValidationError):
-        make_group(conn, name="Other2", services=(), domains=("example.com",))
-    other = make_group(conn, name="Other3", services=(), domains=("other.com",))
-    assert other.domains == ["other.com"]
-
-
-def test_delete_keeps_history_and_frees_the_domain(conn):
-    group = make_group(conn, services=(), domains=("example.com",))
-    now = ts_on(2026, 11, 11, 12)
-    budget.add_metered_seconds(conn, group.id, budget.day_str(now, TZ), 60)
-
-    budget.delete_group(conn, group.id)
-    assert budget.list_groups(conn) == []
-    assert len(budget.list_groups(conn, include_deleted=True)) == 1
-    assert budget.history(conn, TZ, now=now)[-1][str(group.id)] == 1.0
-    # the domain can be reused now
-    reused = make_group(conn, name="New", services=(), domains=("example.com",))
-    assert reused.domains == ["example.com"]
-
-
-def test_group_state_reports_remaining_and_status(conn):
-    group = make_group(conn, minutes=30)
-    now = ts_on(2026, 11, 11, 12)
-    budget.add_metered_seconds(conn, group.id, budget.day_str(now, TZ), 60)
-    state = budget.group_state(conn, group, TZ, now + 60)
-    assert state["permitted"] is True
-    assert state["remaining_minutes"] == 29
-    assert state["used_minutes"] == 1
-
-
-def test_history_has_seven_days(conn):
-    make_group(conn)
-    now = int(time.time())
-    rows = budget.history(conn, TZ, now=now)
-    assert len(rows) == 7
-    assert all("day" in row for row in rows)
-
-
-# --------------------------------------------------------------------------- #
-# local days across DST, usage caps and server-side status
-# --------------------------------------------------------------------------- #
 
 NY = ZoneInfo("America/New_York")
 
@@ -235,67 +135,195 @@ def test_next_local_midnight_on_dst_days():
     assert autumn_midnight - autumn != 86400
 
 
-def test_history_labels_are_consecutive_dates_across_dst(conn):
-    make_group(conn)
-    now = ts_on_ny(2026, 3, 10, 12)
-
-    rows = budget.history(conn, NY, days=7, now=now)
-
-    labels = [row["day"] for row in rows]
-    assert labels == [
-        "2026-03-04",
-        "2026-03-05",
-        "2026-03-06",
-        "2026-03-07",
-        "2026-03-08",
-        "2026-03-09",
-        "2026-03-10",
-    ]
-    assert len(set(labels)) == 7
+# --------------------------------------------------------------------------- #
+# groups: creation, uniqueness and soft delete
+# --------------------------------------------------------------------------- #
 
 
-def test_negative_bonus_does_not_erase_usage(conn):
-    group = make_group(conn, minutes=60)
-    now = ts_on_ny(2026, 11, 4, 12)
-    day = budget.day_str(now, NY)
-    budget.add_metered_seconds(conn, group.id, day, 2400)
-    budget.add_bonus(conn, group.id, -30, NY, now)
-    assert budget.bonus_seconds(conn, group.id, day) == -1800
-
-    harsh_cap = group.minutes_for(now, NY) * 60 + budget.bonus_seconds(conn, group.id, day)
-    budget.add_metered_seconds(conn, group.id, day, 15, cap_seconds=harsh_cap)
-    assert budget.metered_seconds(conn, group.id, day) == 2400  # never lowered
-
-    caller_cap = group.minutes_for(now, NY) * 60 + max(0, budget.bonus_seconds(conn, group.id, day))
-    budget.add_metered_seconds(conn, group.id, day, 15, cap_seconds=caller_cap)
-    assert budget.metered_seconds(conn, group.id, day) == 2415
+def test_a_group_needs_a_service_or_a_domain(conn):
+    with pytest.raises(budget.ValidationError, match="at least one service or domain"):
+        budget.create_group(conn, name="Nothing")
+    with pytest.raises(budget.ValidationError):
+        budget.create_group(conn, name="", services=["youtube"])
+    with pytest.raises(budget.ValidationError, match="too long"):
+        budget.create_group(conn, name="x" * 61, services=["youtube"])
 
 
-def test_status_values(conn):
-    group = make_group(conn, minutes=10)
-    now = ts_on_ny(2026, 11, 4, 12)
+def test_a_group_is_created_without_any_minutes(conn):
+    group = make_group(conn)
+    assert group.name == "YouTube"
+    assert group.emoji == "▶️"
+    assert group.services == ["youtube"]
+    assert group.windows == []
+    assert not hasattr(group, "weekday_minutes")
+    assert not hasattr(group, "weekend_minutes")
+    assert budget.is_permitted(conn, group, TZ, ts_on(2026, 11, 11, 3)) is True
 
-    state = budget.group_state(conn, group, NY, now)
-    assert (state["status"], state["blocked_until"]) == ("allowed", None)
 
-    budget.set_force_block(conn, group.id, now + 3600)
+def test_services_and_domains_are_unique_across_groups(conn):
+    make_group(conn, services=("youtube",), domains=("example.com",))
+    with pytest.raises(budget.ValidationError):
+        make_group(conn, name="Other", services=("youtube",))
+    with pytest.raises(budget.ValidationError):
+        make_group(conn, name="Other2", services=(), domains=("example.com",))
+    other = make_group(conn, name="Other3", services=(), domains=("other.com",))
+    assert other.domains == ["other.com"]
+
+
+def test_update_group_replaces_fields_and_keeps_the_rest(conn):
+    group = make_group(conn, services=("roblox",), domains=("example.com",))
+    updated = budget.update_group(conn, group.id, name="Renamed", emoji="🎮")
+    assert (updated.name, updated.emoji) == ("Renamed", "🎮")
+    assert updated.services == ["roblox"]
+    assert updated.domains == ["example.com"]
+
+    with pytest.raises(budget.ValidationError, match="at least one"):
+        budget.update_group(conn, group.id, services=[], domains=[])
+    kept = budget.get_group(conn, group.id)
+    assert kept.services == ["roblox"] and kept.domains == ["example.com"]
+
+
+def test_delete_group_frees_its_domains(conn):
+    group = make_group(conn, services=(), domains=("example.com",))
+    assert budget.delete_group(conn, group.id) == "YouTube"
+    assert budget.list_groups(conn) == []
+    assert len(budget.list_groups(conn, include_deleted=True)) == 1
+    assert budget.get_group(conn, group.id).deleted is True
+    # the domain can be reused now
+    reused = make_group(conn, name="New", services=(), domains=("example.com",))
+    assert reused.domains == ["example.com"]
+
+
+def test_delete_clears_free_time(conn):
+    group = make_group(conn)
+    now = int(time.time())
+    budget.set_free_until(conn, group.id, now + 3600)
+    budget.delete_group(conn, group.id)
+    assert budget.free_until(conn, group.id) is None
+
+
+# --------------------------------------------------------------------------- #
+# the one status predicate
+# --------------------------------------------------------------------------- #
+
+EVENING = ts_on(2026, 11, 11, 22)  # inside the "allowed" window below
+OPENS = ts_on(2026, 11, 11, 21)  # the next opening for that window
+CLOSES = ts_on(2026, 11, 11, 23)
+
+
+def test_status_precedence_paused_free_blocked_outside_allowed(conn):
+    group = make_group(conn, windows=[a_window("21:00", "23:00")])
+    # 22:00 is inside the window -> allowed
+    assert budget.group_status(conn, group, TZ, EVENING) == ("allowed", None)
+    assert budget.is_permitted(conn, group, TZ, EVENING) is True
+
+    # 12:00 is outside the window -> outside_hours, with the next opening
+    noon = ts_on(2026, 11, 11, 12)
+    assert budget.group_status(conn, group, TZ, noon) == ("outside_hours", OPENS)
+
+    # an admin block wins over the window, inside and outside it
+    budget.set_force_block(conn, group.id, EVENING + 600)
     group = budget.get_group(conn, group.id)
-    state = budget.group_state(conn, group, NY, now)
-    assert (state["status"], state["blocked_until"]) == ("blocked_admin", now + 3600)
+    assert budget.group_status(conn, group, TZ, EVENING) == ("blocked_admin", EVENING + 600)
+    assert budget.is_permitted(conn, group, TZ, EVENING) is False
 
-    budget.set_free_until(conn, group.id, now + 7200)
-    state = budget.group_state(conn, group, NY, now)
-    assert (state["status"], state["blocked_until"]) == ("free", None)
+    # "Free until" wins over both the block and the window
+    budget.set_free_until(conn, group.id, EVENING + 3600)
+    assert budget.group_status(conn, group, TZ, EVENING) == ("free", None)
+    assert budget.is_permitted(conn, group, TZ, EVENING) is True
+    assert budget.group_status(conn, group, TZ, noon) == ("free", None)
 
-    budget.clear_free(conn, group.id)
-    budget.clear_force_block(conn, group.id)
-    budget.add_metered_seconds(conn, group.id, budget.day_str(now, NY), 600, cap_seconds=600)
-    group = budget.get_group(conn, group.id)
-    state = budget.group_state(conn, group, NY, now)
-    assert state["status"] == "limit_reached"
-    assert state["blocked_until"] == budget.next_local_midnight(now, NY)
-
+    # pause wins over everything, including free time
     budget.update_group(conn, group.id, paused=True)
     group = budget.get_group(conn, group.id)
-    state = budget.group_state(conn, group, NY, now)
-    assert (state["status"], state["blocked_until"]) == ("paused", None)
+    assert budget.group_status(conn, group, TZ, EVENING) == ("paused", None)
+    assert budget.is_permitted(conn, group, TZ, EVENING) is False
+
+
+def test_free_time_expires_back_to_the_window(conn):
+    group = make_group(conn, windows=[a_window("21:00", "23:00")])
+    noon = ts_on(2026, 11, 11, 12)
+    budget.set_free_until(conn, group.id, noon + 60)
+    assert budget.group_status(conn, group, TZ, noon)[0] == "free"
+    assert budget.group_status(conn, group, TZ, noon + 61) == ("outside_hours", OPENS)
+
+
+def test_clear_free_and_clear_block(conn):
+    group = make_group(conn, windows=[a_window("21:00", "23:00")])
+    noon = ts_on(2026, 11, 11, 12)
+    budget.set_free_until(conn, group.id, noon + 60)
+    budget.clear_free(conn, group.id)
+    assert budget.group_status(conn, group, TZ, noon)[0] == "outside_hours"
+    budget.set_force_block(conn, group.id, noon + 60)
+    group = budget.get_group(conn, group.id)
+    assert budget.group_status(conn, group, TZ, noon)[0] == "blocked_admin"
+    budget.clear_force_block(conn, group.id)
+    group = budget.get_group(conn, group.id)
+    assert budget.group_status(conn, group, TZ, noon)[0] == "outside_hours"
+
+
+def test_is_permitted_always_agrees_with_the_status(conn):
+    cases = [
+        make_group(conn, name="All day", services=("youtube",)),
+        make_group(conn, name="Window", services=("roblox",), windows=[a_window("21:00", "23:00")]),
+    ]
+    for group in cases:
+        for moment in (EVENING, ts_on(2026, 11, 11, 12), ts_on(2026, 11, 12, 0)):
+            status, _ = budget.group_status(conn, group, TZ, moment)
+            assert budget.is_permitted(conn, group, TZ, moment) == (
+                status in budget.PERMITTED_STATUSES
+            )
+
+
+def test_group_state_payload_has_the_documented_keys(conn):
+    group = make_group(conn, windows=[a_window("21:00", "23:00")], domains=("example.com",))
+    state = budget.group_state(conn, group, TZ, EVENING)
+    assert set(state) == {
+        "id",
+        "name",
+        "emoji",
+        "windows",
+        "open_now",
+        "next_change",
+        "opens_at",
+        "open_until",
+        "status",
+        "permitted",
+        "blocked_until",
+        "free_until",
+        "force_block_until",
+        "paused",
+        "owner_id",
+        "services",
+        "domains",
+    }
+    assert state["windows"] == [{"start": "21:00", "end": "23:00", "days": "all"}]
+    assert state["permitted"] is True
+    assert state["services"] == ["youtube"]
+    assert state["domains"] == ["example.com"]
+
+    free = budget.group_state(conn, group, TZ, EVENING)
+    assert free["free_until"] is None
+    budget.set_free_until(conn, group.id, EVENING + 60)
+    state = budget.group_state(conn, group, TZ, EVENING)
+    assert state["status"] == "free"
+    assert state["free_until"] == EVENING + 60
+    assert state["blocked_until"] is None
+
+
+def test_no_usage_or_budget_helpers_remain():
+    for name in (
+        "add_bonus",
+        "remaining_seconds",
+        "budget_seconds",
+        "cap_seconds",
+        "used_seconds",
+        "metered_seconds",
+        "add_metered_seconds",
+        "bonus_seconds",
+        "reset_today",
+        "history",
+        "usage_range",
+        "bedtime_state",
+    ):
+        assert not hasattr(budget, name), name

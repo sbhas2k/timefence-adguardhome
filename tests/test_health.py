@@ -31,7 +31,7 @@ def test_healthz_answers_while_adguard_is_slow(settings, fake):
         sign_in_as_admin(client)
         created = client.post(
             "/api/groups",
-            json={"name": "YouTube", "weekday_minutes": 60, "services": ["youtube"]},
+            json={"name": "YouTube", "services": ["youtube"]},
         )
         assert created.status_code == 200, created.text
         group_id = created.json()["group"]["id"]
@@ -68,7 +68,6 @@ def test_shutdown_blocks_every_group(settings, fake):
             "/api/groups",
             json={
                 "name": "YouTube",
-                "weekday_minutes": 60,
                 "services": ["youtube"],
                 "domains_text": "example.com",
             },
@@ -87,7 +86,7 @@ def test_shutdown_block_wins_over_a_running_loop(settings, fake):
         sign_in_as_admin(client)
         created = client.post(
             "/api/groups",
-            json={"name": "YouTube", "weekday_minutes": 60, "services": ["youtube"]},
+            json={"name": "YouTube", "services": ["youtube"]},
         )
         assert created.status_code == 200, created.text
         fake.ids = ["youtube"]  # the next run has an unblock write pending
@@ -147,7 +146,7 @@ def test_restart_restores_true_state_after_shutdown_block(settings, fake):
         sign_in_as_admin(client)
         created = client.post(
             "/api/groups",
-            json={"name": "YouTube", "weekday_minutes": 60, "services": ["youtube"]},
+            json={"name": "YouTube", "services": ["youtube"]},
         )
         assert created.status_code == 200, created.text
         assert fake.ids == []

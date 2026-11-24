@@ -10,7 +10,6 @@ import pytest
 
 from timefence import budget, db
 from timefence.reconciler import (
-    BUCKET,
     SECTION_BEGIN,
     SECTION_END,
     Reconciler,
@@ -31,16 +30,23 @@ def store(tmp_path):
     store.close()
 
 
-def add_group(conn, name="YouTube", services=("youtube",), domains=(), minutes=60):
+def add_group(conn, name="YouTube", services=("youtube",), domains=(), windows=()):
     return budget.create_group(
         conn,
         name=name,
         emoji="",
-        weekday_minutes=minutes,
-        weekend_minutes=minutes,
         services=list(services),
         domains=list(domains),
+        windows=list(windows),
     )
+
+
+def ts_utc(year, month, day, hour, minute=0) -> int:
+    return int(datetime(year, month, day, hour, minute, tzinfo=UTC).timestamp())
+
+
+def a_window(start, end, days="all"):
+    return {"start": start, "end": end, "days": days}
 
 
 # --------------------------------------------------------------------------- #
@@ -108,7 +114,7 @@ def test_service_sync_preserves_unmanaged_services_and_schedule(store, fake):
     reconciler = Reconciler(store, fake, TZ)
 
     changed = reconciler.sync_services(int(time.time()))
-    assert fake.ids == ["tiktok"]  # allowed until the daily minutes are used
+    assert fake.ids == ["tiktok"]  # the group has no windows, so it is allowed
     assert changed == ["youtube"]
 
     # a paused group is blocked; foreign services and the schedule survive
@@ -147,7 +153,7 @@ def test_service_sync_unblocks_a_permitted_group(store, fake):
 
 def test_paused_group_is_always_blocked(store, fake):
     with store as conn:
-        group = add_group(conn, services=("roblox",), minutes=60)
+        group = add_group(conn, services=("roblox",))
         budget.update_group(conn, group.id, paused=True)
     reconciler = Reconciler(store, fake, TZ)
     reconciler.sync_services(int(time.time()))
@@ -192,91 +198,104 @@ def test_reconciler_survives_adguard_errors(store, fake, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# auto mode ("allowed until the budget runs out") + metering
+# allowed windows drive the block, with no usage metering at all
 # --------------------------------------------------------------------------- #
 
 
-def test_auto_mode_is_open_until_the_budget_is_spent(store, fake):
+def test_outside_the_window_the_group_is_blocked_and_inside_it_is_not(store, fake):
     with store as conn:
-        group = add_group(conn, services=("youtube",), minutes=1)
-    reconciler = Reconciler(store, fake, TZ)
-    now = int(time.time())
-
-    reconciler.sync_services(now)
-    assert fake.ids == []  # nothing blocked by default
-
-    # pretend a minute of usage was metered
-    with store as conn:
-        budget.add_metered_seconds(conn, group.id, budget.day_str(now, TZ), 60, cap_seconds=60)
-        group = budget.get_group(conn, group.id)
-        assert budget.remaining_seconds(conn, group, TZ, now) == 0
-    reconciler.sync_services(now)
-    assert fake.ids == ["youtube"]  # limit reached -> blocked
-
-
-def test_metering_charges_time_only_when_the_group_was_queried(store, fake):
-    with store as conn:
-        youtube = add_group(conn, services=("youtube",), minutes=30)
-        roblox = add_group(conn, name="Roblox", services=("roblox",), minutes=30)
-    reconciler = Reconciler(store, fake, TZ)
-    # a fixed local noon: the stale entry below stays outside the window and the
-    # fresh one stays on the same local day, whatever the suite's start hour
-    now = int(datetime(2026, 11, 13, 12, 0, tzinfo=UTC).timestamp())
-
-    # first pass only sets the cursor
-    reconciler.meter(now, "startup")
-    with store as conn:
-        assert budget.metered_seconds(conn, youtube.id, budget.day_str(now, TZ)) == 0
-
-    fake.entries = [
-        {
-            "time": "2026-11-13T07:00:00.000000000Z",
-            "client": "192.168.1.50",
-            "question": {"name": "rr1---sn-abc.googlevideo.com", "type": "A"},
-        }
-    ]
-    # entry timestamp is outside the window on purpose -> nothing charged
-    reconciler.meter(now + 30)
-    with store as conn:
-        assert budget.metered_seconds(conn, youtube.id, budget.day_str(now, TZ)) == 0
-
-    # now a fresh entry inside the window
-    stamp = datetime.fromtimestamp(now + 40, UTC).strftime("%Y-%m-%dT%H:%M:%S.000000000Z")
-    fake.entries = [
-        {
-            "time": stamp,
-            "client": "192.168.1.50",
-            "question": {"name": "rr1---sn-abc.googlevideo.com", "type": "A"},
-        },
-        {
-            "time": stamp,
-            "client": "127.0.0.1",  # our own lookups never count
-            "question": {"name": "roblox.com", "type": "A"},
-        },
-    ]
-    charged = reconciler.meter(now + 60)
-    assert charged == 1
-    day = budget.day_str(now + 60, TZ)
-    with store as conn:
-        assert budget.metered_seconds(conn, youtube.id, day) == BUCKET
-        assert budget.metered_seconds(conn, roblox.id, day) == 0
-
-
-def test_auto_mode_blocks_for_the_rest_of_the_day_then_allows_tomorrow(store, fake):
-    now = int(time.time())
-    day = budget.day_str(now, TZ)
-    with store as conn:
-        group = add_group(conn, services=("youtube",), minutes=1)
-        budget.add_metered_seconds(conn, group.id, day, 60, cap_seconds=60)
+        add_group(
+            conn,
+            services=("youtube",),
+            domains=("example.com",),
+            windows=[a_window("13:00", "14:00")],
+        )
     reconciler = Reconciler(store, fake, TZ)
 
-    reconciler.sync_services(now)
+    outside = ts_utc(2026, 11, 11, 12, 59)
+    reconciler.sync_services(outside)
+    reconciler.sync_domains(outside)
     assert fake.ids == ["youtube"]
-    tomorrow = now + 86400
-    with store as conn:
-        assert budget.is_permitted(conn, group, TZ, tomorrow) is True
-    reconciler.sync_services(tomorrow)
+    assert fake.rules == [SECTION_BEGIN, "||example.com^", SECTION_END]
+
+    # the window opens: one reconcile pass lifts the block at the edge
+    inside = ts_utc(2026, 11, 11, 13)
+    reconciler.sync_services(inside)
+    reconciler.sync_domains(inside)
     assert fake.ids == []
+    assert fake.rules == []
+
+    # a second pass with the same state writes nothing (idempotent)
+    calls = len(fake.calls)
+    reconciler.sync_services(inside + 30)
+    reconciler.sync_domains(inside + 30)
+    assert len(fake.calls) == calls
+
+    # and the closing edge blocks again within one pass
+    closing = ts_utc(2026, 11, 11, 14)
+    reconciler.sync_services(closing)
+    reconciler.sync_domains(closing)
+    assert fake.ids == ["youtube"]
+    assert "||example.com^" in fake.rules
+
+
+def test_a_wrapping_window_blocks_across_midnight(store, fake):
+    with store as conn:
+        add_group(conn, services=("roblox",), windows=[a_window("22:00", "07:00")])
+    reconciler = Reconciler(store, fake, TZ)
+
+    reconciler.sync_services(ts_utc(2026, 11, 11, 23))
+    assert fake.ids == []
+    reconciler.sync_services(ts_utc(2026, 11, 12, 7))
+    assert fake.ids == ["roblox"]
+    reconciler.sync_services(ts_utc(2026, 11, 12, 21, 59))
+    assert fake.ids == ["roblox"]
+    reconciler.sync_services(ts_utc(2026, 11, 12, 22))
+    assert fake.ids == []
+
+
+def test_free_time_unblocks_a_group_outside_its_window(store, fake):
+    with store as conn:
+        group = add_group(conn, services=("youtube",), windows=[a_window("13:00", "14:00")])
+    reconciler = Reconciler(store, fake, TZ)
+    noon = ts_utc(2026, 11, 11, 12)
+    reconciler.sync_services(noon)
+    assert fake.ids == ["youtube"]
+
+    with store as conn:
+        budget.set_free_until(conn, group.id, noon + 600)
+    reconciler.sync_services(noon + 60)
+    assert fake.ids == []
+
+    # the free window ends, so the schedule blocks again
+    reconciler.sync_services(noon + 601)
+    assert fake.ids == ["youtube"]
+
+
+def test_an_admin_block_wins_over_an_open_window(store, fake):
+    with store as conn:
+        group = add_group(conn, services=("youtube",), windows=[a_window("13:00", "14:00")])
+    reconciler = Reconciler(store, fake, TZ)
+    inside = ts_utc(2026, 11, 11, 13, 30)
+    with store as conn:
+        budget.set_force_block(conn, group.id, inside + 600)
+    reconciler.sync_services(inside)
+    assert fake.ids == ["youtube"]
+
+
+def test_the_reconciler_never_reads_the_query_log(store, fake):
+    """Metering is gone: only the discovery screen may ask for the query log."""
+    now = ts_utc(2026, 11, 11, 12)
+    with store as conn:
+        group = add_group(conn, services=("youtube",))
+        budget.set_force_block(conn, group.id, now + 3600)
+    reconciler = Reconciler(store, fake, TZ)
+
+    reconciler.run("loop", now=now)
+
+    # it synced (a services write) without ever asking for the query log
+    assert [entry for entry in fake.calls if entry[0] == "services"]
+    assert [entry for entry in fake.calls if entry[0].startswith("querylog")] == []
 
 
 # --------------------------------------------------------------------------- #
@@ -336,23 +355,25 @@ def test_a_null_user_rules_answer_is_an_empty_list(store):
     assert reconciler.last_error is None
 
 
-def test_service_rule_hosts_from_the_real_catalogue(store):
-    from .fakes import FaithfulAdGuard
+def test_rule_host_parses_the_real_catalogue():
+    from .fakes import load_service_catalogue
 
-    reconciler = Reconciler(store, FaithfulAdGuard(), TZ)
-    domains = reconciler.service_domains()
+    hosts = {
+        service["id"]: {host for host in map(rule_host, service.get("rules") or []) if host}
+        for service in load_service_catalogue()
+    }
 
-    assert "youtube.com" in domains["youtube"]
-    assert "spotify.com" in domains["spotify"]
-    assert "audio-ak-spotify-com.akamaized.net" in domains["spotify"]
-    assert "spotify.com.edgesuite.net" in domains["spotify"]
-    assert "qq.com" in domains["qq"]
-    assert "mask.icloud.com" in domains["icloud_private_relay"]
-    assert "amazonaws.com" in domains["amazon"]
-    for hosts in domains.values():
-        assert not [host for host in hosts if "^" in host or "$" in host or "|" in host]
-    assert "vod-adaptive.akamaized.net" not in domains["vimeo"]  # a wildcard names no host
-    assert "ebay-*.s3-us-west-1.amazonaws.com" not in domains["ebay"]
+    assert "youtube.com" in hosts["youtube"]
+    assert "spotify.com" in hosts["spotify"]
+    assert "audio-ak-spotify-com.akamaized.net" in hosts["spotify"]
+    assert "spotify.com.edgesuite.net" in hosts["spotify"]
+    assert "qq.com" in hosts["qq"]
+    assert "mask.icloud.com" in hosts["icloud_private_relay"]
+    assert "amazonaws.com" in hosts["amazon"]
+    for service_hosts in hosts.values():
+        assert not [host for host in service_hosts if "^" in host or "$" in host or "|" in host]
+    assert "vod-adaptive.akamaized.net" not in hosts["vimeo"]  # a wildcard names no host
+    assert "ebay-*.s3-us-west-1.amazonaws.com" not in hosts["ebay"]
 
 
 @pytest.mark.parametrize(

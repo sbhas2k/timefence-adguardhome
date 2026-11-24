@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 log = logging.getLogger("timefence.db")
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 SKIP_BACKUP_ENV = "TIMEFENCE_SKIP_MIGRATION_BACKUP"
 
 MIGRATION_1 = """
@@ -152,6 +152,19 @@ CREATE TABLE alerts_sent (
     sent_at INTEGER NOT NULL
 );
 CREATE INDEX alerts_sent_ts ON alerts_sent(sent_at);
+"""
+
+
+# v6: the daily minutes budget, bonus time and DNS usage metering are gone.
+# Allowed windows are the only schedule, so the stored block windows (whose
+# meaning would silently invert) are cleared. Pure DDL, so a CLI command can
+# still open and upgrade an older database without starting the server.
+MIGRATION_6 = """
+DROP TABLE IF EXISTS bonus;
+DROP TABLE IF EXISTS usage_seconds;
+DELETE FROM group_windows;
+ALTER TABLE groups DROP COLUMN weekday_minutes;
+ALTER TABLE groups DROP COLUMN weekend_minutes;
 """
 
 
@@ -376,6 +389,7 @@ MIGRATIONS: dict[int, str | Callable[[sqlite3.Connection, ZoneInfo], None]] = {
     3: MIGRATION_3,
     4: _migration_4,
     5: MIGRATION_5,
+    6: MIGRATION_6,
 }
 
 

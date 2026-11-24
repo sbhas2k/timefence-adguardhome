@@ -18,9 +18,8 @@ import sqlite3
 import threading
 import time
 from collections import Counter
-from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta
-from datetime import time as dtime
+from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Any
 from urllib.parse import quote, urlsplit
 from zoneinfo import ZoneInfo
@@ -34,17 +33,9 @@ log = logging.getLogger("timefence.alerts")
 # secret lives in that path. The transport must never print it.
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 
-EVENT_NAMES = (
-    "group_low",
-    "group_exhausted",
-    "bedtime_started",
-    "sync_failing",
-    "sync_recovered",
-    "weekly_summary",
-)
-DEFAULT_OFF = frozenset({"bedtime_started", "weekly_summary"})
+EVENT_NAMES = ("group_closed", "sync_failing", "sync_recovered")
+DEFAULT_OFF = frozenset({"group_closed"})
 CHANNELS = ("telegram", "ntfy", "webhook")
-LOW_SECONDS = 600
 HOURLY_LIMIT = 20
 QUEUE_SIZE = 50
 PRUNE_AFTER = 14 * 86400
@@ -75,21 +66,15 @@ LAST_RESULT = "alerts.last_result"
 LAST_RESULT_TS = "alerts.last_result_ts"
 
 PRIORITY = {
-    "group_low": "default",
-    "group_exhausted": "high",
-    "bedtime_started": "default",
+    "group_closed": "default",
     "sync_failing": "high",
     "sync_recovered": "default",
-    "weekly_summary": "low",
     "test": "default",
 }
 TAGS = {
-    "group_low": "hourglass",
-    "group_exhausted": "no_entry",
-    "bedtime_started": "crescent_moon",
+    "group_closed": "door",
     "sync_failing": "warning",
     "sync_recovered": "white_check_mark",
-    "weekly_summary": "bar_chart",
     "test": "bell",
 }
 
@@ -120,10 +105,8 @@ class Message:
     created_at: int = 0
     time_iso: str = ""
     group: str = ""
-    minutes_left: int = 0
     time_text: str = ""
     outage_seconds: int = 0
-    groups: tuple[tuple[str, float], ...] = field(default_factory=tuple)
 
 
 def parse_target(raw: str) -> Target:
@@ -329,8 +312,8 @@ def probe_groups(conn: sqlite3.Connection) -> list[budget.Group]:
         )
     groups: list[budget.Group] = []
     for row in conn.execute(
-        "SELECT id, name, emoji, weekday_minutes, weekend_minutes, paused, "
-        "force_block_until, owner_id FROM groups WHERE deleted=0 ORDER BY name"
+        "SELECT id, name, emoji, paused, force_block_until, owner_id "
+        "FROM groups WHERE deleted=0 ORDER BY name"
     ):
         gid = int(row["id"])
         groups.append(
@@ -338,8 +321,6 @@ def probe_groups(conn: sqlite3.Connection) -> list[budget.Group]:
                 id=gid,
                 name=str(row["name"]),
                 emoji=str(row["emoji"]),
-                weekday_minutes=int(row["weekday_minutes"]),
-                weekend_minutes=int(row["weekend_minutes"]),
                 paused=bool(row["paused"]),
                 deleted=False,
                 force_block_until=int(row["force_block_until"] or 0),
@@ -391,36 +372,17 @@ def public_config(conn: sqlite3.Connection, now: int) -> dict:
 
 
 def message_text(message: Message) -> str:
-    if message.event == "group_low":
-        return i18n.t("alert.low", group=message.group, minutes=message.minutes_left)
-    if message.event == "group_exhausted":
-        return i18n.t("alert.exhausted", group=message.group)
-    if message.event == "bedtime_started":
-        return i18n.t("alert.bedtime_started", group=message.group, time=message.time_text)
+    if message.event == "group_closed":
+        return i18n.t("alert.closed", group=message.group, time=message.time_text)
     if message.event == "sync_failing":
         return i18n.t("alert.sync_failing")
     if message.event == "sync_recovered":
         return i18n.t("alert.sync_recovered")
-    if message.event == "weekly_summary":
-        lines = [i18n.t("alert.weekly")]
-        lines += [
-            i18n.t("alert.weekly_line", group=name, minutes=minutes)
-            for name, minutes in message.groups
-        ]
-        return "\n".join(lines)
     return i18n.t("alert.test")
 
 
 def webhook_payload(message: Message) -> dict:
-    if message.event in {"group_low", "group_exhausted"}:
-        return {
-            "event": message.event,
-            "group": message.group,
-            "minutes_left": message.minutes_left,
-            "time": message.time_iso,
-            "message": message_text(message),
-        }
-    if message.event == "bedtime_started":
+    if message.event == "group_closed":
         return {
             "event": message.event,
             "group": message.group,
@@ -433,13 +395,6 @@ def webhook_payload(message: Message) -> dict:
             "time": message.time_iso,
             "message": message_text(message),
             "outage_seconds": message.outage_seconds,
-        }
-    if message.event == "weekly_summary":
-        return {
-            "event": "weekly_summary",
-            "time": message.time_iso,
-            "days": 7,
-            "groups": [{"group": name, "minutes": minutes} for name, minutes in message.groups],
         }
     return {"event": message.event, "time": message.time_iso, "message": message_text(message)}
 
@@ -700,17 +655,12 @@ class AlertWorker:
             if not config["enabled"] or not config["channel"]:
                 return
             tz = self.settings.zone
-            day = budget.day_str(now, tz)
             for group in probe_groups(conn):
                 status, blocked_until = budget.group_status(conn, group, tz, now)
-                remaining = budget.remaining_seconds(conn, group, tz, now)
-                event = self._event_for(
-                    conn, config, group, status, remaining, blocked_until, day, now, tz
-                )
+                event = self._event_for(conn, config, group, status, blocked_until, now, tz)
                 if event is not None:
                     messages.append(event)
             self._probe_outage(conn, config, now, last_ok_ts, last_ok_mono, messages, tz)
-            self._probe_weekly(conn, config, now, messages, tz)
         for message in messages:
             self.enqueue(message)
 
@@ -720,54 +670,29 @@ class AlertWorker:
         config: dict,
         group: budget.Group,
         status: str,
-        remaining: int,
         blocked_until: int | None,
-        day: str,
         now: int,
         tz: ZoneInfo,
     ) -> Message | None:
-        if status in budget.PERMITTED_STATUSES:
-            # A warning while the group is free would be noise: the free window
-            # is an admin decision, not the budget running out.
-            wanted = config["events"]["group_low"]
-            if status == "allowed" and 0 < remaining <= LOW_SECONDS and wanted:
-                key = f"low:{group.id}:{day}"
-                if _reserve(conn, key, now):
-                    minutes = max(1, -(-remaining // 60))
-                    return Message(
-                        event="group_low",
-                        key=key,
-                        created_at=now,
-                        time_iso=_iso(now, tz),
-                        group=group.name,
-                        minutes_left=minutes,
-                    )
+        if status != "outside_hours" or not config["events"]["group_closed"]:
+            # Free time, an admin block and pause are deliberate: they are not
+            # the schedule closing the group, so they never raise this alert.
             return None
-        if status == "limit_reached" and config["events"]["group_exhausted"]:
-            key = f"ex:{group.id}:{day}"
-            if _reserve(conn, key, now):
-                return Message(
-                    event="group_exhausted",
-                    key=key,
-                    created_at=now,
-                    time_iso=_iso(now, tz),
-                    group=group.name,
-                )
-        if status == "bedtime" and config["events"]["bedtime_started"]:
-            # One night, one message: a window that crosses midnight must not
-            # fire again after 00:00, so the key names the window's end.
-            night = blocked_until if blocked_until is not None else day
-            key = f"bedtime:{group.id}:{night}"
-            if _reserve(conn, key, now):
-                return Message(
-                    event="bedtime_started",
-                    key=key,
-                    created_at=now,
-                    time_iso=_iso(now, tz),
-                    group=group.name,
-                    time_text=budget.clock_str(blocked_until, tz) if blocked_until else "",
-                )
-        return None
+        if blocked_until is None:
+            return None
+        # One closing, one message: the next opening names the closing, so a
+        # window that crosses midnight cannot fire again after 00:00.
+        key = f"closed:{group.id}:{blocked_until}"
+        if not _reserve(conn, key, now):
+            return None
+        return Message(
+            event="group_closed",
+            key=key,
+            created_at=now,
+            time_iso=_iso(now, tz),
+            group=group.name,
+            time_text=budget.clock_str(blocked_until, tz),
+        )
 
     def _probe_outage(
         self,
@@ -821,52 +746,6 @@ class AlertWorker:
                             outage_seconds=seconds,
                         )
                     )
-
-    def _probe_weekly(
-        self,
-        conn: sqlite3.Connection,
-        config: dict,
-        now: int,
-        messages: list[Message],
-        tz: ZoneInfo,
-    ) -> None:
-        if not config["events"]["weekly_summary"]:
-            return
-        today = budget.today(tz, now)
-        monday = today - timedelta(days=today.weekday())
-        key = f"weekly:{monday.isoformat()}"
-        if today.weekday() == 0:
-            if datetime.fromtimestamp(now, tz).hour < 8:
-                return
-            if conn.execute("SELECT 1 FROM alerts_sent WHERE key=?", (key,)).fetchone():
-                return
-            totals = self._weekly_totals(conn, today)
-            if _reserve(conn, key, now):
-                messages.append(
-                    Message(
-                        event="weekly_summary",
-                        key=key,
-                        created_at=now,
-                        time_iso=_iso(now, tz),
-                        groups=tuple(totals),
-                    )
-                )
-            return
-        if not conn.execute("SELECT 1 FROM alerts_sent WHERE key=?", (key,)).fetchone():
-            conn.execute("INSERT INTO alerts_sent(key, sent_at) VALUES(?,?)", (key, now))
-            conn.commit()
-            log.info("missed weekly summary")
-
-    def _weekly_totals(self, conn: sqlite3.Connection, today: Any) -> list[tuple[str, float]]:
-        yesterday = today - timedelta(days=1)
-        anchor = int(
-            datetime.combine(yesterday, dtime(12, 0), tzinfo=self.settings.zone).timestamp()
-        )
-        rows = budget.usage_range(conn, self.settings.zone, 7, anchor)
-        totals: dict[str, int] = {}
-        for row in rows:
-            totals[row["group"]] = totals.get(row["group"], 0) + int(row["used_seconds"])
-        return [(name, round(seconds / 60, 1)) for name, seconds in totals.items()]
 
     # -- delivery --------------------------------------------------------
     def _deliver_message(self, message: Message) -> bool:
