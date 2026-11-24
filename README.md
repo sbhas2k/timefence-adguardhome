@@ -254,11 +254,9 @@ If the admin password is lost or a sign-in is refused, set a new one from the
 server. The password itself is never echoed, and the service can keep running:
 
 ```bash
-sudo runuser -u timefence -- /opt/timefence/venv/bin/timefence passwd --role admin
+sudo -u timefence env DATA_DIR=/var/lib/timefence \
+  /opt/timefence/venv/bin/python -m timefence passwd --role admin
 ```
-
-(`timefence` is a system account without a shell, so `sudo -u` does not work;
-`runuser` does. `--data-dir` defaults to `$DATA_DIR` or `/var/lib/timefence`.)
 
 Add `--username NAME` to reset another account (`--role admin|user`). Rules:
 admin password ≥ 10 characters and not `admin`; user password ≥ 8 characters.
