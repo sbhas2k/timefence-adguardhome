@@ -59,7 +59,7 @@ tell the devices apart.
 
 - To confirm blocking works: open the app on the device and watch the query log
   for blocked lines that come from your home address.
-- Budgets are per group, not per device, by design. See
+- Allowed times are per group, not per device, by design. See
   [Running on a remote VM](remote-vm.md) for the firewall rules and the
   allow-list, which covers IPv4 only.
 
@@ -81,8 +81,8 @@ Change the DNS server on the device (or in the router's DHCP lease for it) to
 - If the app still works, the device is not using your DNS server at all:
   return to steps 1 and 2.
 - If the app breaks within a minute, the device *does* use your DNS server, so
-  the block is a TimeFence or AdGuard setting problem — check the group, the
-  budget and the block state in TimeFence first, then the query log.
+  the block is a TimeFence or AdGuard setting problem — check the group's
+  allowed times and block state in TimeFence first, then the query log.
 
 Remember to set the DNS server back afterwards.
 

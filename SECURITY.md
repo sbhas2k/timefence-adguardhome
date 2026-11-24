@@ -62,9 +62,8 @@ is **not** hardened against a hostile multi-tenant deployment.
 - **CSRF.** Every state-changing API call needs the `X-CSRF-Token` header that is
   issued with the session, and the login/setup endpoints are JSON-only.
 - **Read-only accounts.** A `user` session is refused (`403 read_only`) on every
-  mutating `/api/*` call, and its state payload contains no services, domains,
-  owner names or history. Role separation is enforced on the server, not by
-  hiding buttons.
+  mutating `/api/*` call, and its state payload contains no services, domains or
+  owner names. Role separation is enforced on the server, not by hiding buttons.
 - **Client address.** `X-Forwarded-For` is parsed by TimeFence only: all header
   lines are joined, hops are walked from the right, and the first address not in
   `TRUSTED_PROXIES` wins; anything malformed falls back to the peer address.

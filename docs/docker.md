@@ -57,7 +57,7 @@ owned by `root:10001`, the user the image runs as. If you run the container with
   exposed on `0.0.0.0` even with host networking (put nginx/Caddy in front);
 - `ADGUARD_PASSWORD_FILE` mounted read-only from the host;
 - `/data` as a named volume (or bind-mount an existing data directory to keep
-  history when migrating from a systemd install);
+  the database when migrating from a systemd install);
 - `journald` logging, so `journalctl CONTAINER_NAME=timefence` works;
 - `stop_grace_period: 45s`, because a clean stop blocks every managed group and
   that takes a few seconds.

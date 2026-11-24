@@ -4,7 +4,7 @@ Everything TimeFence knows is in one SQLite file plus two small files.
 
 | file | contents |
 |---|---|
-| `/var/lib/timefence/timefence.db` | groups, budgets, usage, history, events, hashed credentials |
+| `/var/lib/timefence/timefence.db` | groups, allowed times, settings, events, hashed credentials |
 | `/var/lib/timefence/session-secret` | signing key for session cookies |
 | `/etc/timefence/timefence.env` | configuration (mode 600; contains the AdGuard password if inline) |
 
@@ -13,7 +13,7 @@ the same mode: they contain password hashes and, once alerts are configured, the
 ntfy topic/token and the webhook URL in plain text.
 
 Each schema upgrade first writes one verified copy next to the database, named
-`timefence.db.pre-v<schema>.bak` (for example `timefence.db.pre-v5.bak`). Those
+`timefence.db.pre-v<schema>.bak` (for example `timefence.db.pre-v6.bak`). Those
 files are full copies of the database: treat them like the database itself, and
 delete them once you are happy with the upgrade.
 
@@ -88,9 +88,9 @@ Old `-wal` and `-shm` files must go: SQLite would otherwise replay them over the
 restored file.
 
 On startup TimeFence applies the restored state and blocks every group whose
-budget is gone, so a restore never leaves a group allowed by accident (but a
-clean stop of the *current* process had already blocked everything, so expect
-the groups to re-block right after the next reconcile).
+status is not permitted, so a restore never leaves a group allowed by accident
+(but a clean stop of the *current* process had already blocked everything, so
+expect the groups to re-block right after the next reconcile).
 
 ## Locked out of the admin account
 
