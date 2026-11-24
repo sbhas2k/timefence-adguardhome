@@ -1,18 +1,42 @@
 # Upgrading
 
+## A pre-release install
+
+TimeFence had not been published before this release, so there is no supported
+upgrade path into it from a pre-release build (0.4/0.5) that carried the daily
+minutes budget. **Install this release fresh.**
+
+- There is nothing to export. The usage history, the CSV export and the bonus
+  minutes are gone from the product, so no file leaves the old build.
+- Nothing has to be deleted by hand either. The database is migrated to schema
+  v6 on start, and that step drops the metered usage and bonus tables and the
+  old minute columns, and empties the stored windows — they were *no-go*
+  windows, and an allowed window means the opposite, so they cannot be carried
+  over. The migration writes its verified copy first
+  (`timefence.db.pre-v6.bak`). Groups, targets and accounts survive; a group
+  with no windows is simply always open.
+- Run `timefence` (or `timefence serve`, or the container) exactly as before.
+  Sign in, and give each group the allowed times you want.
+
+If you prefer a clean slate, point `DATA_DIR` at an empty directory instead of
+migrating the old database.
+
 ## Upgrading from 0.3.x to 1.0.x
 
 1.0.0 is a breaking release for a 0.3.0 install: session mode and the shared PIN
-are gone, the database moves to schema v5, and the Docker defaults changed.
+are gone, the database moves to schema v6, and the Docker defaults changed.
 Nothing has to be reconfigured by hand, but everyone signs in again and the
 steps below are the safe order.
 
 ### What changes for you
 
-- **Session mode is gone.** Every group is now "allowed until the day's minutes
-  are used up". The start/stop buttons and the `15/30/60` shortcuts were
-  removed. A group that had already used its minutes stays blocked until local
-  midnight; anything not yet used is available right away.
+- **Session mode is gone.** A group is never started or stopped by hand: it is
+  open inside its allowed times and blocked outside them. The start/stop buttons
+  and the `15/30/60` shortcuts were removed.
+- **The daily minutes budget is gone.** Give each group 0–4 allowed times (start,
+  end, every day / weekdays / weekends, may cross midnight); no windows means
+  always open. The migration clears the old windows, so every existing group
+  starts out open and you add the times you want.
 - **The shared PIN is gone.** Each person signs in with their own account: an
   `admin` (the full UI) or a `user` (a read-only kid screen). A `user` account
   cannot change anything; every mutating API call is refused with
@@ -31,15 +55,13 @@ steps below are the safe order.
   [docker.md](docker.md).
 - **`TZ` is no longer forced to UTC.** Without it the app follows the host
   (`/etc/timezone`, then `/etc/localtime`) and falls back to UTC only when
-  neither is available. Budgets therefore reset at **local** midnight; set
-  `TZ=UTC` explicitly to keep the old reset time. Existing usage rows keep the
-  dates they were recorded under.
-- **Usage is metered in 15-second activity blocks.** Light or background use is
-  charged less than in 0.3.0, so the same daily minutes can last longer.
-  Blocked answers and free-allow windows are never charged.
-- **New features, nothing to configure.** Bedtime windows per group, alerts
-  (off by default; one Telegram bot, ntfy topic or webhook), a History tab with a CSV export,
-  and a phone-first kid screen.
+  neither is available, so the allowed times are evaluated in local time. Set
+  `TZ=UTC` explicitly to keep the old clock.
+- **Nothing is counted or exported.** The History tab, the CSV download and the
+  budget alerts are gone; there is no usage data to keep or to migrate.
+- **New features, nothing to configure.** Allowed times per group, alerts (off
+  by default; one Telegram bot, ntfy topic or webhook), and a phone-first kid
+  screen.
 - **The default-password check runs once per schema version.** If an admin still
   uses the default password `admin`, first-run setup is required again; change
   it before upgrading if you would rather not see that.
@@ -47,8 +69,8 @@ steps below are the safe order.
 ### Backup first
 
 The upgrade writes its own verified copy before the first schema change. The
-copy is named after the schema it reaches, so any database older than v5 gets
-`timefence.db.pre-v5.bak` next to the database; a fresh install writes none. The
+copy is named after the schema it reaches, so any database older than v6 gets
+`timefence.db.pre-v6.bak` next to the database; a fresh install writes none. The
 migration verifies the copy before touching anything and stops if it cannot
 write it. Take your own copy as well:
 
@@ -131,7 +153,7 @@ mount of the host's file is what lets it follow the host timezone.
 1. Stop the new version (`sudo systemctl stop timefence` or
    `docker compose stop timefence`).
 2. Restore the pre-upgrade backup — your own copy or the automatic
-   `timefence.db.pre-v5.bak` — and drop stale write-ahead files:
+   `timefence.db.pre-v6.bak` — and drop stale write-ahead files:
 
    ```bash
    sudo install -o timefence -g timefence -m 600 \
@@ -144,7 +166,7 @@ mount of the host's file is what lets it follow the host timezone.
 
 A database from a newer schema is refused on start instead of being silently
 corrupted — that is why the copy matters. Anything that happened after the
-upgrade (usage, edits, accounts) is lost by the rollback.
+upgrade (edits, accounts) is lost by the rollback.
 
 ## Upgrading within 1.x
 

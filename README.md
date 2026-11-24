@@ -1,13 +1,14 @@
 # TimeFence for AdGuard Home
 
-**Daily time budgets for websites and apps, for AdGuard Home.**
+**Allowed times for websites and apps, for AdGuard Home.**
 
 TimeFence is a small companion app for [AdGuard Home](https://adguard.com/adguard-home/overview.html).
 You group the apps and sites you want to ration (YouTube, Roblox, "the whole
-Play Store"...) and give each group a daily number of minutes. A group is
-**allowed until its daily minutes are used up**; TimeFence meters real DNS
-activity from AdGuard's query log and blocks the group at the DNS level until
-local midnight once the budget is gone.
+Play Store"...) and give each group up to four **allowed times**: a start, an
+end and the days it applies to (every day, weekdays or weekends). Inside those
+times the group works normally; outside them TimeFence blocks it at the DNS
+level, and the block lifts by itself when the next window opens. A group with
+no windows is always open.
 
 > **Unofficial community project, not affiliated with or endorsed by AdGuard.**
 
@@ -18,58 +19,51 @@ regenerate it are in [`docs/screenshots/`](docs/screenshots/).
 
 | Kid view (phone) | Kid view (phone, dark) |
 |---|---|
-| <img src="docs/screenshots/kid-390.png" width="260" alt="Kid view on a phone: minutes left for each group and a bedtime block"> | <img src="docs/screenshots/kid-390-dark.png" width="260" alt="The kid view on a phone in dark mode"> |
+| <img src="docs/screenshots/kid-390.png" width="260" alt="Kid view on a phone: one line per group saying open until or opens at, with a closed group muted"> | <img src="docs/screenshots/kid-390-dark.png" width="260" alt="The kid view on a phone in dark mode"> |
 
-<img src="docs/screenshots/admin-today-1280.png" alt="Admin Today: remaining minutes, budgets and quick actions for each group">
+<img src="docs/screenshots/admin-today-1280.png" alt="Admin Today: the live schedule line, Block / Auto / Free and quick actions for each group">
 
-<img src="docs/screenshots/groups-1280.png" alt="Groups tab: budgets, targets and owners, with the AdGuard services picker">
+<img src="docs/screenshots/groups-1280.png" alt="Groups tab: allowed times, targets and owners, with the AdGuard services picker">
 
-<img src="docs/screenshots/bedtime-editor-390.png" width="390" alt="Group editor on a phone, showing the bedtime windows">
+<img src="docs/screenshots/groups-editor-390.png" width="390" alt="Group editor on a phone, showing the allowed times">
 
 <img src="docs/screenshots/alerts-1280.png" alt="Settings, Alerts card: one alert channel (Telegram, ntfy or webhook) and the event toggles">
 
-<img src="docs/screenshots/history-1280.png" alt="History tab: minutes used per group over the last 7 days (7, 14 or 30 selectable) and the CSV download">
-
-
 ## Features
 
-- **Unlimited groups.** Each group has a name, an emoji, weekday/weekend
-  minutes, any number of AdGuard *blocked services* and any number of custom
-  domains.
-- **Allowed until the budget runs out.** Nothing is blocked up front. Usage is
-  metered from the query log in 15-second activity buckets; when the daily
-  minutes are gone the group is blocked until local midnight.
+- **Unlimited groups.** Each group has a name, an emoji, 0–4 allowed times,
+  any number of AdGuard *blocked services* and any number of custom domains.
+- **Allowed times, not a stopwatch.** Nothing is metered and nothing counts
+  down: a group is open inside its windows and blocked outside them, every day,
+  with no daily limit to keep track of. Windows may cross midnight ("21:00 –
+  07:00"), and the day filter belongs to the day the window starts on. No
+  windows at all means the group is always open.
 - **Read-only kid accounts with their own screen.** Admins manage everything; a
   `user` account sees only its own groups (plus shared ones) and gets one calm
-  phone-first screen: minutes left, a progress bar, "time's up, back tomorrow".
-  It cannot change anything, and the server enforces that on every route.
-- **Per-account budgets.** A group can be owned by a user, so each child has
-  their own budget. Both roles use username + password (no PIN).
-- **Bedtime windows.** Give a group up to four daily no-go windows ("21:00 –
-  07:00", weekday or weekend), including ones that cross midnight. A group in a
-  window is blocked even if minutes are left, and no minutes are used up; the
-  kid screen shows a calm "Bedtime until 07:00" instead of a countdown. An
-  admin's **Allow freely until** still overrides a window.
-- **Adjust in both directions.** `+15`, `−15` or any custom amount on the Today
-  card, plus `Block now`, `Allow freely until HH:MM`, pause and `Reset today`.
-  Every action is applied once (double taps are ignored while in flight) and
-  confirmed with a toast.
+  phone-first screen: "Open until 19:00", "Opens at 16:00", or a muted
+  "Closed". It cannot change anything, and the server enforces that on every
+  route.
+- **Per-account groups.** A group can be owned by a user, so each child has
+  their own schedule. Both roles use username + password (no PIN).
+- **Easy overrides.** One `Block | Auto | Free` control per group on the Today
+  card: `Auto` follows the allowed times, `Block` blocks now until local
+  midnight, and `Free` asks until when and disables the windows for that long.
+  The group list has a pause toggle, and a paused card keeps only Resume. Every
+  action is applied once (double taps are ignored while in flight) and confirmed
+  with a toast.
 - **Alerts when it matters.** One Telegram bot, one ntfy topic or one webhook
-  (no accounts, no third-party service): "10 minutes left", "budget used up", an
-  optional bedtime notice, an optional Monday summary, and a warning when
-  AdGuard Home stops answering plus a recovery message. Messages carry a group
-  name and numbers only; de-duplication and an hourly cap keep them from turning
-  into noise.
+  (no accounts, no third-party service): a message when a group's allowed time
+  is over (off by default until you ask for it), and a warning when AdGuard
+  Home stops answering plus a recovery message. Messages carry a group name and
+  numbers only; de-duplication and an hourly cap keep them from turning into
+  noise.
 - **Reconciler** every 30 seconds: AdGuard is only written to when the desired
   state differs, and it preserves services/rules that TimeFence does not own.
-- **Admin tools**: edit minutes and targets, **Discover** recent domains from
-  the AdGuard query log, a per-group rule **Test**, user management, and a
+- **Admin tools**: edit allowed times and targets, **Discover** recent domains
+  from the AdGuard query log, a per-group rule **Test**, user management, and a
   password card that actually changes your own password.
 - **Shared/critical-domain guard** with a plain-language warning
   ("Blocking apps.apple.com blocks the whole App Store, not one app.").
-- **History and export**: 7, 14 or 30 days per group — metered minutes, bonus
-  minutes and the minutes allowed that day — with a CSV download that is safe to
-  open in a spreadsheet. Dates stay correct across daylight-saving changes.
 - **Accounts that end sessions.** Disabling, deleting, demoting or changing the
   password of an account signs its existing sessions out on the next request.
   Login is JSON-only, rate limited per account+address and per address, and
@@ -135,7 +129,7 @@ local runs). `install.sh` writes `/etc/timefence/timefence.env` (mode 600).
 | `ADGUARD_PASSWORD` | – | AdGuard Home password (inline) |
 | `ADGUARD_PASSWORD_FILE` | – | File containing the password (wins over the inline value) |
 | `BASE_PATH` | `/` | URL prefix the app is served under, e.g. `/timer` |
-| `TZ` | *host timezone* | IANA timezone for budgets and the midnight reset; unset follows the host |
+| `TZ` | *host timezone* | IANA timezone the allowed times are evaluated in (and the midnight "Block now" ends at); unset follows the host |
 | `LISTEN_HOST` | `127.0.0.1` | Bind address (the image and `install.sh` keep it on loopback) |
 | `LISTEN_PORT` | `8099` | Bind port |
 | `DATA_DIR` | `/var/lib/timefence` | SQLite database + session secret (mode 0700 / 0600) |
@@ -158,17 +152,17 @@ result without starting the web server.
 Admin → **Groups** → **New group**:
 
 1. Name + emoji (e.g. `Games` 🎮).
-2. Weekday minutes, and weekend minutes if they differ.
-3. Optionally add **bedtime windows**: a start and end time, and whether they
-   apply every day, on weekdays or at weekends. The day is the day the window
-   starts on, and a window may cross midnight.
-4. Pick AdGuard **services** with the searchable picker (these are the official
+2. Optionally add up to four **allowed times**: a start, an end, and whether
+   they apply every day, on weekdays or at weekends. The day is the day the
+   window starts on, and a window may cross midnight. No times = always open;
+   the helper text says so in the editor.
+3. Pick AdGuard **services** with the searchable picker (these are the official
    AdGuard "blocked services" ids), and/or paste **domains**, one per line.
    Pasted URLs are reduced to their hostname; each becomes `||domain^`, which
    also covers subdomains. A domain or service can belong to only one group.
-5. Optionally assign an **owner** (a user account) so the group shows up on that
+4. Optionally assign an **owner** (a user account) so the group shows up on that
    child's screen.
-6. If a domain is shared/critical (App Store, iCloud, Google, Akamai, ...),
+5. If a domain is shared/critical (App Store, iCloud, Google, Akamai, ...),
    TimeFence asks for explicit confirmation and explains what else breaks.
 
 Changes are applied immediately; no restart is needed.
@@ -269,7 +263,7 @@ docker compose stop timefence && \
 
 ## Documentation
 
-- [How it works](docs/how-it-works.md) — metering, reconciler, ownership, fail-safety
+- [How it works](docs/how-it-works.md) — the schedule, reconciler, ownership, fail-safety
 - [Reverse proxy](docs/reverse-proxy.md) — nginx (root and sub-path), Caddy
 - [Limitations](docs/limitations.md) — what DNS-level time limits cannot do
 - [Troubleshooting](docs/troubleshooting.md) — a device that is still not blocked
@@ -287,26 +281,26 @@ docker compose stop timefence && \
 **Does it need the AdGuard Home add-on/Pro?** No, the free AdGuard Home has the
 control API it uses.
 
-**How is "used" time measured?** Every 15-second bucket in which one of the
-group's domains was actually resolved through AdGuard counts once. Blocked
-answers (ad filters, parental filters, blocked services) and free-allow windows
-do not count, and TimeFence ignores its own loopback lookups. Devices that keep
-streaming on cached IPs or bypass DNS with DoH/VPN/mobile data therefore
-under-report — see [limitations](docs/limitations.md).
+**Does it count how long a site is used?** No. TimeFence keeps a schedule, not
+a stopwatch: the group is open inside its allowed times and blocked outside
+them, whatever happens in between. A stream or a game that is already running
+may keep going until it reconnects and has to look a name up again, and a device
+that bypasses your DNS (DoH, a VPN, mobile data) is not blocked at all — see
+[limitations](docs/limitations.md).
 
 **I forgot the admin password.** See [Recovering access](#recovering-access).
 
-**A device is still not blocked although the minutes are gone.** Almost always a
-DNS bypass — usually IPv6, sometimes an app's own resolver. See
+**A device is still not blocked although the allowed time is over.** Almost
+always a DNS bypass — usually IPv6, sometimes an app's own resolver. See
 [Troubleshooting](docs/troubleshooting.md).
 
 **Why are my changes to AdGuard's user rules not visible?** TimeFence owns only
 the `# timefence:begin … # timefence:end` block and the services belonging to
 its groups. Everything else is preserved verbatim.
 
-**Can different devices have different budgets?** Not yet — budgets are per
-group/account, not per device. Give each child their own group (owned by their
-account) for per-child budgets.
+**Can different devices have different allowed times?** Not yet — windows are
+per group/account, not per device. Give each child their own group (owned by
+their account) for a per-child schedule.
 
 **Do I need HTTPS?** For anything but localhost, yes: session cookies are
 `Secure` by default. Put it behind nginx/Caddy. On a plain-HTTP LAN the login
@@ -322,7 +316,7 @@ groups.
 
 ## Roadmap
 
-- Per-device budgets (quotas per client address rather than per group)
+- Per-device rules (a schedule per client address rather than per group)
 - YouTube restricted mode as an alternative to blocking
 - Pi-hole support
 - Multiple AdGuard instances

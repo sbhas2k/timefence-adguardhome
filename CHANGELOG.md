@@ -13,23 +13,39 @@ together and is released as one version, so this entry covers everything a
 
 ### Breaking
 
-- **Session mode is gone.** Every group is "allowed until the day's minutes are
-  used up". The `15/30/60` buttons, start/stop, expiry billing and
-  `/api/session/*` were removed, and `/api/groups` rejects `"mode": "session"`
-  with `400 mode_removed`.
+- **Session mode is gone.** A group is no longer started or stopped by hand:
+  it is open inside its allowed times and blocked outside them. The `15/30/60`
+  buttons, start/stop, expiry billing and `/api/session/*` were removed, and
+  `/api/groups` rejects `"mode": "session"` with `400 mode_removed`.
+- **The daily minutes budget is gone.** A group has 0–4 **allowed times** (a
+  start, an end and every day / weekdays / weekends; may cross midnight, and no
+  windows means always open) and is blocked outside them. The metered usage
+  tables, bonus minutes, the `±15`/Custom/Reset controls, the History tab with
+  its CSV export and the budget alerts went with it, so `limit_reached` and
+  `bedtime` no longer exist as statuses (`outside_hours` replaces them).
+  `Block now`, `Allow freely until` and pause are unchanged, and Free overrides
+  the windows.
 - **The shared user PIN is gone; accounts replace it.** A child signs in with
-  their own `user` account on a dedicated kid screen and can only view time
-  left; every mutating API call is refused with `403 read_only`. Admins change
+  their own `user` account on a dedicated kid screen and can only view its
+  groups' schedule and status; every mutating API call is refused with
+  `403 read_only`. Admins change
   their own password with `POST /api/account/password`;
   `/api/admin/credentials` is gone.
 - **Everyone signs in again.** Cookies carry the account id and a session epoch,
   so every 0.3.0 cookie is invalid.
-- **The database moves to schema v5** (`group_windows` and `alerts_sent`), applied
-  on start. Before the first change the migration writes one verified copy next
-  to the database as `timefence.db.pre-v5.bak` for any database older than v5; a
-  fresh install writes none. A database from a newer schema is refused instead of
-  being touched. The 0.3.0 `sessions` table is kept read-only as history; nothing
-  reads it for budgets.
+- **The database moves to schema v6** (`group_windows` and `alerts_sent` are
+  kept; the metered usage and bonus tables and the minute columns are dropped),
+  applied on start. Before the first change the migration writes one verified
+  copy next to the database as `timefence.db.pre-v6.bak` for any database older
+  than v6; a fresh install writes none. A database from a newer schema is
+  refused instead of being touched. The 0.3.0 `sessions` table is kept
+  read-only; nothing reads it.
+- **This release is a fresh install, not a data migration.** TimeFence had not
+  been published before this version, so a pre-release database is not carried
+  over: schema v6 drops the metered usage and bonus data and empties the stored
+  windows, because the old windows were *no-go* windows and their meaning
+  inverts. Nothing has to be exported first and nothing can be; re-create your
+  groups (see [docs/upgrading.md](docs/upgrading.md#a-pre-release-install)).
 - **Stopping TimeFence blocks every managed group** until it starts again; run
   `timefence release` when you stop it on purpose (`uninstall.sh` does).
 - **Docker defaults changed.** The image listens on `LISTEN_HOST=127.0.0.1` and
@@ -39,11 +55,8 @@ together and is released as one version, so this entry covers everything a
   a digest) for controlled upgrades; `:latest` moves with every release.
 - **`TZ` is no longer forced to UTC.** Without it the app follows the host
   (`/etc/timezone`, then `/etc/localtime`) and falls back to UTC only when
-  neither is available, so budgets reset at local midnight. Set `TZ=UTC` to keep
-  the old reset time.
-- **Usage is metered in 15-second activity blocks.** Light or background use is
-  charged less than in 0.3.0, so the same daily minutes can last longer.
-  Blocked answers and free-allow windows are never charged.
+  neither is available, so the allowed times are evaluated in local time. Set
+  `TZ=UTC` to keep the old clock.
 - **Logout signs the account out everywhere.** It bumps the session epoch before
   clearing the cookie, so a copied cookie stops working too.
 - **A rejected AdGuard credential ends the pass and backs off.** AdGuard Home
@@ -58,16 +71,13 @@ together and is released as one version, so this entry covers everything a
 - Dedicated read-only kid screen (phone-first, auto-refreshing) and a role-aware
   landing page.
 - Server-side group `status` and `blocked_until`, and an admin state payload with
-  warnings (AdGuard unreachable, query log disabled/short/ignored domains, `TZ`
-  unresolved).
+  warnings (AdGuard unreachable, `TZ` unresolved).
 - `timefence release` (and an uninstall step) that lifts the managed blocks.
 - Change-password card in the admin UI, backed by `POST /api/account/password`.
 - `scripts/migrate_legacy.py` writes accounts into `users`, requires `--tz`, and
   cannot leave the old password working.
 - Atomic, verified migrations; one store lock serialising all database access
   (requests, reconciler, shutdown); AdGuard HTTP calls made outside that lock.
-- Query-log paging, 15-second activity buckets, midnight-split accounting,
-  `MAX_CATCHUP` after downtime, and a `querylog_*` health warning set.
 - Remote VM guide (`docs/remote-vm.md`), a DDNS allow-list helper with a systemd
   timer, and `shellcheck` in CI.
 - A manual update script (`deploy/update.sh`): pull, build from the checkout,
@@ -75,35 +85,27 @@ together and is released as one version, so this entry covers everything a
 - `requirements.lock` with hashes, a digest-pinned base image, SHA-pinned
   actions, `pip-audit`, `gitleaks` and CodeQL CI jobs, and Dependabot
   configuration.
-- **Bedtime windows.** Up to four daily no-go windows per group (start/end, every
-  day, weekdays or weekends), including windows that cross midnight. A group in
-  a window is blocked even if minutes are left and no minutes are used up; the
-  kid screen shows "Bedtime until 07:00". An admin's "Allow freely until" still
-  overrides a window. AdGuard's blocked-services list is global, so a window on a
-  group that owns a service takes that service away from every device for the
-  window.
+- **Allowed times.** Up to four windows per group (a start, an end, every day,
+  weekdays or weekends), including windows that cross midnight: inside them the
+  group is open, outside them it is blocked. A group with no windows is always
+  open, and an admin's "Allow freely until" overrides a window. AdGuard's
+  blocked-services list is global, so a window on a group that owns a service
+  takes that service away from every device outside the window.
 - **Alerts.** One Telegram bot, one ntfy topic or one webhook under Settings →
-  Alerts: budget low (10 minutes left), budget used up, bedtime started (default
-  off), AdGuard Home unreachable and reachable again, and a weekly summary
-  (default off, Monday morning). Messages carry a group name and numbers only;
+  Alerts: a group's allowed time is over (default off), AdGuard Home unreachable
+  and reachable again. Messages carry a group name and numbers only;
   de-duplication and a 20-per-hour cap keep them quiet, and delivery failures are
   reduced to a category before they leave the sender. The bot token is never
   echoed back (two-character tails only) and a delivery cannot print it. Until a
   channel is configured, the Today tab offers a **Set up alerts** button.
-- **Troubleshooting guide** (`docs/troubleshooting.md`) for the case "the
-  minutes are gone but the device still works": IPv6 bypassing the DNS, apps
-  with their own resolver, caches, a remote VM that sees one home address, and
+- **Troubleshooting guide** (`docs/troubleshooting.md`) for the case "the allowed
+  time is over but the device still works": IPv6 bypassing the DNS, apps with
+  their own resolver, caches, a remote VM that sees one home address, and
   AdGuard's per-client settings.
 - **VM deployment guide** (`docs/vm-deploy.md`): AdGuard Home and TimeFence on a
   VM for a home network in order (firewall, containers, DDNS, the allow-list
   helper, closed-to-the-world check, router DNS), including why a second public
   DNS server defeats the blocking.
-- **Usage summary and CSV export.** The History tab shows 7, 14 or 30 days per
-  group from a dedicated endpoint (two queries regardless of groups and days)
-  with metered minutes, bonus minutes and the minutes allowed that day, plus a
-  "Download CSV" link (`group,date,used_minutes,bonus_minutes`, formula-safe).
-  `/api/state.history` keeps its 7-day shape. The usage summary and CSV
-  endpoints are admin-only.
 - `.dockerignore`, GitHub issue templates for bugs and feature requests, and a
   release workflow that runs lint and the test suite before it publishes an
   image.
@@ -117,7 +119,7 @@ together and is released as one version, so this entry covers everything a
   one startup log line naming the source appear only for the UTC fallback.
 - **One verified backup per upgrade.** A `migrate()` call writes exactly one
   verified copy before its first schema change, named after the schema it reaches
-  (`timefence.db.pre-v5.bak`). `TIMEFENCE_SKIP_MIGRATION_BACKUP=1` skips it.
+  (`timefence.db.pre-v6.bak`). `TIMEFENCE_SKIP_MIGRATION_BACKUP=1` skips it.
 - **The default-password check runs once per schema version.** If an admin still
   uses `admin`, first-run setup is required again after the upgrade, and
   completing it disables any other admin on the default password.
@@ -134,19 +136,20 @@ together and is released as one version, so this entry covers everything a
 - `/healthz` reports `{ok,status,version}` and returns `503` after three intervals
   without a successful sync; the container health check reads `LISTEN_PORT` and
   `BASE_PATH` and treats `503` as unhealthy (do not auto-restart on it).
-- History dates are computed from the local date, so DST days and `blocked_until`
-  are correct.
 - **Mobile polish**: the header stays on one line at 390 px, checkbox rows and
   icon-only buttons are 44 px targets, and the Settings save buttons have
   distinct accessible names.
 - **A simpler Today card.** Each group has one Block | Auto | Free control
   instead of a row of buttons (Free asks until when before anything changes),
-  the bonus buttons share one line with a Custom box for any number of minutes,
-  Reset is a single icon in the card header next to the group name, and a long
-  list of apps and domains collapses to "4 apps · 2 domains" until it is
-  opened. A paused group keeps only Resume. The four admin tabs stay on one row
-  on a phone, and the alerts reminder is one dismissible line that comes back
-  after two weeks while alerts stay off.
+  one live line naming the schedule ("Open until 19:00", "Opens at 16:00",
+  "Open all day"), a one-word state pill, and a list of apps and domains that
+  collapses to "4 apps · 2 domains" until it is opened. A paused group keeps
+  only Resume. The four admin tabs stay on one row on a phone, and the alerts
+  reminder is one dismissible line that comes back after two weeks while alerts
+  stay off.
+- **The group editor edits allowed times** instead of minutes: up to four rows
+  with a start, an end and a day filter, and the helper text "Outside these
+  times the group is blocked. No times = always allowed."
 - **A group must block something.** Creating or saving a group with no AdGuard
   service and no domain is refused with a clear message, and sending an empty
   domain list through the API now really clears the domains (it used to keep the
@@ -183,7 +186,7 @@ together and is released as one version, so this entry covers everything a
 - `Secure` cookies are the default; the login page explains plain-HTTP behaviour
   and reports a cookie the browser refused to store.
 - Read-only accounts are enforced on the server, and the kid state payload no
-  longer includes services, domains, owner names or history.
+  longer includes services, domains, owner names or the query log.
 - Login attempts are rate-limited per account+address and per address, unknown
   and disabled accounts get a dummy Argon2 verification, and the session cookie
   names the account and its revocation epoch.
@@ -206,10 +209,10 @@ together and is released as one version, so this entry covers everything a
   `user` accounts.
 - Another account's successful sign-in no longer clears a lockout, and the
   lockout limiter no longer grows without bound.
-- A negative bonus could erase metered usage ("used" went down); a shared
-  `# timefence:begin` marker without its `end` could delete foreign rules.
-- A bedtime alert sent again after midnight for the same window, and a "budget
-  low" message fired during a free window.
+- A shared `# timefence:begin` marker without its `end` could delete foreign
+  rules.
+- A closing alert fired once per closing, so a window that crosses midnight does
+  not repeat it after 00:00.
 - Deleting an account left a dangling group owner.
 - A trickling alert server could hold the delivery worker indefinitely.
 - `timefence passwd` hung when stdin was not a terminal (Windows, containers),
@@ -221,34 +224,31 @@ together and is released as one version, so this entry covers everything a
   ("cannot reach AdGuard Home", "AdGuard Home did not answer within 10 s")
   instead of raw transport text with the host, port and path.
 - The group **Test** screen no longer calls a SafeSearch or `Rewrite*` answer
-  "blocked": it now uses the same list as metering, where only a refused answer
+  "blocked": it now uses the same list as a block, where only a refused answer
   is a block and a rewritten one is a real answer.
 - The group **Test** screen now probes a representative host of each service: the
   real catalogue is sorted alphabetically, so a YouTube group used to test
   `ggpht.cn` and never `youtube.com`.
-- The query-log health check now runs once a minute instead of every ten, so a
-  log that is switched off (or back on) is reported within a minute instead of
-  up to ten minutes of usage going uncounted.
+- The query-log health warnings (`querylog_disabled`, `querylog_retention_short`,
+  `querylog_truncated`, `querylog_ignores_group`) went with the metering code
+  that raised them. Discover still reads the log and says "Nothing new in this
+  window." when it finds nothing to show.
 - Large service icons (the real catalogue has one at ~9.9k characters) were
   dropped from the picker; the cap now covers them, and the base64-only check
   still rejects anything else.
 - Service rules written with a single leading pipe (`|host^`, 21 in the real
-  catalogue) were ignored for metering, and a `$modifier` suffix turned
+  catalogue) were not recognised, and a `$modifier` suffix turned
   `||qq.com^$denyallow=…` into a junk hostname. One parser now handles both
   forms, drops the modifier, and returns nothing for wildcards and regexes.
 - Query-log paging lost entries that shared the page's oldest timestamp (busy
-  clients can produce several with one stamp), so a busy minute could go
-  uncharged. Pages are now large and de-duplicated by entry key, and the cursor
-  steps past the boundary stamp.
+  clients can produce several with one stamp), so Discover could miss a domain.
+  Pages are now large and de-duplicated by entry key, and the cursor steps past
+  the boundary stamp.
 - `discover.parse_time` mishandled negative UTC offsets.
 - An unexpected exception from AdGuard aborted the whole reconcile pass instead
   of one phase.
 - The SQLite file (which holds password hashes) and the data directory have
   private modes (`umask 077`, `0600`, `0700`).
-- The warning that AdGuard's query-log ignore list hides a group's domain now
-  appears in the admin banner, and it is raised only when ignoring is actually
-  enabled and the entry really covers the domain (a plain entry hides that exact
-  host; only the anchored form covers subdomains).
 - Docs: the backup and restore recipes, the upgrade and compatibility tables, the
   reverse-proxy and bridge-network notes, the outage-alert minimum and the
   changelog's backup name now match the code.

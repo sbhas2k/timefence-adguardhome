@@ -8,16 +8,15 @@ in any capture.
 
 | file | shows |
 |---|---|
-| `kid-390.png` | the read-only kid screen on a phone: minutes left, a bedtime block |
+| `kid-390.png` | the read-only kid screen on a phone: one line per group saying open until / opens at, plus a closed group muted |
 | `kid-390-dark.png` | the same kid screen in dark mode |
 | `kid-1280.png` | the kid screen at desktop width |
-| `admin-today-390.png` | the admin Today card on a phone: reset icon, Block / Auto / Free and the bonus row |
+| `admin-today-390.png` | the admin Today card on a phone: the live schedule line, Block / Auto / Free and quick actions |
 | `admin-today-1280.png` | the admin Today view at desktop width |
 | `admin-today-1280-dark.png` | the same view in dark mode |
-| `groups-1280.png` | the Groups tab: budgets, targets, owners and the AdGuard services picker |
-| `bedtime-editor-390.png` | the group editor on a phone, with the bedtime windows |
+| `groups-1280.png` | the Groups tab: allowed times, targets, owners and the AdGuard services picker |
+| `groups-editor-390.png` | the group editor on a phone, with the allowed times |
 | `alerts-1280.png` | Settings → Alerts: one Telegram, ntfy or webhook channel and the event toggles |
-| `history-1280.png` | History: minutes used per group over the last 7 days (7, 14 or 30 selectable), with the CSV download |
 
 ## Regenerating them
 

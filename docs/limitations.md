@@ -4,39 +4,28 @@ TimeFence blocks at the DNS level. That is cheap, works for every device on the
 network without installing anything, and cannot be bypassed by "just using
 another browser" — but it has honest limits.
 
-## Budgets are per group, not per device
+## Allowed times are per group, not per device
 
-One set of budgets applies per group, and a group is network-wide. There is no
-per-device accounting. Workaround: give each child their own group owned by
-their account (e.g. "Games – Anna"); that is per-group, not per-person-per-device.
+One schedule applies per group, and a group is network-wide. There is no
+per-device rule. Workaround: give each child their own group owned by their
+account (e.g. "Games – Anna"); that is per-group, not per-person-per-device.
 
-## Bedtime windows block network-wide
+## A window blocks network-wide
 
-A bedtime window is enforced with the same AdGuard switches as a budget block:
-the group's domains become rules and its AdGuard services go on the
-blocked-services list. AdGuard's service list is global, so a window on a group
-that owns a service such as YouTube takes that service away from **every device
-in the house**, parents' included, for the window. Per-device identity and
-per-device budgets are deferred (see above); use separate custom domains per
-group if you need finer control.
+The block outside an allowed window uses the same AdGuard switches as "Block
+now": the group's domains become rules and its AdGuard services go on the
+blocked-services list. AdGuard's service list is global, so an outside-the-window
+block on a group that owns a service such as YouTube takes that service away from
+**every device in the house**, parents' included. Per-device identity and
+per-device rules are deferred (see above); use separate custom domains per group
+if you need finer control.
 
 A window is applied like any other block: the reconciler re-evaluates on its
 next pass (`RECONCILE_INTERVAL`, 30 s by default), so a window starts and ends
 within one interval, and DNS caching can add a little more. Everything uses the
-local wall clock in `TZ`; on the night a clock falls back, a window whose end
-time lies inside the repeated hour can close and open again during it. That is
-the wall clock, not a missed block.
-
-## Metering is approximate
-
-TimeFence charges 15-second buckets of real DNS activity from AdGuard's query
-log. It cannot see the screen: a device that keeps streaming on cached IPs, or
-that uses Private DNS/DoH, a VPN or mobile data, will use less (or no) budget;
-background API calls may add a few buckets that are not "watching". Blocked
-answers and free-allow windows are not charged. For close accounting, make sure
-all DNS on the device and router goes through AdGuard Home, and keep AdGuard's
-query log enabled (a retention of at least an hour is recommended; TimeFence
-warns when it is shorter).
+local wall clock in `TZ`; on the night a clock falls back, a window whose edge
+lies inside the repeated hour can close and open again during it. That is the
+wall clock, not a missed block.
 
 ## DNS caching adds a delay
 
@@ -99,18 +88,17 @@ uses). TimeFence keeps retrying and reports the problem in the admin banner and
 ## Alerts are best effort
 
 Alerts are a convenience, not a guarantee. There is **one** channel at a time
-(ntfy or one webhook), each message is tried **once** (no retry), and at most 20
-messages go out per rolling hour (with the exhausted and outage messages
+(Telegram, ntfy or one webhook), each message is tried **once** (no retry), and
+at most 20 messages go out per rolling hour (with the outage message
 protected). A message carries only a group name, numbers and a time — no
 domains, client addresses or usernames — so treat it as a nudge, not a log.
 
 Delivery runs in one background thread with a bounded queue (50): while a slow
 server holds it, newer messages are dropped (the oldest of the same kind first)
 and the drop counter in the alert settings goes up. Redirects are not followed,
-environment proxies are ignored, each delivery is abandoned after 5 s in total,
-and the socket timeouts are 3 s to connect and 2 s per read
-connect, 2 s read), not a hard total deadline. Private/LAN targets are allowed
-on purpose, because a self-hosted ntfy is the normal setup.
+environment proxies are ignored, and each delivery is abandoned after a hard 5 s
+total deadline. Private/LAN targets are allowed on purpose, because a
+self-hosted ntfy is the normal setup.
 
 "AdGuard unreachable" needs three reconcile runs in a row without a successful
 sync. A run counts as stale only once the last success is older than three
@@ -121,19 +109,11 @@ backwards can suppress a duplicate message and a jump forwards can skip a day;
 both are accepted for a household tool. The topic, token and webhook path are
 stored in plain text in the database, so they are in every backup.
 
-## Usage history is a record of what was used
+## The closing alert names a time of day, not a date
 
-The 7/14/30-day table and the CSV show metered and bonus minutes. The "minutes
-allowed" column in the table is the group's **current** weekday/weekend setting
-applied to that date, not what the budget was at the time, so a later change to
-the minutes rewrites old rows in the table. The CSV leaves that column out on
-purpose and exports only what was used. Only groups that still exist are
-listed: a deleted group disappears from the table and the CSV (its stored rows
-stay in the database, but nothing shows them).
-
-The CSV is UTF-8 without a BOM and quotes cells with `csv`; group names have
-control characters removed and are prefixed with `'` when they could be read as
-a spreadsheet formula.
+The `group_closed` alert says when the group opens again as a local `HH:MM`.
+With windows that only apply to some days (for example weekends), the next
+opening can be several days away and the message still shows only the time.
 
 ## Shutdown blocks everything on purpose
 

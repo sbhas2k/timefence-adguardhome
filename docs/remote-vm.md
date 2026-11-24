@@ -175,8 +175,8 @@ new one exists.
 - **NAT collapses the household into one address** from the VM's point of view.
   Every home device reaches AdGuard Home through the router's public address, so
   the device's own `192.168.x.x` address never appears in the query log and
-  AdGuard's per-client settings cannot tell the devices apart. Budgets stay per
-  group, not per device; per-device budgets are a later feature. The
+  AdGuard's per-client settings cannot tell the devices apart. Allowed times
+  stay per group, not per device; per-device rules are a later feature. The
   allow-list above covers **IPv4 only** — an IPv6 home connection needs its own
   rules (and IPv6 is also the most common reason a block does not land; see
   [Troubleshooting](troubleshooting.md)).

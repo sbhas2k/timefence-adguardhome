@@ -30,9 +30,9 @@ quickest way to click through the UI locally.
 
 - Every user-facing string goes into `src/timefence/i18n.py` (English only for
   now, but the file is the single place a translation would touch).
-- Never break the guarantees: groups are allowed only while their budget lasts,
-  the reconciler is idempotent, foreign AdGuard settings are preserved, metered
-  time never decreases, and a clean stop blocks everything.
+- Never break the guarantees: a group is allowed only inside its allowed times
+  (or while Free is on), the reconciler is idempotent, foreign AdGuard settings
+  are preserved, and a clean stop blocks everything.
 - New behaviour needs a test. Keep `ruff` clean (line length 100).
 - No frontend build step, no CDNs, no inline scripts (the CSP forbids them).
 - Database changes: add a new migration to `MIGRATIONS` in `db.py` and bump the
