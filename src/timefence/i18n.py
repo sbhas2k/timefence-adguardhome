@@ -244,7 +244,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "alerts.clear_webhook": "Clear the stored webhook URL",
         "alerts.token_warning": "This ntfy server is not on your local network and no access token is set, so anyone who learns the topic can read these messages.",
         "alerts.busy": "A test message is already on its way. Try again in a moment.",
-        "alerts.hint": "Get a message when the allowed time is over.",
+        "alerts.hint": "Get a message when AdGuard Home stops responding or a group closes.",
         "alerts.setup": "Set up alerts",
         "alerts.hint_dismiss": "✕",
         "alerts.hint_dismiss_label": "Hide the alerts reminder",
