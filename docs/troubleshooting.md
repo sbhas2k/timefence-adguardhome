@@ -44,7 +44,9 @@ blocking cannot see or stop that.
 ## 3. A stale connection or a DNS cache
 
 A device that already holds an IP address, or an open connection (a video
-stream, a game session), keeps using it without a new lookup.
+stream, a game session), keeps using it without a new lookup. A block can
+therefore take a few minutes, up to about five, to reach a device even though
+TimeFence applied it within seconds.
 
 - Fully power the device off and on again — not just standby or sleep.
 - Then open the app fresh and wait up to a minute for the next lookup.
