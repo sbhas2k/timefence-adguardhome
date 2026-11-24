@@ -77,7 +77,8 @@ def test_tap_targets_are_at_least_44_pixels():
     assert "min-height: 44px" in rule(mobile, ".chip button")
 
     html = read("templates", "app.html")
-    assert html.count('class="check"') >= 8  # show all, alerts enabled, six events
+    # show all, alerts enabled, and the three alert events left after slice U
+    assert html.count('class="check"') >= 5
     js = read("static", "app.js")
     assert '<label class="check"><input type="checkbox" id="g-paused"' in js
 
@@ -253,35 +254,76 @@ def test_the_today_card_has_stable_header_live_and_controls_regions():
     for token in ("textContent = group.name", 'className = "pill " + status.cls', "dataset.status"):
         assert token in paint, token
     assert "[data-header-status]" in paint
+    # the pill is the one-word state; the live line carries the whole sentence
+    assert "pill.textContent = status.short;" in paint
+    status = js_function(js, "statusFor")
+    for key in (
+        "status.short_open",
+        "status.short_closed",
+        "status.short_free",
+        "status.short_blocked",
+        "status.short_paused",
+    ):
+        assert f't("{key}")' in status, key
+        assert i18n.t(key) != key, key
+    assert "status.text" not in paint
 
-    # the coverage line moved into the header; the live part keeps the numbers
+    # the coverage line moved into the header; the live part carries the schedule
     live = js_function(js, "liveHtml")
     assert "coverage(" not in live
     assert "group.name" not in live
 
 
-def test_the_bonus_buttons_keep_focus_apart():
-    """-15 and +15 are distinct after a re-render, so focus cannot move between them."""
+def test_the_focus_key_names_the_live_schedule_controls_only():
+    """The free panel and the segments keep focus; removed boxes are not keyed."""
     js = read("static", "app.js")
     names = js[js.index("var names = [") : js.index("];", js.index("var names = ["))]
-    assert '"data-minutes"' in names
-    assert 'data-minutes="-15"' in js
-    assert 'data-minutes="15"' in js
+    assert '"data-free-time"' in names
+    assert '"data-mode"' in names
+    assert '"data-action"' in names
+    for gone in ('"data-minutes"', '"data-custom-bonus"'):
+        assert gone not in names, gone
+    for gone in ("data-minutes=", "data-custom-bonus="):
+        assert gone not in js, gone
 
 
-def test_the_custom_bonus_box_is_cleared_only_after_a_successful_apply():
+def test_the_today_controls_carry_no_minutes_bonus_or_reset():
+    """The card is two controls: the mode segments and the Free panel."""
     js = read("static", "app.js")
-    start = js.index('} else if (action === "bonus-custom") {')
-    stop = js.index('} else if (action === "reset") {')
-    custom = js[start:stop]
-    assert "adminAction(" in custom
-    assert custom.count('input.value = "";') == 1
-    assert custom.index("adminAction(") < custom.index('input.value = "";')
-    # the clear runs in the success callback, never on the invalid or failed path
-    assert "function () {" in custom[custom.index("adminAction(") :]
-    admin = js_function(js, "adminAction")
-    assert "if (done) { done(data); }" in admin
-    assert admin.index("done(data)") < admin.index(".catch(")
+    controls = js_function(js, "controlsHtml")
+    for token in (
+        "bonus-row",
+        "data-custom-panel",
+        'data-action="bonus"',
+        'data-action="custom"',
+        "data-minutes",
+        'data-action="reset"',
+        "minutes_today",
+        "remaining_minutes",
+        "bonus_minutes",
+    ):
+        assert token not in controls, token
+    assert 'modeButton(group, "block"' in controls
+    assert 'data-free-time="' in controls
+    # no branch and no helper of the removed feature survives
+    for branch in (
+        'action === "bonus"',
+        'action === "bonus-custom"',
+        'action === "custom"',
+        'action === "reset"',
+    ):
+        assert branch not in js, branch
+    for name in (
+        "bonusMessage",
+        "paintCustom",
+        "resetGroup",
+        "fmtMinutes",
+        "renderHistory",
+        "loadUsage",
+        "usageGroups",
+    ):
+        assert f"function {name}(" not in js, name
+    assert "var openCustom = {};" not in js
 
 
 def test_the_free_time_default_is_an_hour_ahead_in_the_server_zone():
@@ -411,118 +453,20 @@ def test_no_localstorage_call_escapes_its_try_block():
         assert "} catch" in js[call.start() : call.start() + 400], "and the block has a catch"
 
 
-def test_the_bonus_row_is_three_controls_with_a_custom_disclosure():
-    """[-15 min] [+15 min] [Custom] on one row; the number box and Apply are disclosed."""
-    js = read("static", "app.js")
-    controls = js_function(js, "controlsHtml")
-
-    row_start = controls.index("bonus-row")
-    panel_start = controls.index("data-custom-panel")
-    row = controls[row_start:panel_start]
-    assert 'data-minutes="-15"' in row
-    assert 'data-minutes="15"' in row
-    assert 'data-action="custom"' in row  # the disclosure itself
-    assert 'aria-expanded="false"' in row  # closed by default, state exposed to AT
-    assert "aria-controls=" in row
-    # the number box and Apply are disclosed, not in the always-visible row
-    assert "data-custom-bonus" not in row
-    assert 'data-action="bonus-custom"' not in row
-
-    panel = controls[panel_start:]
-    assert 'data-custom-bonus="' in panel
-    assert 'data-action="bonus-custom"' in panel
-    assert 'inputmode="numeric"' in panel
-    assert 'step="5"' in panel
-    assert 't("admin.custom_placeholder")' in panel
-    # it starts collapsed (hidden class, never omitted from the markup)
-    tag_start = controls.rindex("<div", 0, panel_start)
-    assert "hidden" in controls[tag_start : controls.index(">", panel_start)]
-
-    # one mode control replaced the separate Block now / Allow again buttons,
-    # and the free time box moved into its own panel
-    assert 'data-action="unblock"' not in controls
-    assert 'data-action="mode"' not in controls  # the segment helper draws it
-    assert 'modeButton(group, "block"' in controls
-    assert 'data-free-time="' in controls
-
-
-def test_the_custom_disclosure_stays_open_across_a_poll():
-    """The open state belongs to the group, so a rebuilt controls region reopens it."""
-    js = read("static", "app.js")
-    assert "var openCustom = {};" in js
-
-    paint = js_function(js, "paintCustom")
-    assert "openCustom[id]" in paint
-    assert 'classList.toggle("hidden", !open)' in paint
-    assert 'setAttribute("aria-expanded"' in paint
-
-    render = js_function(js, "renderToday")
-    assert "paintCustom(card, group.id);" in render
-    # re-applied after the controls markup was rebuilt
-    assert render.index("paintCustom(card, group.id);") > render.index("controls.innerHTML")
-
-    start = js.index('} else if (action === "custom") {')
-    branch = js[start : js.index("} else if", start + 5)]
-    assert "openCustom[String(groupId)] = !openCustom[String(groupId)];" in branch
-    assert "paintCustom(" in branch
-
-    # a successful Apply closes it again, right next to the cleared box
-    start = js.index('} else if (action === "bonus-custom") {')
-    custom = js[start : js.index('} else if (action === "reset") {')]
-    assert "openCustom[String(groupId)] = false;" in custom
-    assert custom.index("adminAction(") < custom.index("openCustom[String(groupId)] = false;")
-
-
-def test_a_half_typed_custom_number_still_holds_the_controls():
-    """The typing guard reads the box's value, whether the disclosure is open or closed."""
+def test_a_half_typed_free_time_still_holds_the_controls():
+    """The typing guard protects the Free panel and nothing of the removed bonus UI."""
     js = read("static", "app.js")
     render = js_function(js, "renderToday")
-    assert 'var input = controls.querySelector("[data-custom-bonus]");' in render
     assert "controls.contains(document.activeElement)" in render
-    assert '(input && input.value !== "")' in render
+    assert "freeTimeChoice[id]" in render
+    assert '(modeFor(group) === "free" && Boolean(freeTimeChoice[id]))' in render
     assert "if (card.dataset.signature !== signature && (!built || !typing)) {" in render
+    assert "data-custom-bonus" not in render
 
-    # painted, never removed: a closed box keeps whatever was typed in it
-    paint = js_function(js, "paintCustom")
+    # painted, never removed: an open Free panel keeps whatever was typed in it
+    paint = js_function(js, "paintMode")
     assert "removeChild" not in paint
     assert "innerHTML" not in paint
-
-
-def test_the_bonus_row_shares_the_width_on_a_phone():
-    css = css_text()
-    base = rule(css, ".bonus-row > *")
-    assert "flex:" in base
-    assert "min-width: 0" in base
-
-    mobile = css[css.index("@media (max-width: 480px)") :]
-    shared = rule(mobile, ".row.bonus-row > *")
-    assert "flex: 1 1 0" in shared
-    # every other wrapping row keeps its two-per-line rule
-    assert "flex: 1 1 40%" in rule(mobile, ".row > .btn")
-    assert "min-height: 44px" in rule(css, ".btn")
-
-
-def test_every_bonus_control_is_named_for_its_group():
-    """Five cards must not expose five identical "+15 min" buttons."""
-    js = read("static", "app.js")
-    controls = js_function(js, "controlsHtml")
-    for key in (
-        "admin.decrease_for",
-        "admin.bonus_for",
-        "admin.custom",
-        "admin.custom_for",
-        "admin.apply_for",
-    ):
-        assert f'"{key}"' in controls, key
-        assert i18n.t(key) != key, key
-    for key in ("admin.decrease_for", "admin.bonus_for", "admin.custom_for", "admin.apply_for"):
-        assert "{name}" in i18n.STRINGS["en"][key], key
-        assert f'esc(t("{key}", {{ name: group.name }}))' in controls, key
-    # the visible words are unchanged
-    assert 'esc(t("admin.decrease"))' in controls
-    assert 'esc(t("admin.bonus"))' in controls
-    assert 'esc(t("admin.apply"))' in controls
-    assert i18n.t("admin.custom") == "Custom"
 
 
 def test_a_busy_card_refuses_a_second_tap_without_losing_focus():
@@ -549,10 +493,17 @@ def test_a_busy_card_refuses_a_second_tap_without_losing_focus():
     assert "cursor: not-allowed" in style
 
 
-def test_the_bonus_row_labels_never_wrap_on_a_narrow_phone():
+def test_the_windows_editor_fits_a_narrow_phone():
+    """Start, end, days and Remove wrap instead of scrolling the page sideways."""
     css = css_text()
-    assert "white-space: nowrap" in rule(css, ".bonus-row > *")
+    row = rule(css, ".window-row")
+    assert "display: flex" in row
+    assert "flex-wrap: wrap" in row
+    assert "gap" in row
+    assert "min-width: 0" in row
     assert "max-width: 360px" in css
+    assert "min-width: 702px" not in css  # never a fixed two-row grid wider than the phone
+    assert "overflow-x: hidden" not in css  # content wraps; the page is never clipped
 
 
 # ------------------------------------------------- the card's mode control
@@ -711,8 +662,7 @@ def mode_probe_script(js: str) -> str:
             '  { paused: false, status: "free" },',
             '  { paused: false, status: "blocked_admin" },',
             '  { paused: false, status: "allowed" },',
-            '  { paused: false, status: "limit_reached" },',
-            '  { paused: false, status: "bedtime" }',
+            '  { paused: false, status: "outside_hours" }',
             "];",
             "var modes = statuses.map(modeFor);",
             "console.log(JSON.stringify({ seq: seq, modes: modes }));",
@@ -747,7 +697,7 @@ def test_the_mode_derivation_and_every_transition_in_order():
         [],  # the pressed Auto does nothing
     ]
     # paused wins; a free window beats a block; every other status is Auto
-    assert got["modes"] == ["", "free", "block", "auto", "auto", "auto"]
+    assert got["modes"] == ["", "free", "block", "auto", "auto"]
 
 
 def controls_probe_script(js: str) -> str:
@@ -800,12 +750,12 @@ def test_the_controls_markup_is_balanced_and_ordered():
         allowed.index('data-action="mode"'),
         allowed.index("data-free-panel="),
         allowed.index("free-note"),
-        allowed.index("bonus-row"),
     ]
     assert order == sorted(order)
-    # the reset trigger moved into the header, so the controls carry none at all
+    # no bonus row and no reset trigger is left in the controls, in any state
     for card in (allowed, free, paused):
-        assert 'data-action="reset"' not in card, card
+        for token in ('data-action="reset"', "bonus-row", "data-custom-bonus", "data-minutes"):
+            assert token not in card, (token, card)
     # a free card shows its panel open, with no Cancel, and the stored-block note
     assert 'data-free-panel="2"' in free
     assert 'class="row tight mt free-panel' in free
@@ -1050,49 +1000,30 @@ def test_the_coverage_toggle_is_a_44_pixel_target():
     assert "rotate(" in opened
 
 
-def test_the_reset_trigger_is_one_icon_button_in_the_card_header():
-    """Reset moved out of the controls into the node that survives every poll."""
+def test_the_card_header_carries_no_reset_trigger():
+    """The reset route is gone, so its icon, dialog and strings are gone too."""
     js = read("static", "app.js")
+    assert 'data-action="reset"' not in js
+    assert "admin.reset_today" not in js
+    assert "admin.reset_for" not in js
+    assert "admin.reset_confirm" not in js
+    assert "↺" not in js
+    for key in ("admin.reset_today", "admin.reset_for", "admin.reset_confirm"):
+        assert key not in i18n.STRINGS["en"], key
     build = js_function(js, "buildHeader")
-    assert 'reset.dataset.action = "reset";' in build
-    assert 'reset.type = "button";' in build
-    assert 'reset.className = "btn card-reset";' in build
-    assert 'reset.dataset.headerReset = "1";' in build
-    assert "↺" in build
-    assert 'glyph.setAttribute("aria-hidden", "true");' in build
-
-    paint = js_function(js, "paintHeader")
-    assert "reset.dataset.group = id;" in paint
-    assert 't("admin.reset_for", { name: group.name })' in paint
-    assert 'reset.setAttribute("aria-label"' in paint
-
-    # nothing of it is left in the controls, in any state
-    controls = js_function(js, "controlsHtml")
-    assert 'data-action="reset"' not in controls
-    assert 't("admin.reset_today")' not in controls
-    assert 't("admin.reset_confirm")' not in controls
-
-    # the same dialog, opened by a node the poll never replaces
-    start = js.index('} else if (action === "reset") {')
-    branch = js[start : js.index("} else if", start + 5)]
-    assert "resetGroup(groupId, name);" in branch
-    assert 'if (modal.classList.contains("hidden")) { modalOpener = document.activeElement; }' in js
-
-    assert "{name}" in i18n.STRINGS["en"]["admin.reset_for"]
-    assert i18n.STRINGS["en"]["admin.reset_for"].startswith("Reset today")
+    assert "card-reset" not in build
+    assert "reset" not in build.lower()
 
 
-def test_the_header_reset_icon_keeps_a_44_pixel_target():
+def test_the_card_header_wraps_a_long_name():
     css = css_text()
     head = rule(css, ".card-head")
     assert "display: flex" in head
     assert "gap" in head
     title = rule(css, ".card-head h2")
-    assert "min-width: 0" in title  # a long name wraps instead of pushing the icon away
-    icon = rule(css, ".card-reset")
-    assert "min-width: 44px" in icon
-    assert "min-height: 44px" in icon
-    assert "margin-left: auto" in icon
+    assert "min-width: 0" in title  # a long name wraps instead of pushing the card wider
+    assert "overflow-wrap: anywhere" in title
+    assert ".card-reset" not in css
 
 
 def test_cancelling_the_free_panel_releases_the_controls():
@@ -1122,3 +1053,375 @@ def test_the_free_segment_names_its_panel_and_moves_focus_into_it():
     assert "id=\"free-panel-' + group.id" in controls
     mode = js[js.index('if (action === "mode")') : js.index('action === "free-apply"')]
     assert "[data-free-time=" in mode and ".focus()" in mode
+
+
+# ------------------------------------------------ the allowed-times schedule
+# The backend has no daily minutes any more: a group is open inside its
+# allowed windows (0-4 of them, no windows = always open) and closed outside.
+
+
+def user_group_keys() -> tuple[str, ...]:
+    from timefence.api import USER_GROUP_KEYS
+
+    return USER_GROUP_KEYS
+
+
+def test_the_ui_reads_no_removed_field_and_calls_no_removed_route():
+    """No leftover of the minutes budget can hit a 404 or show a blank."""
+    banned = (
+        "bonus",
+        "usage",
+        "history",
+        "remaining_minutes",
+        "weekday_minutes",
+        "weekend_minutes",
+        "bedtime",
+        "limit_reached",
+        "metered",
+        "minutes_today",
+        "used_minutes",
+    )
+    for name in ("app.js", "kid.js"):
+        text = read("static", name)
+        for token in banned:
+            assert token not in text, (name, token)
+    for token in ("/api/usage", "usage.csv", "/bonus", "/reset"):
+        assert token not in read("static", "app.js"), token
+
+    for path in sorted(package_file("templates").glob("*.html")):
+        text = path.read_text(encoding="utf-8")
+        for token in banned:
+            assert token not in text, (path.name, token)
+        for token in ("/api/usage", "/bonus", "/reset"):
+            assert token not in text, (path.name, token)
+
+    # the dead i18n families went with the markup that used them
+    removed = (
+        "admin.bonus",
+        "admin.bonus_for",
+        "admin.decrease",
+        "admin.decrease_for",
+        "admin.custom",
+        "admin.custom_for",
+        "admin.custom_placeholder",
+        "admin.custom_invalid",
+        "admin.apply",
+        "admin.apply_for",
+        "admin.reset_today",
+        "admin.reset_for",
+        "admin.reset_confirm",
+        "admin.tab.history",
+        "admin.block_now",
+        "admin.unblock",
+        "admin.clear_free",
+        "admin.free_apply",
+        "budget.left",
+        "budget.used",
+        "status.allowed_auto",
+        "status.limit_reached",
+        "status.bedtime",
+        "status.bedtime_any",
+        "toast.bonus",
+        "toast.bonus_removed",
+        "toast.reset",
+        "history.heading",
+        "history.range",
+        "history.days",
+        "history.download",
+        "history.none",
+        "history.day",
+        "history.total",
+        "kid.minutes_left",
+        "kid.less_than_minute",
+        "kid.time_up",
+        "kid.back_tomorrow",
+        "kid.blocked_by_parent",
+        "kid.bedtime",
+        "kid.bedtime_any",
+        "kid.used_today",
+        "warn.querylog_disabled",
+        "warn.querylog_retention_short",
+        "warn.querylog_ignores_group",
+        "warn.querylog_truncated",
+        "warn.session_groups_converted",
+        "alerts.event.group_low",
+        "alerts.event.group_exhausted",
+        "alerts.event.bedtime_started",
+        "alerts.event.weekly_summary",
+        "error.no_budget",
+        "error.usage_days",
+        "groups.weekday",
+        "groups.weekend",
+        "groups.weekend_same",
+        "groups.bedtime_heading",
+        "groups.bedtime_help",
+        "groups.bedtime_add",
+        "groups.bedtime_from",
+        "groups.bedtime_until",
+        "groups.bedtime_days",
+        "groups.bedtime_remove",
+        "groups.bedtime_days_all",
+        "groups.bedtime_days_weekday",
+        "groups.bedtime_days_weekend",
+        "common.minutes_short",
+        "common.back",
+    )
+    still_there = sorted(key for key in removed if key in i18n.STRINGS["en"])
+    assert still_there == []
+    words = " ".join(i18n.STRINGS["en"].values()).lower()
+    for word in ("bonus", "usage", "history", "bedtime", "metered", "minutes left"):
+        assert word not in words, word
+
+
+def test_the_allowed_times_editor_replaces_the_minutes_fields():
+    js = read("static", "app.js")
+    editor = js[js.index("function openGroupEditorWith(") : js.index("function openServicePicker(")]
+    assert 'id="allowed-windows"' in editor
+    assert 'data-action="add-window"' in editor
+    assert 'data-window-start="' in editor
+    assert 'data-window-end="' in editor
+    assert 'data-window-days="' in editor
+    assert 'data-action="remove-window"' in editor
+    assert 't("groups.allowed_heading")' in editor
+    assert 't("groups.allowed_help")' in editor
+
+    # four windows is the cap, enforced by the add handler
+    assert "windows.length >= 4" in editor
+    # the helper text the owner asked for, word for word
+    assert (
+        i18n.t("groups.allowed_help")
+        == "Outside these times the group is blocked. No times = always allowed."
+    )
+
+    # no minutes field or bedtime concept survives anywhere in the editor
+    for token in ("g-weekday", "g-weekend", "weekday_minutes", "weekend_minutes", "bedtime"):
+        assert token not in editor, token
+    # the form sends the windows and nothing else about time
+    payload_start = editor.index("var payload = {")
+    payload = editor[payload_start : editor.index("};", payload_start)]
+    assert "windows: readWindows()" in payload
+    for token in ("minutes", "weekday", "weekend"):
+        assert token not in payload, token
+    # the three day choices are the values the server validates
+    for value in ('value: "all"', 'value: "weekday"', 'value: "weekend"'):
+        assert value in editor, value
+
+    for key in (
+        "groups.allowed_heading",
+        "groups.allowed_help",
+        "groups.allowed_add",
+        "groups.window_from",
+        "groups.window_until",
+        "groups.window_days",
+        "groups.window_remove",
+        "groups.days_all",
+        "groups.days_weekday",
+        "groups.days_weekend",
+    ):
+        assert f't("{key}"' in editor, key
+        assert i18n.t(key) != key, key
+    # a new group starts with no allowed times at all, which means always open
+    assert "windows: []," in editor
+
+
+def live_probe_script(js: str) -> str:
+    """statusFor and liveHtml with the real strings, so node can prove the text."""
+    keys = (
+        "status.paused",
+        "status.free",
+        "status.forced",
+        "status.open_until",
+        "status.opens_at",
+        "status.open_all_day",
+    )
+    cases = [
+        {
+            "id": 1,
+            "status": "allowed",
+            "open_until": "21:00",
+            "opens_at": None,
+            "windows": [{"start": "15:00", "end": "21:00", "days": "all"}],
+        },
+        {"id": 2, "status": "allowed", "open_until": None, "opens_at": None, "windows": []},
+        {
+            "id": 3,
+            "status": "outside_hours",
+            "open_until": None,
+            "opens_at": "14:00",
+            "windows": [{"start": "14:00", "end": "16:00", "days": "weekend"}],
+        },
+        {"id": 4, "status": "free", "free_until": 1999999999, "windows": []},
+        {"id": 5, "status": "blocked_admin", "force_block_until": 1999999999, "windows": []},
+        {"id": 6, "status": "paused", "paused": True, "windows": []},
+    ]
+    return "".join(
+        [
+            "var i18n = " + json.dumps({key: i18n.STRINGS["en"][key] for key in keys}) + ";",
+            "function t(key, vars) {",
+            r"  return String(i18n[key] || key).replace(/\{(\w+)\}/g, function (whole, name) {",
+            "    return vars && Object.prototype.hasOwnProperty.call(vars, name)",
+            "      ? String(vars[name]) : whole;",
+            "  });",
+            "}",
+            'function esc(value) { return String(value == null ? "" : value); }',
+            'function clock() { return "07:30"; }',
+            js_function(js, "statusFor"),
+            js_function(js, "liveHtml"),
+            "var cases = " + json.dumps(cases) + ";",
+            "console.log(JSON.stringify(cases.map(function (group) {",
+            "  return [statusFor(group).text, liveHtml(group)];",
+            "})));",
+        ]
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_the_live_row_names_the_schedule_from_the_payload():
+    """Executed: one sentence per status, built only from server fields."""
+    js = read("static", "app.js")
+    done = subprocess.run(
+        [shutil.which("node"), "-e", live_probe_script(js)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == [
+        ["Open until 21:00", '<p class="live-line ok">Open until 21:00</p>'],
+        ["Open all day", '<p class="live-line ok">Open all day</p>'],
+        ["Opens at 14:00", '<p class="live-line warn">Opens at 14:00</p>'],
+        ["Free until 07:30", '<p class="live-line warn">Free until 07:30</p>'],
+        ["Blocked until midnight", '<p class="live-line bad">Blocked until midnight</p>'],
+        ["Paused", '<p class="live-line warn">Paused</p>'],
+    ]
+
+
+def test_the_live_row_has_no_clock_maths_and_no_budget():
+    js = read("static", "app.js")
+    status = js_function(js, "statusFor")
+    for token in ("open_until", "open_all_day", "opens_at", 'group.status === "outside_hours"'):
+        assert token in status, token
+    for token in ("Date.now()", "minutes", "progress", "remaining"):
+        assert token not in status, token
+    live = js_function(js, "liveHtml")
+    assert "statusFor(group)" in live
+    assert "<progress" not in live
+    assert "coverage(" not in live
+    assert "group.name" not in live
+
+
+def kid_probe_script(js: str) -> str:
+    """bigLine with the real strings, so node can prove the kid text."""
+    keys = (
+        "kid.open_until",
+        "kid.open_all_day",
+        "kid.opens_at",
+        "kid.free_until",
+        "kid.blocked",
+        "kid.paused",
+    )
+    cases = [
+        {"status": "allowed", "open_until": "21:00", "opens_at": None},
+        {"status": "allowed", "open_until": None, "opens_at": None},
+        {"status": "outside_hours", "open_until": None, "opens_at": "14:00"},
+        {"status": "free", "free_until": 1999999999},
+        {"status": "blocked_admin"},
+        {"status": "paused", "paused": True},
+    ]
+    return "".join(
+        [
+            "var i18n = " + json.dumps({key: i18n.STRINGS["en"][key] for key in keys}) + ";",
+            "function t(key, vars) {",
+            r"  return String(i18n[key] || key).replace(/\{(\w+)\}/g, function (whole, name) {",
+            "    return vars && Object.prototype.hasOwnProperty.call(vars, name)",
+            "      ? String(vars[name]) : whole;",
+            "  });",
+            "}",
+            'function clock() { return "07:30"; }',
+            js_function(js, "bigLine"),
+            "var cases = " + json.dumps(cases) + ";",
+            "console.log(JSON.stringify(cases.map(bigLine)));",
+        ]
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_the_kid_line_follows_the_schedule_from_the_reduced_payload():
+    js = read("static", "kid.js")
+    done = subprocess.run(
+        [shutil.which("node"), "-e", kid_probe_script(js)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == [
+        "Open until 21:00",
+        "Open all day",
+        "Opens at 14:00",
+        "Free time until 07:30",
+        "Blocked by a parent",
+        "Paused by a parent",
+    ]
+
+
+def test_the_kid_page_reads_only_the_reduced_payload_keys():
+    """kid.js runs against USER_GROUP_KEYS; a wider read would show undefined."""
+    js = read("static", "kid.js")
+    allowed = set(user_group_keys())
+    fields = set(re.findall(r"\bgroup\.([a-z_]+)", js))
+    assert fields
+    assert fields <= allowed, sorted(fields - allowed)
+    # and the removed fields are not even mentioned in passing
+    for gone in ("used_minutes", "bonus_minutes", "bedtime_until", "limit_reached"):
+        assert gone not in js, gone
+    # the page draws one line per group: no progress bar, no used-today line
+    assert "<progress" not in js
+    assert "progressFor" not in js
+    assert "kid.used_today" not in js
+
+
+def test_the_group_list_names_the_allowed_times():
+    """The list shows the schedule in words, never the removed minute columns."""
+    js = read("static", "app.js")
+    summary = js_function(js, "windowsSummary")
+    assert 't("groups.windows_none")' in summary
+    assert 't(count === 1 ? "groups.windows_one" : "groups.windows_other"' in summary
+    render = js_function(js, "renderGroupList")
+    assert "windowsSummary(g)" in render
+    for gone in ("weekday_minutes", "weekend_minutes", "common.minutes"):
+        assert gone not in render, gone
+    for key in ("groups.windows_none", "groups.windows_one", "groups.windows_other"):
+        assert i18n.t(key) != key, key
+    assert "{count}" in i18n.STRINGS["en"]["groups.windows_one"]
+    assert "{count}" in i18n.STRINGS["en"]["groups.windows_other"]
+
+
+def test_every_i18n_key_the_ui_asks_for_exists():
+    """Both scripts and the templates read only keys that are shipped."""
+    # a trailing dot is a prefix the code completes at runtime, never a key
+    prefixes: set[str] = set()
+    for name in ("app.js", "kid.js"):
+        text = read("static", name)
+        keys = set(re.findall(r"""\bt\(\s*["']([^"']+)["']""", text))
+        assert keys
+        prefixes.update(key for key in keys if key.endswith("."))
+        missing = sorted(
+            key for key in keys if not key.endswith(".") and key not in i18n.STRINGS["en"]
+        )
+        assert missing == [], (name, missing)
+    for path in sorted(package_file("templates").glob("*.html")):
+        text = path.read_text(encoding="utf-8")
+        keys = set(re.findall(r"""t\(\s*["']([^"']+)["']""", text))
+        missing = sorted(
+            key for key in keys if not key.endswith(".") and key not in i18n.STRINGS["en"]
+        )
+        assert missing == [], (path.name, missing)
+    assert prefixes == {"users.role.", "warn."}
+    for prefix in prefixes:
+        # every value the code can append is a real key
+        assert [key for key in i18n.STRINGS["en"] if key.startswith(prefix)]

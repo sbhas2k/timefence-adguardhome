@@ -500,16 +500,30 @@ def _kid_js() -> str:
     return (Path(api.__file__).parent / "static" / "kid.js").read_text(encoding="utf-8")
 
 
-def test_bedtime_strings_have_a_no_time_variant():
+def test_the_schedule_strings_cover_open_and_closed():
+    """The card and the kid page name the schedule; no budget sentence is left."""
     app = _app_js()
     kid = _kid_js()
-    assert 'until ? t("status.bedtime", { time: until }) : t("status.bedtime_any")' in app
-    assert 'until ? t("kid.bedtime", { time: until }) : t("kid.bedtime_any")' in kid
-    for key in ("status.bedtime", "status.bedtime_any", "kid.bedtime", "kid.bedtime_any"):
-        assert key in i18n.STRINGS["en"]
-    assert "{time}" in i18n.STRINGS["en"]["status.bedtime"]
-    assert "null" not in i18n.STRINGS["en"]["status.bedtime_any"].lower()
-    assert "null" not in i18n.STRINGS["en"]["kid.bedtime_any"].lower()
+    assert 't("status.open_until", { time: group.open_until })' in app
+    assert 't("status.open_all_day")' in app
+    assert 't("status.opens_at", { time: group.opens_at || "" })' in app
+    assert 't("kid.open_until", { time: group.open_until })' in kid
+    assert 't("kid.open_all_day")' in kid
+    assert 't("kid.opens_at", { time: group.opens_at || "" })' in kid
+    for key in (
+        "status.open_until",
+        "status.open_all_day",
+        "status.opens_at",
+        "kid.open_until",
+        "kid.open_all_day",
+        "kid.opens_at",
+    ):
+        assert key in i18n.STRINGS["en"], key
+        assert i18n.t(key) != key, key
+    assert "{time}" in i18n.STRINGS["en"]["status.open_until"]
+    assert "{time}" in i18n.STRINGS["en"]["status.opens_at"]
+    assert "{time}" not in i18n.STRINGS["en"]["status.open_all_day"]
+    assert "{time}" not in i18n.STRINGS["en"]["kid.open_all_day"]
 
 
 def test_alert_clear_controls_send_an_empty_string():
