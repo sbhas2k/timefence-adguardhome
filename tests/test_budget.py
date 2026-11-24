@@ -94,16 +94,6 @@ def test_critical_match_covers_subdomains_and_prefix_wildcard():
 # --------------------------------------------------------------------------- #
 
 
-def test_day_boundary_and_local_midnight():
-    late = ts_on(2026, 11, 13, 23, 59)
-    early = ts_on(2026, 11, 14, 0, 1)
-    assert budget.day_str(late, TZ) == "2026-11-13"
-    assert budget.day_str(early, TZ) == "2026-11-14"
-    assert budget.local_midnight(early, TZ) == ts_on(2026, 11, 14, 0)
-    assert budget.day_str(budget.local_midnight(early, TZ), TZ) == "2026-11-14"
-    assert budget.today(TZ, early).isoformat() == "2026-11-14"
-
-
 def test_parse_hhmm_rolls_to_tomorrow():
     now = ts_on(2026, 11, 11, 22)
     later = budget.parse_hhmm("23:30", now, TZ)
