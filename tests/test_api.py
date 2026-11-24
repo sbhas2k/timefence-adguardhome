@@ -280,8 +280,17 @@ def test_state_has_no_session_fields(ready):
     assert "session_options" not in client.get("/api/meta").json()
 
 
-def test_group_crud(ready, fake):
+def test_group_crud(ready, fake, monkeypatch):
     client = ready["client"]
+    # frozen at UTC noon: the window below stays ahead of "now" whatever the
+    # wall clock says, so the verdict does not depend on when the suite runs.
+    # The session is re-issued at the frozen instant: a cookie signed at the
+    # real clock is "not yet valid" once time is moved backwards.
+    fixed = datetime(2026, 11, 11, 12, 0, tzinfo=UTC).timestamp()
+    monkeypatch.setattr(time, "time", lambda: fixed)
+    login = client.post("/api/login", json=ADMIN2)
+    assert login.status_code == 200, login.text
+    client.headers.update({"X-CSRF-Token": login.json()["csrf"]})
     group = make_group(client, name="YouTube", emoji="▶️", services=["youtube"])
     windows = [{"start": "13:00", "end": "14:00", "days": "all"}]
     updated = client.put(
