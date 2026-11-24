@@ -214,14 +214,23 @@ or you have not pressed **Start** on the bot yet.
 5. On a self-hosted ntfy that needs a login, also add an access token. The card
    warns you when the topic sits on a public server without a token.
 
-## DNS caching and how fast a block lands
+## A block is not instant: allow a few minutes
 
-AdGuard Home caches DNS answers, so a device that has just lost access may keep
-using a cached answer until that entry expires. TimeFence does **not** change
-any of AdGuard's DNS settings (including its maximum cache TTL). If you want
-changes to land faster, lower AdGuard's maximum cache TTL yourself under
-*Settings → DNS settings*; how long devices keep answers also depends on the
-TTLs the sites publish and on browser/OS resolver caches.
+TimeFence changes AdGuard Home within seconds (the buttons apply at once, and a
+window opens or closes within one 30-second loop). The *device* then takes
+longer to notice, **sometimes up to about five minutes**:
+
+- **Cached answers.** AdGuard Home, the router, the phone or TV and the app all
+  cache DNS answers until their lifetime (TTL) runs out. YouTube and other big
+  services publish lifetimes of minutes.
+- **Open connections.** A video that is already playing or a game session keeps
+  using the address it has, with no new lookup, until it reconnects or needs one.
+
+To make a block land sooner, fully close and reopen the app (or toggle Wi-Fi or
+airplane mode on the device). TimeFence does **not** change any of AdGuard's DNS
+settings; if you want shorter delays you can lower AdGuard's maximum cache TTL
+yourself under *Settings → DNS settings*, at the price of more DNS queries. The
+same delay applies when a group opens again.
 
 ## Running on a remote VM
 
