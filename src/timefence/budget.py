@@ -32,11 +32,49 @@ SCHEDULE_HORIZON_DAYS = 8
 
 
 class ValidationError(ValueError):
-    """User supplied something unusable."""
+    """User supplied something unusable.
+
+    `code` names the reason for the API; the API then chooses the sentence from
+    i18n.py instead of echoing the English raised here.
+    """
+
+    code = "invalid"
 
 
 class WindowError(ValidationError):
     """An allowed-time window cannot be used as given."""
+
+    code = "invalid_window"
+
+    def __init__(self, message: str, reason: str = "invalid") -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+class InvalidDomain(ValidationError):
+    """A target is not a hostname; `domain` holds what the user supplied."""
+
+    code = "invalid_domain"
+
+    def __init__(self, value: object) -> None:
+        self.domain = value if isinstance(value, str) else repr(value)
+        super().__init__(f"not a valid domain: {self.domain!r}")
+
+
+class InvalidOwner(ValidationError):
+    """The owner id is not an existing account."""
+
+    code = "invalid_owner"
+
+
+class DuplicateName(ValidationError):
+    """Another live group already carries this name."""
+
+    code = "duplicate_name"
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__(f"another group is already called {name!r}")
 
 
 # --------------------------------------------------------------------------- #
@@ -74,7 +112,7 @@ def clock_minutes(value: object) -> int:
     """'HH:MM' -> minutes since midnight; anything else is refused."""
     match = CLOCK_RE.match(str(value if value is not None else "").strip())
     if not match:
-        raise WindowError("a window time must be HH:MM")
+        raise WindowError("a window time must be HH:MM", "bad_time")
     return int(match.group(1)) * 60 + int(match.group(2))
 
 
@@ -90,7 +128,9 @@ def clock_str(ts: int, tz: ZoneInfo) -> str:
 
 def normalize_domain(value: str) -> str:
     """Accept 'https://WWW.Example.com/path?x' and return 'www.example.com'."""
-    raw = (value or "").strip().lower()
+    if not isinstance(value, str):
+        raise InvalidDomain(value)
+    raw = value.strip().lower()
     if not raw:
         raise ValidationError("empty domain")
     raw = raw.removeprefix("||").removesuffix("^")
@@ -107,7 +147,7 @@ def normalize_domain(value: str) -> str:
     if not raw:
         raise ValidationError("empty domain")
     if not DOMAIN_RE.match(raw):
-        raise ValidationError(f"not a valid domain: {value!r}")
+        raise InvalidDomain(value)
     return raw
 
 
@@ -122,6 +162,11 @@ def normalize_domains(text: str) -> list[str]:
         if dom not in out:
             out.append(dom)
     return out
+
+
+def normalize_domain_list(values: list) -> list[str]:
+    """Hostnames from a JSON list; de-duplicated, order preserved."""
+    return list(dict.fromkeys(normalize_domain(value) for value in values))
 
 
 def load_critical_patterns(path: Path | None = None) -> list[str]:
@@ -196,23 +241,23 @@ def normalize_windows(items: object) -> list[Window]:
     if items is None:
         return []
     if not isinstance(items, list | tuple):
-        raise WindowError("windows must be a list")
+        raise WindowError("windows must be a list", "shape")
     if len(items) > WINDOW_LIMIT:
-        raise WindowError(f"at most {WINDOW_LIMIT} time windows")
+        raise WindowError(f"at most {WINDOW_LIMIT} time windows", "too_many")
     out: list[Window] = []
     for item in items:
         if isinstance(item, Window):
             out.append(item)
             continue
         if not isinstance(item, dict):
-            raise WindowError("each window needs a start, an end and days")
+            raise WindowError("each window needs a start, an end and days", "shape")
         start_min = clock_minutes(item.get("start"))
         end_min = clock_minutes(item.get("end"))
         if start_min == end_min:
-            raise WindowError("a window must start and end at different times")
+            raise WindowError("a window must start and end at different times", "start_equals_end")
         days = str(item.get("days") or "all").strip().lower()
         if days not in WINDOW_DAYS:
-            raise WindowError("days must be all, weekday or weekend")
+            raise WindowError("days must be all, weekday or weekend", "bad_days")
         out.append(Window(start_min, end_min, days))
     return out
 
@@ -464,7 +509,10 @@ def create_group(
         raise ValidationError("name is required")
     if len(name) > 60:
         raise ValidationError("name is too long")
-    services = [s.strip().lower() for s in (services or []) if s.strip()]
+    dup = conn.execute("SELECT id FROM groups WHERE name=? AND deleted=0", (name,)).fetchone()
+    if dup:
+        raise DuplicateName(name)
+    services = list(dict.fromkeys(s.strip().lower() for s in (services or []) if s.strip()))
     domains = [normalize_domain(d) for d in (domains or [])]
     domains = list(dict.fromkeys(domains))
     allowed = normalize_windows(windows)
@@ -515,10 +563,12 @@ def update_group(
         "SELECT id FROM groups WHERE name=? AND deleted=0 AND id IS NOT ?", (new_name, group_id)
     ).fetchone()
     if dup:
-        raise ValidationError(f"another group is already called {new_name!r}")
+        raise DuplicateName(new_name)
 
     new_services = (
-        group.services if services is None else [s.strip().lower() for s in services if s.strip()]
+        group.services
+        if services is None
+        else list(dict.fromkeys(s.strip().lower() for s in services if s.strip()))
     )
     new_domains = (
         group.domains

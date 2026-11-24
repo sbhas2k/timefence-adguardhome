@@ -62,7 +62,11 @@ def test_reconciler_refuses_to_run_while_holding_store_lock(settings, fake):
         store.close()
 
 
-def test_failed_group_update_rolls_back(settings, fake):
+def test_failed_group_update_rolls_back(settings, fake, monkeypatch):
+    import sqlite3
+
+    from timefence import budget
+
     app = create_app(settings, adguard=fake)
     with TestClient(app, raise_server_exceptions=False) as client:
         login = client.post("/api/login", json=ADMIN)
@@ -85,15 +89,21 @@ def test_failed_group_update_rolls_back(settings, fake):
         assert created.status_code == 200, created.text
         group = created.json()["group"]
 
+        def boom(conn, gid, windows):
+            raise sqlite3.IntegrityError("injected after the links were rewritten")
+
+        # the links are rewritten first; a failure after that must undo them
+        monkeypatch.setattr(budget, "_write_windows", boom)
         failed = client.put(
             f"/api/groups/{group['id']}",
             json={
                 "name": "Games",
-                "services": ["youtube", "youtube"],
-                "domains_text": "kept.example",
+                "services": ["youtube"],
+                "domains_text": "changed.example",
             },
         )
         assert failed.status_code == 500
+        monkeypatch.undo()
         with locked_conn(client.app) as conn:
             conn.commit()  # a later write must not persist half of the failed update
 

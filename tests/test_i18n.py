@@ -27,6 +27,31 @@ def test_i18n_keys_used_by_templates_and_scripts_exist():
     assert missing == []
 
 
+def test_group_validation_error_keys_exist():
+    """Every validation sentence the group editor can show lives in i18n."""
+    required = {
+        "error.invalid_domain",
+        "error.invalid_owner",
+        "error.duplicate_name",
+        "error.window_start_equals_end",
+        "error.window_bad_time",
+        "error.window_bad_days",
+        "error.window_too_many",
+        "error.name_not_text",
+        "error.paused_not_bool",
+        "error.group_domains_text",
+    }
+    assert required <= set(i18n.STRINGS["en"])
+
+
+def test_i18n_keys_used_by_the_server_exist():
+    source = (PACKAGE / "api.py").read_text(encoding="utf-8")
+    keys = set(re.findall(r"""i18n\.t\(\s*["']([^"']+)["']""", source))
+    assert keys
+    missing = sorted(key for key in keys if key not in i18n.STRINGS["en"])
+    assert missing == []
+
+
 def test_alert_messages_come_from_i18n():
     required = {
         "alert.closed",
