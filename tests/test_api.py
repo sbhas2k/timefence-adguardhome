@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
+from timefence import i18n
 from timefence.api import create_app
 
 from .conftest import FakeAdGuard, locked_conn, make_entry
@@ -355,7 +356,7 @@ def test_group_windows_round_trip_and_validation(ready, fake):
             json={"name": "Other", "services": ["roblox"], **payload},
         )
         assert response.status_code == 400, response.text
-        assert response.json()["code"] == "invalid_windows"
+        assert response.json()["code"] == "invalid_window"
 
     reject({"windows": [{"start": "21:00", "end": "21:00", "days": "all"}]})
     reject({"windows": [{"start": "9:00", "end": "10:00", "days": "all"}]})
@@ -887,6 +888,164 @@ def test_group_payload_types_are_checked(ready):
     assert too_long.json()["code"] == "invalid"
     fresh = client.get("/api/state").json()["groups"][0]
     assert fresh["name"] == "Games"
+
+
+def test_a_malformed_domain_answers_400_and_names_the_offending_text(ready):
+    """A typo in the editor must be a sentence, not Starlette's plain 500."""
+    client = ready["client"]
+    for text in ("not a domain", "youtube.com,roblox.com", "müchen.de", " a b "):
+        created = client.post("/api/groups", json={"name": "Typo", "domains_text": text})
+        assert created.status_code == 400, (text, created.text)
+        body = created.json()
+        assert body["code"] == "invalid_domain", (text, body)
+        assert body["error"] == i18n.t("error.invalid_domain", domain=text.strip())
+
+    group = make_group(client)
+    for payload in ({"domains_text": "bad domain"}, {"domains": ["bad domain"]}):
+        updated = client.put(f"/api/groups/{group['id']}", json=payload)
+        assert updated.status_code == 400, (payload, updated.text)
+        assert updated.json()["code"] == "invalid_domain"
+        assert updated.json()["error"] == i18n.t("error.invalid_domain", domain="bad domain")
+
+    # a non-string list item used to raise AttributeError deep in budget.py
+    non_string = client.post("/api/groups", json={"name": "N", "domains": [123]})
+    assert non_string.status_code == 400, non_string.text
+    assert non_string.json()["code"] == "invalid_domain"
+
+    kept = next(g for g in client.get("/api/state").json()["groups"] if g["id"] == group["id"])
+    assert kept["domains"] == []
+
+
+def test_an_unknown_owner_answers_400(ready):
+    client = ready["client"]
+    created = client.post(
+        "/api/groups", json={"name": "Owned", "services": ["youtube"], "owner_id": 999}
+    )
+    assert created.status_code == 400, created.text
+    assert created.json()["code"] == "invalid_owner"
+    assert created.json()["error"] == i18n.t("error.invalid_owner")
+
+    group = make_group(client)
+    for owner in (999, "nobody"):
+        updated = client.put(f"/api/groups/{group['id']}", json={"owner_id": owner})
+        assert updated.status_code == 400, (owner, updated.text)
+        assert updated.json()["code"] == "invalid_owner"
+        assert updated.json()["error"] == i18n.t("error.invalid_owner")
+    assert {g["name"] for g in client.get("/api/state").json()["groups"]} == {"Games"}
+
+
+def test_a_duplicate_group_name_answers_400(ready):
+    """The unique index must never surface as sqlite IntegrityError."""
+    client = ready["client"]
+    make_group(client, name="Games")
+    created = client.post("/api/groups", json={"name": "Games", "services": ["steam"]})
+    assert created.status_code == 400, created.text
+    assert created.json()["code"] == "duplicate_name"
+    assert created.json()["error"] == i18n.t("error.duplicate_name", name="Games")
+
+    other = make_group(client, name="Other", services=["steam"])
+    updated = client.put(f"/api/groups/{other['id']}", json={"name": "Games"})
+    assert updated.status_code == 400, updated.text
+    assert updated.json()["code"] == "duplicate_name"
+    assert updated.json()["error"] == i18n.t("error.duplicate_name", name="Games")
+    assert {g["name"] for g in client.get("/api/state").json()["groups"]} == {"Games", "Other"}
+
+
+def test_duplicate_services_in_one_payload_are_de_duplicated(ready, app):
+    """Duplicate services must answer 200, not surface as IntegrityError (500)."""
+    client = ready["client"]
+    created = client.post(
+        "/api/groups",
+        json={"name": "Dupes", "services": ["YouTube", "youtube", " YouTube "]},
+    )
+    assert created.status_code == 200, created.text
+    group = created.json()["group"]
+    assert group["services"] == ["youtube"]
+    with locked_conn(app) as conn:
+        stored = conn.execute(
+            "SELECT COUNT(*) FROM group_services WHERE group_id=?", (group["id"],)
+        ).fetchone()[0]
+    assert stored == 1
+
+    updated = client.put(f"/api/groups/{group['id']}", json={"services": ["Roblox", "roblox"]})
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["group"]["services"] == ["roblox"]
+    with locked_conn(app) as conn:
+        stored = conn.execute(
+            "SELECT COUNT(*) FROM group_services WHERE group_id=?", (group["id"],)
+        ).fetchone()[0]
+    assert stored == 1
+
+
+def test_each_window_problem_has_its_own_sentence(ready):
+    client = ready["client"]
+    keys = {
+        "start_equals_end": "error.window_start_equals_end",
+        "bad_time": "error.window_bad_time",
+        "bad_days": "error.window_bad_days",
+        "too_many": "error.window_too_many",
+    }
+    cases = {
+        "start_equals_end": [{"start": "21:00", "end": "21:00", "days": "all"}],
+        "bad_time": [{"start": "25:00", "end": "26:00", "days": "all"}],
+        "bad_days": [{"start": "21:00", "end": "22:00", "days": "someday"}],
+        "too_many": [
+            {"start": "06:00", "end": "07:00", "days": "all"},
+            {"start": "09:00", "end": "10:00", "days": "all"},
+            {"start": "12:00", "end": "13:00", "days": "all"},
+            {"start": "15:00", "end": "16:00", "days": "all"},
+            {"start": "18:00", "end": "19:00", "days": "all"},
+        ],
+    }
+    assert len({i18n.t(key) for key in keys.values()}) == 4  # four distinct sentences
+    for reason, windows in cases.items():
+        response = client.post(
+            "/api/groups", json={"name": "W", "services": ["roblox"], "windows": windows}
+        )
+        assert response.status_code == 400, (reason, response.text)
+        assert response.json()["code"] == "invalid_window", reason
+        assert response.json()["error"] == i18n.t(keys[reason])
+
+    group = make_group(client)
+    updated = client.put(
+        f"/api/groups/{group['id']}",
+        json={"windows": [{"start": "21:00", "end": "21:00", "days": "all"}]},
+    )
+    assert updated.status_code == 400, updated.text
+    assert updated.json()["code"] == "invalid_window"
+    assert updated.json()["error"] == i18n.t("error.window_start_equals_end")
+
+
+def test_name_and_paused_must_have_the_right_json_types(ready):
+    client = ready["client"]
+    for payload, key in (
+        ({"name": 5, "services": ["roblox"]}, "error.name_not_text"),
+        ({"name": ["x"], "services": ["roblox"]}, "error.name_not_text"),
+        ({"name": "X", "services": ["roblox"], "paused": "false"}, "error.paused_not_bool"),
+        ({"name": "X", "services": ["roblox"], "paused": 0}, "error.paused_not_bool"),
+        (
+            {"name": "X", "services": ["roblox"], "domains_text": {"a": 1}},
+            "error.group_domains_text",
+        ),
+    ):
+        response = client.post("/api/groups", json=payload)
+        assert response.status_code == 400, (payload, response.text)
+        assert response.json()["code"] == "invalid", payload
+        assert response.json()["error"] == i18n.t(key), payload
+    assert client.get("/api/state").json()["groups"] == []
+
+    group = make_group(client)
+    for payload, key in (
+        ({"name": None}, "error.name_not_text"),
+        ({"paused": "true"}, "error.paused_not_bool"),
+    ):
+        response = client.put(f"/api/groups/{group['id']}", json=payload)
+        assert response.status_code == 400, (payload, response.text)
+        assert response.json()["code"] == "invalid", payload
+        assert response.json()["error"] == i18n.t(key), payload
+    fresh = next(g for g in client.get("/api/state").json()["groups"] if g["id"] == group["id"])
+    assert fresh["name"] == "Games"
+    assert fresh["paused"] is False
 
 
 def test_service_icons_are_sanitised(ready, fake):

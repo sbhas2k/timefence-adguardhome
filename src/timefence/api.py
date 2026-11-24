@@ -98,6 +98,27 @@ def client_ip(request: Request, settings: Settings) -> str:
 
 validate_password = credentials.validate_admin_password
 
+WINDOW_ERROR_KEYS = {
+    "start_equals_end": "error.window_start_equals_end",
+    "bad_time": "error.window_bad_time",
+    "bad_days": "error.window_bad_days",
+    "too_many": "error.window_too_many",
+}
+
+
+def group_error(exc: budget.ValidationError) -> JSONResponse:
+    """Map a group validation error to a 400 whose sentence comes from i18n.py."""
+    if isinstance(exc, budget.WindowError):
+        key = WINDOW_ERROR_KEYS.get(exc.reason, "error.windows_invalid")
+        return json_error(400, i18n.t(key), "invalid_window")
+    if isinstance(exc, budget.InvalidDomain):
+        return json_error(400, i18n.t("error.invalid_domain", domain=exc.domain), "invalid_domain")
+    if isinstance(exc, budget.InvalidOwner):
+        return json_error(400, i18n.t("error.invalid_owner"), "invalid_owner")
+    if isinstance(exc, budget.DuplicateName):
+        return json_error(400, i18n.t("error.duplicate_name", name=exc.name), "duplicate_name")
+    return json_error(400, str(exc), "invalid")
+
 
 def sets_removed_mode(data: dict) -> bool:
     """True when a payload asks for a mode other than the only one left."""
@@ -816,6 +837,13 @@ def create_app(
             value = data.get(field)
             if value is not None and not isinstance(value, list):
                 return json_error(400, i18n.t("error.group_fields"), "invalid")
+        if "name" in data and not isinstance(data["name"], str):
+            return json_error(400, i18n.t("error.name_not_text"), "invalid")
+        if "paused" in data and not isinstance(data["paused"], bool):
+            return json_error(400, i18n.t("error.paused_not_bool"), "invalid")
+        domains_text = data.get("domains_text")
+        if domains_text is not None and not isinstance(domains_text, str):
+            return json_error(400, i18n.t("error.group_domains_text"), "invalid")
         return None
 
     def group_from_payload(data: dict, existing: budget.Group | None = None) -> dict:
@@ -823,7 +851,8 @@ def create_app(
         if domains_text is not None:
             domains = budget.normalize_domains(str(domains_text))
         elif "domains" in data:
-            domains = data["domains"] or []  # an explicit empty list clears them
+            # an explicit empty list clears them; every other entry must be a hostname
+            domains = budget.normalize_domain_list(data["domains"] or [])
         else:
             domains = existing.domains if existing else []
         if "services" in data:
@@ -836,12 +865,11 @@ def create_app(
         else:
             try:
                 owner_id = int(owner_raw)
-            except (TypeError, ValueError):
-                owner_id = None
-        if owner_id is not None:
+            except (TypeError, ValueError) as exc:
+                raise budget.InvalidOwner(f"not an account id: {owner_raw!r}") from exc
             with store as conn:
                 if not conn.execute("SELECT 1 FROM users WHERE id=?", (owner_id,)).fetchone():
-                    raise ValueError("owner not found")
+                    raise budget.InvalidOwner(f"owner {owner_id} not found")
         return {
             "name": str(data.get("name", existing.name if existing else "")).strip(),
             "emoji": str(data.get("emoji", existing.emoji if existing else "")).strip(),
@@ -868,7 +896,10 @@ def create_app(
         problem = group_payload_problem(data)
         if problem is not None:
             return problem
-        fields = group_from_payload(data)
+        try:
+            fields = group_from_payload(data)
+        except budget.ValidationError as exc:
+            return group_error(exc)
         no_targets = group_targets_problem(fields)
         if no_targets is not None:
             return no_targets
@@ -884,10 +915,8 @@ def create_app(
         with store as conn:
             try:
                 group = budget.create_group(conn, **fields)
-            except budget.WindowError:
-                return json_error(400, i18n.t("error.windows_invalid"), "invalid_windows")
             except budget.ValidationError as exc:
-                return json_error(400, str(exc), "invalid")
+                return group_error(exc)
             budget.log_event(conn, "group_create", {"group": group.name, "actor": sess.role})
         reconcile("group_create")
         return {"ok": True, "group": group_payload(group, int(time.time()))}
@@ -904,7 +933,10 @@ def create_app(
             existing = budget.get_group(conn, group_id)
             if not existing or existing.deleted:
                 return json_error(404, i18n.t("error.not_found"), "not_found")
-            fields = group_from_payload(data, existing)
+            try:
+                fields = group_from_payload(data, existing)
+            except budget.ValidationError as exc:
+                return group_error(exc)
             no_targets = group_targets_problem(fields)
             if no_targets is not None:
                 return no_targets
@@ -915,10 +947,8 @@ def create_app(
                 )
             try:
                 group = budget.update_group(conn, group_id, **fields)
-            except budget.WindowError:
-                return json_error(400, i18n.t("error.windows_invalid"), "invalid_windows")
             except budget.ValidationError as exc:
-                return json_error(400, str(exc), "invalid")
+                return group_error(exc)
             budget.log_event(conn, "group_update", {"group": group.name, "actor": sess.role})
         reconcile("group_update")
         return {"ok": True, "group": group_payload(group, int(time.time()))}

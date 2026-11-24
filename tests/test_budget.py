@@ -160,6 +160,58 @@ def test_services_and_domains_are_unique_across_groups(conn):
     assert other.domains == ["other.com"]
 
 
+def test_a_group_de_duplicates_its_services(conn):
+    """Duplicate services in one payload must never reach the unique index."""
+    group = make_group(conn, services=("YouTube", " youtube ", "youtube", "Roblox"))
+    assert group.services == ["roblox", "youtube"]
+    stored = conn.execute(
+        "SELECT COUNT(*) FROM group_services WHERE group_id=?", (group.id,)
+    ).fetchone()[0]
+    assert stored == 2
+
+
+def test_update_group_de_duplicates_its_services(conn):
+    group = make_group(conn, services=("roblox",))
+    updated = budget.update_group(conn, group.id, services=["Steam", "steam", " STEAM "])
+    assert updated.services == ["steam"]
+
+
+def test_group_name_uniqueness_matches_the_case_sensitive_index(conn):
+    """Exact match after strip, like the index; the pre-check must agree with it."""
+    make_group(conn, name="Games", services=("roblox",))
+    with pytest.raises(budget.DuplicateName):
+        make_group(conn, name="  Games  ", services=("steam",))
+    lower = make_group(conn, name="games", services=("steam",))  # differs only by case
+    assert lower.name == "games"
+    # renaming a group to its own (padded) name is not a duplicate
+    renamed = budget.update_group(conn, lower.id, name=" games ")
+    assert renamed.name == "games"
+    # a deleted group still frees its exact name
+    budget.delete_group(conn, lower.id)
+    reused = make_group(conn, name="games", services=("steam",))
+    assert reused.name == "games"
+
+
+def test_create_group_refuses_a_duplicate_name(conn):
+    """The partial unique index must never be the thing that refuses it."""
+    make_group(conn, name="Games", services=("roblox",))
+    with pytest.raises(budget.ValidationError) as caught:
+        make_group(conn, name="Games", services=("steam",))
+    assert caught.value.code == "duplicate_name"
+    assert conn.execute("SELECT COUNT(*) FROM groups WHERE deleted=0").fetchone()[0] == 1
+    # a deleted group frees its name again, exactly like update_group
+    old = budget.list_groups(conn)[0]
+    budget.delete_group(conn, old.id)
+    fresh = make_group(conn, name="Games", services=("steam",))
+    assert fresh.name == "Games"
+
+
+def test_a_window_error_names_its_reason(conn):
+    with pytest.raises(budget.WindowError) as caught:
+        make_group(conn, windows=[a_window("21:00", "21:00")])
+    assert caught.value.reason == "start_equals_end"
+
+
 def test_update_group_replaces_fields_and_keeps_the_rest(conn):
     group = make_group(conn, services=("roblox",), domains=("example.com",))
     updated = budget.update_group(conn, group.id, name="Renamed", emoji="🎮")
