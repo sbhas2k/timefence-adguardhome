@@ -397,6 +397,22 @@
     return '<p class="live-line ' + status.cls + '">' + esc(status.text) + "</p>";
   }
 
+  /* The allowed windows under the live line: 24-hour times exactly as the
+     server sends them, plus the day range only when a window is restricted.
+     No windows means always open, so the line is left out entirely. */
+  function windowsLineHtml(group) {
+    var windows = group.windows || [];
+    if (!windows.length) { return ""; }
+    var labels = windows.map(function (w) {
+      var label = t("card.window_range", { start: w.start, end: w.end });
+      if (w.days === "weekday") { label += " " + t("card.window_days_weekday"); }
+      if (w.days === "weekend") { label += " " + t("card.window_days_weekend"); }
+      return label;
+    });
+    return '<p class="muted small live-windows">' +
+      esc(t("card.windows_line", { times: labels.join(" · ") })) + "</p>";
+  }
+
   /* A card is three regions: a header that is patched in place, a live part that
      is redrawn when its markup changes, and controls that belong to a signature.
      Anything that has to survive a poll lives in the header or in a JS map. */
@@ -548,13 +564,22 @@
     if (note) { note.classList.toggle("hidden", !(mode === "free" && storedBlock)); }
   }
 
+  /* One token per allowed window, so an edited window changes the signature
+     and the card is rebuilt even while the poll keeps its own copy. */
+  function windowsKey(group) {
+    return (group.windows || []).map(function (w) {
+      return w.start + "-" + w.end + "-" + w.days;
+    }).join(",");
+  }
+
   function signatureFor(group) {
     return [
       group.name,
       group.paused ? "paused" : "",
       modeFor(group),
       group.free_until ? String(group.free_until) : "",
-      Number(group.force_block_until) > 0 ? "stored" : ""
+      Number(group.force_block_until) > 0 ? "stored" : "",
+      windowsKey(group)
     ].join("|");
   }
 
@@ -602,7 +627,7 @@
       paintHeader(card, group);
 
       var live = card.querySelector("[data-live]");
-      var liveMarkup = liveHtml(group);
+      var liveMarkup = liveHtml(group) + windowsLineHtml(group);
       if (live.dataset.html !== liveMarkup) {
         live.innerHTML = liveMarkup;
         live.dataset.html = liveMarkup;
