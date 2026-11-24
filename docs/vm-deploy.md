@@ -194,14 +194,13 @@ per device the first time you test).
 
 ## 7. Check that it works
 
-1. In TimeFence, create a group (for example YouTube) and press **Block now**
+1. In TimeFence, create a group (for example YouTube) and press **Block**
    (or give it an allowed time that is not now).
 2. Open the app on a device at home. It must fail.
 3. In AdGuard Home's query log, look for blocked lines from your home address.
    The VM sees your whole house as that one address; the device's own
    `192.168.x.x` never shows.
-4. Press **Allow freely**, or let the allowed time start, to see the other
-   states.
+4. Press **Free**, or let the allowed time start, to see the other states.
 
 If something does not block, go through
 [Troubleshooting](troubleshooting.md): it covers IPv6, devices with their own DNS,

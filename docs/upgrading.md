@@ -15,8 +15,8 @@ minutes budget. **Install this release fresh.**
   over. The migration writes its verified copy first
   (`timefence.db.pre-v6.bak`). Groups, targets and accounts survive; a group
   with no windows is simply always open.
-- Run `timefence` (or `timefence serve`, or the container) exactly as before.
-  Sign in, and give each group the allowed times you want.
+- Run `timefence run` (or the container) exactly as before. Sign in, and give
+  each group the allowed times you want.
 
 If you prefer a clean slate, point `DATA_DIR` at an empty directory instead of
 migrating the old database.

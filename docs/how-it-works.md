@@ -102,7 +102,9 @@ exists, is enabled, still has the same role and username, and that the epoch
 matches. Disabling, deleting, demoting or changing an account's password bumps
 the epoch, so every existing cookie for that account stops working on the next
 request. Changing your own password re-issues your cookie in the same response,
-so you stay signed in. Logging out only clears your cookie.
+so you stay signed in. Logging out bumps the account's `session_epoch` before it
+clears your cookie, so it signs that account out on every device, not only in the
+browser you used.
 
 Sign-in is JSON-only (415 otherwise). The order is: address lockout → body
 validation → username format (invalid usernames are counted on the address key

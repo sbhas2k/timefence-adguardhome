@@ -110,11 +110,17 @@ upstreams, cache settings) lives in those two directories, so it comes along.
 
   `timefence release` removes the managed rules section and the services
   TimeFence took over, and keeps everything else. It prints what it removed.
-- **Upgrade** with `docker compose pull && docker compose up -d`; the schema
-  upgrade writes one verified copy next to the database before it changes
-  anything. The copy is named after the schema it reaches, so any database older
-  than v5 gets `timefence.db.pre-v5.bak`; a fresh install writes none. See
-  [upgrading.md](upgrading.md).
+- **Upgrade** with `git pull`, then `docker compose build && docker compose up -d`.
+  `docker compose pull` alone does not upgrade TimeFence: the shipped compose file
+  builds it from the checkout (`image: timefence:local`) and no image is published
+  to a registry, so `pull` only refreshes AdGuard Home, and `up -d` reuses the old
+  local image. `deploy/update.sh` does the same steps and waits for `/healthz`: it
+  pulls, builds `timefence:<version>` from `pyproject.toml`, points the compose
+  file at that tag and restarts. See [upgrading.md](upgrading.md).
+  Either way the schema upgrade writes one verified copy next to the database
+  before it changes anything. The copy is named after the schema version it
+  reaches, so any database older than v6 gets `timefence.db.pre-v6.bak`; a fresh
+  install writes none.
 - **Remove**: `docker compose rm -sf timefence`, then delete the volume.
 
 ## Gotchas
