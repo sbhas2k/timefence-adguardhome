@@ -23,14 +23,7 @@ from .fakes import StubServer
 
 TZ = ZoneInfo("UTC")
 BERLIN = ZoneInfo("Europe/Berlin")
-EVENTS = (
-    "group_low",
-    "group_exhausted",
-    "bedtime_started",
-    "sync_failing",
-    "sync_recovered",
-    "weekly_summary",
-)
+EVENTS = ("group_closed", "sync_failing", "sync_recovered")
 
 
 @pytest.fixture()
@@ -66,23 +59,20 @@ def settings_for(tmp_path, tz="UTC", interval=30) -> Settings:
     )
 
 
-def make_group(store, name="YouTube", services=("youtube",), minutes=100, windows=(), domains=()):
+def make_group(store, name="YouTube", services=("youtube",), windows=(), domains=()):
     with store as conn:
         return budget.create_group(
             conn,
             name=name,
             emoji="",
-            weekday_minutes=minutes,
-            weekend_minutes=minutes,
             services=list(services),
             domains=list(domains),
             windows=list(windows),
         )
 
 
-def spend(store, group, seconds: int, day: str) -> None:
-    with store as conn:
-        budget.add_metered_seconds(conn, group.id, day, seconds)
+def a_window(start="13:00", end="14:00", days="all") -> dict:
+    return {"start": start, "end": end, "days": days}
 
 
 def configure(store, **values) -> None:
@@ -173,12 +163,9 @@ def test_config_defaults_and_masking(store):
     assert shown["channel"] == ""
     assert shown["enabled"] is True
     assert set(shown["events"]) == set(EVENTS)
-    assert shown["events"]["group_low"] is True
-    assert shown["events"]["group_exhausted"] is True
+    assert shown["events"]["group_closed"] is False
     assert shown["events"]["sync_failing"] is True
     assert shown["events"]["sync_recovered"] is True
-    assert shown["events"]["bedtime_started"] is False
-    assert shown["events"]["weekly_summary"] is False
     assert shown["ntfy"] == {"base_host": "", "topic_tail": "", "token_configured": False}
     assert shown["webhook"] == {"host": "", "path_tail": ""}
     assert shown["sent_last_hour"] == 0
@@ -205,13 +192,13 @@ def test_config_defaults_and_masking(store):
 
 def test_config_merge_rules(store):
     configure(store, channel="ntfy", ntfy_topic="topic-one", ntfy_token="tok")
-    configure(store, events={"weekly_summary": True})
+    configure(store, events={"sync_failing": False})
     with store as conn:
         shown = alerts.public_config(conn, ts_utc(2026, 11, 16, 12))
     assert shown["channel"] == "ntfy"
     assert shown["ntfy"]["topic_tail"] == "ne"
     assert shown["ntfy"]["token_configured"] is True
-    assert shown["events"]["weekly_summary"] is True
+    assert shown["events"]["sync_failing"] is False
 
     configure(store, ntfy_token="")
     with store as conn:
@@ -234,7 +221,7 @@ def test_config_rejects_bad_values(store):
         {"webhook_url": "http://u:p@host/hook"},
         {"ntfy_base": "file:///etc/passwd"},
         {"events": []},
-        {"events": {"group_low": "maybe"}},
+        {"events": {"group_closed": "maybe"}},
     ):
         with store as conn, pytest.raises(budget.ValidationError):
             alerts.write_config(conn, bad)
@@ -245,78 +232,89 @@ def test_config_rejects_bad_values(store):
 # --------------------------------------------------------------------------- #
 
 
-def test_low_threshold_edge_and_once_per_day(store, tmp_path):
+def test_group_closed_is_off_by_default(store, tmp_path):
     settings = settings_for(tmp_path)
-    now = ts_utc(2026, 11, 11, 12)  # a Wednesday
-    group = make_group(store, minutes=100)
+    now = ts_utc(2026, 11, 11, 12)  # a Wednesday, outside the window
+    group = make_group(store, windows=[a_window()])
     ntfy_config(store)
     worker = alerts.AlertWorker(store, settings)
-
-    spend(store, group, 5400 - 15, "2026-11-11")  # 615 s left: no message yet
     assert probe(worker, now) == []
+    assert sent_keys(store) == set()
 
-    spend(store, group, 15, "2026-11-11")  # exactly 600 s left
+    configure(store, events={"group_closed": True})
     messages = probe(worker, now)
-    assert [m.event for m in messages] == ["group_low"]
-    assert messages[0].minutes_left == 10
-    assert messages[0].key == f"low:{group.id}:2026-11-11"
+    assert [m.event for m in messages] == ["group_closed"]
+    assert messages[0].group == "YouTube"
+    assert messages[0].time_text == "13:00"  # the next opening, a local HH:MM
+    assert sent_keys(store) == {f"closed:{group.id}:{ts_utc(2026, 11, 11, 13)}"}
 
-    assert probe(worker, now) == []  # once per local day
-    spend(store, group, 15, "2026-11-11")  # 585 s left
-    assert probe(worker, now) == []
 
-    # a restart does not resend it either
+def test_group_closed_fires_once_per_closing(store, tmp_path):
+    settings = settings_for(tmp_path)
+    make_group(store, windows=[a_window("13:00", "14:00")])
+    ntfy_config(store)
+    configure(store, events={"group_closed": True})
+    worker = alerts.AlertWorker(store, settings)
+
+    assert [m.event for m in probe(worker, ts_utc(2026, 11, 11, 12))] == ["group_closed"]
+    assert probe(worker, ts_utc(2026, 11, 11, 12, 30)) == []  # the same closing
+    assert probe(worker, ts_utc(2026, 11, 11, 13, 30)) == []  # inside the window
+    # the next day's closing is a new event, and a restart does not resend it
     restarted = alerts.AlertWorker(store, settings)
-    assert probe(restarted, now) == []
+    assert [m.event for m in probe(restarted, ts_utc(2026, 11, 12, 12))] == ["group_closed"]
+    assert probe(restarted, ts_utc(2026, 11, 12, 12, 45)) == []
+    assert len([key for key in sent_keys(store) if key.startswith("closed:")]) == 2
 
 
-def test_exhausted_fires_on_the_transition_only(store, tmp_path):
+def test_a_wrapping_window_does_not_alert_again_after_midnight(store, tmp_path):
     settings = settings_for(tmp_path)
-    now = ts_utc(2026, 11, 11, 12)
-    group = make_group(store, minutes=100)
+    make_group(store, windows=[a_window("21:00", "07:00")])
     ntfy_config(store)
+    configure(store, events={"group_closed": True})
     worker = alerts.AlertWorker(store, settings)
 
-    spend(store, group, 6000, "2026-11-11")  # budget gone
-    messages = probe(worker, now)
-    assert [m.event for m in messages] == ["group_exhausted"]
-    assert messages[0].minutes_left == 0
-    assert probe(worker, now) == []
-    assert probe(alerts.AlertWorker(store, settings), now) == []
+    assert probe(worker, ts_utc(2026, 11, 9, 23)) == []  # inside the window
+    first = probe(worker, ts_utc(2026, 11, 10, 7, 30))  # the window closed at 07:00
+    assert [m.event for m in first] == ["group_closed"]
+    assert first[0].time_text == "21:00"
+    assert probe(worker, ts_utc(2026, 11, 10, 8)) == []
+    assert probe(worker, ts_utc(2026, 11, 10, 15)) == []
+    # it opens at 21:00 and closes again the next morning
+    assert probe(worker, ts_utc(2026, 11, 10, 22)) == []
+    second = probe(worker, ts_utc(2026, 11, 11, 8))
+    assert [m.event for m in second] == ["group_closed"]
 
 
 def test_quiet_states_do_not_alert(store, tmp_path):
     settings = settings_for(tmp_path)
-    now = ts_utc(2026, 11, 11, 13, 30)
-    paused = make_group(store, name="Paused", services=("youtube",), minutes=100)
-    blocked = make_group(store, name="Blocked", services=("roblox",), minutes=100)
-    free = make_group(store, name="Free", services=("instagram",), minutes=10)
+    now = ts_utc(2026, 11, 11, 12)
+    paused = make_group(store, name="Paused", services=("youtube",), windows=[a_window()])
+    blocked = make_group(store, name="Blocked", services=("roblox",), windows=[a_window()])
+    free = make_group(store, name="Free", services=("instagram",), windows=[a_window()])
+    make_group(store, name="Always", services=("discord",))
     ntfy_config(store)
+    configure(store, events={"group_closed": True})
     with store as conn:
         budget.update_group(conn, paused.id, paused=True)
         budget.set_force_block(conn, blocked.id, now + 3600)
         budget.set_free_until(conn, free.id, now + 3600)
-        budget.add_metered_seconds(conn, free.id, "2026-11-11", 600, 600)
     assert probe(alerts.AlertWorker(store, settings), now) == []
 
 
-def test_bedtime_started_is_off_by_default(store, tmp_path):
+def test_free_time_suppresses_group_closed(store, tmp_path):
     settings = settings_for(tmp_path)
-    now = ts_utc(2026, 11, 11, 13, 30)
-    make_group(store, windows=[{"start": "13:00", "end": "14:00", "days": "all"}])
+    now = ts_utc(2026, 11, 11, 12)
+    group = make_group(store, windows=[a_window("08:00", "09:00")])
     ntfy_config(store)
+    configure(store, events={"group_closed": True})
+    with store as conn:
+        budget.set_free_until(conn, group.id, now + 3600)
     worker = alerts.AlertWorker(store, settings)
     assert probe(worker, now) == []
 
-    configure(store, events={"bedtime_started": True})
-    messages = probe(worker, now)
-    assert [m.event for m in messages] == ["bedtime_started"]
-    assert messages[0].time_text == "14:00"
-    assert probe(worker, now) == []
-
-    # outside the window nothing fires
-    configure(store, events={"bedtime_started": True})
-    assert probe(alerts.AlertWorker(store, settings), ts_utc(2026, 11, 11, 15)) == []
+    # once the free window ends the schedule closes the group again
+    messages = probe(worker, now + 3601)
+    assert [m.event for m in messages] == ["group_closed"]
 
 
 def test_sync_failing_needs_three_runs_and_is_once_per_outage(store, tmp_path):
@@ -367,40 +365,6 @@ def test_sync_failing_does_not_flap_or_rearm_on_a_clock_jump(store, tmp_path):
     assert len([key for key in sent_keys(store) if key.startswith("sync_failing:")]) == 1
 
 
-def test_weekly_summary_fires_once_on_monday_morning(store, tmp_path):
-    settings = settings_for(tmp_path, tz="Europe/Berlin")
-    group = make_group(store, minutes=100)
-    configure(store, channel="ntfy", ntfy_topic="topic", events={"weekly_summary": True})
-    with store as conn:
-        budget.add_metered_seconds(conn, group.id, "2026-10-19", 600)
-        budget.add_metered_seconds(conn, group.id, "2026-10-25", 1800)  # the DST day
-        budget.add_metered_seconds(conn, group.id, "2026-10-18", 900)  # outside the week
-    worker = alerts.AlertWorker(store, settings)
-
-    before = ts_berlin(2026, 10, 26, 7, 59)
-    assert probe(worker, before) == []
-
-    monday = ts_berlin(2026, 10, 26, 8, 0)
-    messages = probe(worker, monday)
-    assert [m.event for m in messages] == ["weekly_summary"]
-    assert messages[0].groups == (("YouTube", 40.0),)  # 600 + 1800 s over 7 local days
-    assert messages[0].key == "weekly:2026-10-26"
-    assert probe(worker, monday + 60) == []
-
-
-def test_missed_weekly_summary_is_recorded_without_sending(store, tmp_path, caplog):
-    settings = settings_for(tmp_path, tz="Europe/Berlin")
-    make_group(store, minutes=100)
-    configure(store, channel="ntfy", ntfy_topic="topic", events={"weekly_summary": True})
-    worker = alerts.AlertWorker(store, settings)
-
-    tuesday = ts_berlin(2026, 10, 27, 9, 0)
-    with caplog.at_level("INFO", logger="timefence.alerts"):
-        assert probe(worker, tuesday) == []
-    assert "weekly:2026-10-26" in sent_keys(store)
-    assert "missed weekly summary" in caplog.text
-
-
 # --------------------------------------------------------------------------- #
 # rate limit, protected classes and the queue
 # --------------------------------------------------------------------------- #
@@ -419,14 +383,14 @@ def fill_hour(store, prefix: str, count: int, now: int) -> None:
 def test_hourly_limit_drops_routine_messages(store, tmp_path):
     settings = settings_for(tmp_path)
     now = ts_utc(2026, 11, 11, 12)
-    group = make_group(store, minutes=100)
+    group = make_group(store, windows=[a_window()])
     ntfy_config(store)
+    configure(store, events={"group_closed": True})
     worker = alerts.AlertWorker(store, settings)
-    spend(store, group, 5400, "2026-11-11")
-    fill_hour(store, "low", alerts.HOURLY_LIMIT, now)
+    fill_hour(store, "closed", alerts.HOURLY_LIMIT, now)
 
     assert probe(worker, now) == []
-    assert f"low:{group.id}:2026-11-11" not in sent_keys(store)
+    assert f"closed:{group.id}:{ts_utc(2026, 11, 11, 13)}" not in sent_keys(store)
     assert settings_keys(store)["alerts.dropped"] == "1"
     with store as conn:
         shown = alerts.public_config(conn, now)
@@ -439,7 +403,7 @@ def test_protected_classes_survive_routine_chatter(store, tmp_path):
     now = ts_utc(2026, 11, 11, 12)
     ntfy_config(store)
     worker = alerts.AlertWorker(store, settings)
-    fill_hour(store, "low", alerts.HOURLY_LIMIT, now)
+    fill_hour(store, "closed", alerts.HOURLY_LIMIT, now)
 
     messages = []
     for _ in range(3):
@@ -467,20 +431,24 @@ def test_a_full_queue_drops_the_oldest_of_the_incoming_class(store, tmp_path):
     ntfy_config(store)
     worker = alerts.AlertWorker(store, settings)
     for index in range(alerts.QUEUE_SIZE):
-        worker.enqueue(alerts.Message(event="group_low", key=f"low:filler-{index}", created_at=0))
+        worker.enqueue(
+            alerts.Message(event="group_closed", key=f"closed:filler-{index}", created_at=0)
+        )
     assert worker.queue.qsize() == alerts.QUEUE_SIZE
 
-    worker.enqueue(alerts.Message(event="group_low", key="low:newest", created_at=0))
+    worker.enqueue(alerts.Message(event="group_closed", key="closed:newest", created_at=0))
     queued = [item.key for item in list(worker.queue.queue) if item is not None]
     assert worker.queue.qsize() == alerts.QUEUE_SIZE
-    assert "low:filler-0" not in queued
-    assert "low:newest" in queued
+    assert "closed:filler-0" not in queued
+    assert "closed:newest" in queued
     assert settings_keys(store)["alerts.dropped"] == "1"
 
     # nothing of that class left to evict in a fresh queue: the newcomer is dropped
     worker2 = alerts.AlertWorker(store, settings)
     for index in range(alerts.QUEUE_SIZE):
-        worker2.enqueue(alerts.Message(event="group_low", key=f"low:other-{index}", created_at=0))
+        worker2.enqueue(
+            alerts.Message(event="group_closed", key=f"closed:other-{index}", created_at=0)
+        )
     worker2.enqueue(alerts.Message(event="sync_failing", key="sync_failing:1", created_at=0))
     assert worker2.queue.qsize() == alerts.QUEUE_SIZE
     assert "sync_failing:1" not in [
@@ -494,13 +462,13 @@ def test_old_dedupe_rows_are_pruned(store, tmp_path):
     now = int(time.time())
     with store as conn:
         conn.execute(
-            "INSERT INTO alerts_sent(key, sent_at) VALUES('low:1:2026-01-01', ?)",
+            "INSERT INTO alerts_sent(key, sent_at) VALUES('closed:1:1800000000', ?)",
             (now - 15 * 86400,),
         )
         conn.commit()
     worker = alerts.AlertWorker(store, settings)
     worker.prune(now)
-    assert "low:1:2026-01-01" not in sent_keys(store)
+    assert "closed:1:1800000000" not in sent_keys(store)
 
 
 # --------------------------------------------------------------------------- #
@@ -508,14 +476,13 @@ def test_old_dedupe_rows_are_pruned(store, tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def a_message(event="group_low", **overrides) -> alerts.Message:
+def a_message(event="group_closed", **overrides) -> alerts.Message:
     values = {
         "event": event,
         "key": f"{event}:1",
         "created_at": ts_utc(2026, 11, 11, 12),
         "time_iso": "2026-11-11T12:00:00+00:00",
         "group": "Игры",
-        "minutes_left": 10,
     }
     values.update(overrides)
     return alerts.Message(**values)
@@ -527,7 +494,7 @@ def test_ntfy_delivery_puts_names_in_the_utf8_body_only(deliveries):
         assert alerts._deliver(target, a_message()) == "ok"
         request = stub.requests[0]
         assert request["path"] == "/kid-alerts"
-        assert request["headers"]["Title"] == "TimeFence group_low"
+        assert request["headers"]["Title"] == "TimeFence group_closed"
         assert isinstance(request["body"], bytes)
         assert "Игры" in request["body"].decode("utf-8")
         for name, value in request["headers"].items():
@@ -551,9 +518,7 @@ def test_webhook_bodies_have_the_documented_shape(deliveries):
     with StubServer() as stub:
         target = alerts.parse_target(stub.url + "/hook")
         cases = {
-            "group_low": {"event", "group", "minutes_left", "time", "message"},
-            "group_exhausted": {"event", "group", "minutes_left", "time", "message"},
-            "bedtime_started": {"event", "group", "time", "message"},
+            "group_closed": {"event", "group", "time", "message"},
             "sync_failing": {"event", "time", "message", "outage_seconds"},
             "sync_recovered": {"event", "time", "message", "outage_seconds"},
         }
@@ -571,26 +536,13 @@ def test_webhook_bodies_have_the_documented_shape(deliveries):
             assert body["time"] == "2026-11-11T12:00:00+00:00"
             if "group" in keys:
                 assert body["group"] == "Игры"
-            if "minutes_left" in keys:
-                assert body["minutes_left"] == 10
             if "message" in keys:
                 assert body["message"]
 
-        assert (
-            alerts._deliver(
-                target,
-                a_message("weekly_summary", groups=(("YouTube", 40.0), ("Games", 12.5))),
-            )
-            == "ok"
-        )
-        weekly = json.loads(stub.requests[-1]["body"])
-        assert weekly["event"] == "weekly_summary"
-        assert weekly["days"] == 7
-        assert weekly["groups"] == [
-            {"group": "YouTube", "minutes": 40.0},
-            {"group": "Games", "minutes": 12.5},
-        ]
-        assert "group" not in weekly
+        for request in stub.requests:
+            body = json.loads(request["body"])
+            for gone in ("minutes_left", "groups", "days"):
+                assert gone not in body, gone
 
 
 def test_no_redirect_is_followed(deliveries):
@@ -666,7 +618,7 @@ def test_a_cleared_channel_drops_the_message(store, tmp_path, deliveries):
 def test_probe_is_cheap_and_never_touches_run_state(store, fake, tmp_path, monkeypatch):
     settings = settings_for(tmp_path)
     ntfy_config(store)
-    make_group(store, minutes=100)
+    make_group(store)
     reconciler = Reconciler(store, fake, TZ)
     reconciler.alert_worker = alerts.AlertWorker(store, settings)
 
@@ -687,8 +639,8 @@ def test_probe_is_cheap_and_never_touches_run_state(store, fake, tmp_path, monke
 def test_probe_runs_through_the_reconciler(store, fake, tmp_path):
     settings = settings_for(tmp_path)
     ntfy_config(store)
-    group = make_group(store, minutes=100)
-    spend(store, group, 5400, "2026-11-11")
+    configure(store, events={"group_closed": True})
+    make_group(store, windows=[a_window()])
     reconciler = Reconciler(store, fake, TZ)
     worker = alerts.AlertWorker(store, settings)
     reconciler.alert_worker = worker
@@ -701,7 +653,7 @@ def test_probe_runs_through_the_reconciler(store, fake, tmp_path):
             queued.append(worker.queue.get_nowait())
         except queue.Empty:
             break
-    assert [message.event for message in queued if message] == ["group_low"]
+    assert [message.event for message in queued if message] == ["group_closed"]
 
 
 def test_worker_starts_with_the_app_and_stops_before_the_store(settings, fake, monkeypatch, caplog):
@@ -724,7 +676,7 @@ def test_worker_starts_with_the_app_and_stops_before_the_store(settings, fake, m
                 conn, {"channel": "webhook", "webhook_url": "http://127.0.0.1:9/hook"}
             )
         monkeypatch.setattr(alerts_module, "_deliver", slow_delivery)
-        worker.enqueue(alerts_module.Message(event="group_low", key="low:1", created_at=0))
+        worker.enqueue(alerts_module.Message(event="group_closed", key="closed:1", created_at=0))
         deadline = time.monotonic() + 3
         while not seen.get("started") and time.monotonic() < deadline:
             time.sleep(0.01)
@@ -808,7 +760,7 @@ def test_shutdown_waits_for_a_fast_delivery(settings, fake, monkeypatch, caplog)
                 conn, {"channel": "webhook", "webhook_url": "http://127.0.0.1:9/hook"}
             )
         monkeypatch.setattr(alerts, "_deliver", fast_delivery)
-        worker.enqueue(alerts.Message(event="group_low", key="low:1", created_at=0))
+        worker.enqueue(alerts.Message(event="group_closed", key="closed:1", created_at=0))
         deadline = time.monotonic() + 3
         while not seen.get("started") and time.monotonic() < deadline:
             time.sleep(0.01)
@@ -825,48 +777,12 @@ def test_shutdown_waits_for_a_fast_delivery(settings, fake, monkeypatch, caplog)
         conn.close()
 
 
-def test_low_does_not_fire_during_a_free_window(store, tmp_path):
-    settings = settings_for(tmp_path)
-    now = ts_utc(2026, 11, 11, 12)
-    group = make_group(store, minutes=100)
-    ntfy_config(store)
-    with store as conn:
-        budget.set_free_until(conn, group.id, now + 3600)
-    spend(store, group, 5700, "2026-11-11")  # 300 s left, but the group is free
-    assert probe(alerts.AlertWorker(store, settings), now) == []
-
-    # the same budget raises the warning once the free window is over
-    messages = probe(alerts.AlertWorker(store, settings), now + 3601)
-    assert [m.event for m in messages] == ["group_low"]
-    assert messages[0].minutes_left == 5
-
-
-def test_bedtime_alert_is_one_message_per_night(store, tmp_path):
-    settings = settings_for(tmp_path)
-    make_group(store, windows=[{"start": "21:00", "end": "07:00", "days": "all"}])
-    ntfy_config(store)
-    configure(store, events={"bedtime_started": True})
-    worker = alerts.AlertWorker(store, settings)
-
-    first = probe(worker, ts_utc(2026, 11, 9, 21))  # Monday, the window opens
-    assert [m.event for m in first] == ["bedtime_started"]
-    assert first[0].time_text == "07:00"
-    # the same window, just after local midnight, is not a new night
-    assert probe(worker, ts_utc(2026, 11, 10, 0)) == []
-    assert probe(worker, ts_utc(2026, 11, 10, 6, 59)) == []
-
-    second = probe(worker, ts_utc(2026, 11, 10, 21))  # Tuesday evening
-    assert [m.event for m in second] == ["bedtime_started"]
-    assert probe(worker, ts_utc(2026, 11, 11, 0)) == []
-
-
 def test_a_trickling_delivery_ends_as_a_timeout(deliveries):
     message = alerts.Message(
-        event="weekly_summary",
-        key="weekly:2026-11-11",
+        event="sync_failing",
+        key="sync_failing:1",
         created_at=ts_utc(2026, 11, 11, 12),
         time_iso="2026-11-11T12:00:00Z",
-        minutes_left=0,
     )
     with StubServer(body=b"x" * 40, trickle=0.5) as stub:
         target = alerts.parse_target(stub.url + "/hook")
@@ -977,7 +893,7 @@ def test_telegram_request_shape(deliveries, store, monkeypatch):
     calls = capture_posts(monkeypatch)
 
     assert alerts._deliver(target, a_message()) == "ok"
-    assert alerts._deliver(target, a_message("group_exhausted", key="ex:1")) == "ok"
+    assert alerts._deliver(target, a_message("sync_failing", key="sync_failing:1")) == "ok"
 
     url, kwargs = calls[0]
     assert url == f"https://api.telegram.org/bot{TOKEN}/sendMessage"

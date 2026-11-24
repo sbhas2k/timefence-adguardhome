@@ -16,7 +16,6 @@ from zoneinfo import ZoneInfo
 
 from . import budget, db
 from .adguard import AdGuardAuthError, AdGuardClient, AdGuardError
-from .discover import parse_time
 
 log = logging.getLogger("timefence.reconciler")
 
@@ -24,18 +23,14 @@ SECTION_BEGIN = "# timefence:begin"
 SECTION_END = "# timefence:end"
 LEGACY_MARKERS = ("budget-app",)  # migrated silently on the first run
 
-BUCKET = 15  # seconds of real DNS activity charged per busy bucket
-MAX_CATCHUP = 1800  # never charge more than this much missed time after downtime
-QUERYLOG_HEALTH_INTERVAL = 60  # seconds between query-log settings checks (one cheap GET)
 # AdGuard Home counts failed authentications per address and stops answering for
 # block_auth_min (15 min by default), even to the right password. One attempt
 # per window is the only safe cadence after a rejection.
 AUTH_BACKOFF_BASE = 30.0  # seconds before the first retry
 AUTH_BACKOFF_MAX = 900.0  # never wait longer than AdGuard's own block window
-QUERYLOG_RETENTION_MIN_MS = 3_600_000  # an hour of retention is the minimum
-# Answers that AdGuard refused rather than answered: not usage, and what the
-# group Test screen calls "blocked". SafeSearch rewrites and Rewrite* are
-# answered queries (the page loaded), so they count as usage and are not blocks.
+# Answers that AdGuard refused rather than answered: what the group Test screen
+# calls "blocked". SafeSearch rewrites and Rewrite* are answered queries (the
+# page loaded), so they are not blocks.
 BLOCKED_REASONS = {
     "FilteredBlackList",
     "FilteredBlockedService",
@@ -167,10 +162,6 @@ class Reconciler:
         self.stopping = threading.Event()
         self.closed = False
         self._run_lock = threading.Lock()
-        self._service_domains: dict[str, set[str]] = {}
-        self._service_domains_ts = 0.0
-        self._last_bucket: dict[int, int] = {}
-        self._querylog_checked = 0
         # A stand-in for AdGuard may need to know which store it serves so it can
         # insist that no AdGuard call happens under the store lock; the real
         # client has no such hook and this is a no-op for it.
@@ -205,183 +196,6 @@ class Reconciler:
         delay = min(AUTH_BACKOFF_BASE * (2 ** (self._auth_failures - 1)), AUTH_BACKOFF_MAX)
         self._next_adguard_attempt = self.monotonic() + delay
         self.last_error_kind = "auth"
-
-    # -- usage metering (auto mode) --------------------------------------
-    def service_domains(self) -> dict[str, set[str]]:
-        """service id -> the hostnames its AdGuard rules cover (cached)."""
-        now = time.time()
-        if now - self._service_domains_ts > 300 or not self._service_domains:
-            mapping: dict[str, set[str]] = {}
-            for service in self.adguard.all_services():
-                hosts: set[str] = set()
-                for rule in service.get("rules") or []:
-                    host = rule_host(rule)
-                    if host:
-                        hosts.add(host)
-                mapping[service["id"]] = hosts
-            self._service_domains = mapping
-            self._service_domains_ts = now
-        return self._service_domains
-
-    def matcher(self, group: budget.Group) -> set[str]:
-        suffixes = {d.lower() for d in group.domains}
-        if group.services:
-            domains = self.service_domains()
-            for service_id in group.services:
-                suffixes |= domains.get(service_id, set())
-        return suffixes
-
-    @staticmethod
-    def host_matches(host: str, suffixes: set[str]) -> bool:
-        host = (host or "").strip().lower().rstrip(".")
-        return any(host == suffix or host.endswith("." + suffix) for suffix in suffixes)
-
-    def meter(self, now: int, reason: str = "loop") -> int:
-        """Charge activity buckets to the groups that used their domains.
-
-        The query log is the only signal available. Each 15-second bucket with
-        at least one real (not blocked, not free-allow) lookup is charged once.
-        """
-        self.check_querylog(now)
-        with self.store as conn:
-            cursor = int(db.get_setting(conn, "meter_last_ts", "0") or 0)
-            if cursor <= 0:
-                db.set_setting(conn, "meter_last_ts", str(now))
-                return 0
-        start = max(cursor, now - MAX_CATCHUP)
-        if now <= start:
-            return 0
-        try:
-            entries, truncated = self.adguard.querylog_since(start)
-        except AdGuardAuthError:
-            raise
-        except AdGuardError as exc:
-            log.error("metering skipped: %s", exc)
-            return 0
-        if truncated:
-            self.warnings.add("querylog_truncated")
-        else:
-            self.warnings.discard("querylog_truncated")
-
-        hits = self.usage_hits(entries, start, now)
-        with self.store as conn:
-            needs_service_domains = any(g.services for g in budget.list_groups(conn))
-        if needs_service_domains:
-            self.service_domains()  # AdGuard call, outside the store lock
-
-        charged = 0
-        with self.store as conn:
-            for group in budget.list_groups(conn):
-                if group.paused or group.deleted:
-                    continue
-                free = budget.free_until(conn, group.id)
-                if free and free > now:
-                    continue  # free time is not metered
-                if not budget.is_permitted(conn, group, self.tz, now):
-                    continue
-                suffixes = self.matcher(group)
-                if not suffixes:
-                    continue
-                last_bucket = self._last_bucket.get(group.id, -1)
-                buckets = {
-                    ts // BUCKET
-                    for ts, name in hits
-                    if ts // BUCKET > last_bucket and self.host_matches(name, suffixes)
-                }
-                if not buckets:
-                    continue
-                per_day: dict[str, list[int]] = {}
-                for bucket in buckets:
-                    day = budget.day_str(bucket * BUCKET, self.tz)
-                    per_day.setdefault(day, []).append(bucket)
-                for day, day_buckets in per_day.items():
-                    representative = max(day_buckets) * BUCKET
-                    cap = budget.cap_seconds(conn, group, self.tz, representative)
-                    budget.add_metered_seconds(
-                        conn, group.id, day, BUCKET * len(day_buckets), cap_seconds=cap
-                    )
-                self._last_bucket[group.id] = max(buckets)
-                charged += 1
-            db.set_setting(conn, "meter_last_ts", str(now))
-        return charged
-
-    def usage_hits(self, entries: list[dict], start: int, now: int) -> list[tuple[int, str]]:
-        """(timestamp, hostname) of entries that count as usage inside the window."""
-        hits: list[tuple[int, str]] = []
-        for entry in entries:
-            ts = parse_time(entry.get("time", ""))
-            if ts is None or not (start < ts <= now):
-                continue
-            client = entry.get("client") or ""
-            if client in ("127.0.0.1", "::1"):
-                continue
-            if (entry.get("reason") or "") in BLOCKED_REASONS:
-                continue
-            name = (entry.get("question") or {}).get("name") or ""
-            hits.append((ts, name))
-        return hits
-
-    # -- query-log health -------------------------------------------------
-    def check_querylog(self, now: int) -> None:
-        """Warn when the query log makes metering unreliable (at most every minute)."""
-        if self._querylog_checked and now - self._querylog_checked < QUERYLOG_HEALTH_INTERVAL:
-            return
-        self._querylog_checked = now
-        try:
-            config = self.adguard.querylog_config()
-        except AdGuardAuthError:
-            raise
-        except AdGuardError as exc:
-            log.debug("query-log health check skipped: %s", exc)
-            return
-        if not config:
-            return  # an older AdGuard without the endpoint: nothing to report
-        if config.get("enabled") is False:
-            self.warnings.add("querylog_disabled")
-        else:
-            self.warnings.discard("querylog_disabled")
-        interval = config.get("interval")
-        if isinstance(interval, int | float) and interval < QUERYLOG_RETENTION_MIN_MS:
-            self.warnings.add("querylog_retention_short")
-        else:
-            self.warnings.discard("querylog_retention_short")
-        # `ignored` entries only hide queries while ignoring is switched on;
-        # with it off, AdGuard logs everything and nothing is lost.
-        ignored = (config.get("ignored") or []) if config.get("ignored_enabled") is True else []
-        if ignored and self.ignored_covers_a_group(ignored):
-            self.warnings.add("querylog_ignores_group")
-        else:
-            self.warnings.discard("querylog_ignores_group")
-
-    def ignored_covers_a_group(self, ignored: list[str]) -> bool:
-        patterns = {(text, suffix) for text, suffix in map(self.ignored_pattern, ignored) if text}
-        if not patterns:
-            return False
-        with self.store as conn:
-            groups = budget.list_groups(conn)
-        hosts = {domain for group in groups for domain in group.domains}
-        if any(group.services for group in groups):
-            domains = self.service_domains()
-            for group in groups:
-                for service_id in group.services:
-                    hosts.update(domains.get(service_id, set()))
-        return any(
-            host == pattern or (suffix and host.endswith("." + pattern))
-            for host in hosts
-            for pattern, suffix in patterns
-        )
-
-    @staticmethod
-    def ignored_pattern(value: str) -> tuple[str, bool]:
-        """A query-log ignore entry and whether it also covers subdomains.
-
-        A plain `example.com` hides that exact host only; `||example.com^` (or
-        the `*.example.com` form) hides its subdomains too, as AdGuard does.
-        """
-        text = (value or "").strip().lower()
-        suffix = text.startswith("||") or text.startswith("*.")
-        text = text.removeprefix("||").removeprefix("*.").removesuffix("^")
-        return text.strip("."), suffix
 
     # -- individual halves, both idempotent ------------------------------
     def sync_services(self, now: int | None = None) -> list[str]:
@@ -476,18 +290,8 @@ class Reconciler:
             return result
 
         if not self.stopping.is_set():
-            try:
-                charged = self.meter(now, reason)
-                if charged:
-                    result["metered_groups"] = charged
-            except AdGuardError as exc:
-                auth_failed = record(exc, "metering")
-            except Exception as exc:  # noqa: BLE001 - one phase must not stop the rest
-                log.exception("metering failed")
-                result["errors"].append(f"internal error: {type(exc).__name__}")
-        if not self.stopping.is_set() and not auth_failed:
             self._probe_alerts(now)
-        if not self.stopping.is_set() and not auth_failed:
+        if not self.stopping.is_set():
             try:
                 changed_services = self.sync_services(now)
                 if changed_services:

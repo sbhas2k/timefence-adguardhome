@@ -29,13 +29,9 @@ def test_i18n_keys_used_by_templates_and_scripts_exist():
 
 def test_alert_messages_come_from_i18n():
     required = {
-        "alert.low",
-        "alert.exhausted",
-        "alert.bedtime_started",
+        "alert.closed",
         "alert.sync_failing",
         "alert.sync_recovered",
-        "alert.weekly",
-        "alert.weekly_line",
         "alert.test",
     }
     assert required <= set(i18n.STRINGS["en"])
@@ -56,7 +52,7 @@ def test_every_warning_code_emitted_by_the_server_has_a_string():
         codes.update(re.findall(r'warnings\.add\("([a-z0-9_]+)"\)', source))
         codes.update(re.findall(r'warnings\.discard\("([a-z0-9_]+)"\)', source))
         codes.update(re.findall(r'"([a-z0-9_]+)"\s*\}\s*if settings\.tz_source', source))
-    assert "querylog_ignores_group" in codes
+    assert "rules_section_damaged" in codes
     missing = sorted(code for code in codes if f"warn.{code}" not in i18n.STRINGS["en"])
     assert missing == []
     app_js = (STATIC / "app.js").read_text(encoding="utf-8")

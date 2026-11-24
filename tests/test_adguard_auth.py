@@ -161,17 +161,10 @@ def test_alerts_never_carry_the_password(store, settings):
     reconciler, fake, clock = build(store)
     with store as conn:
         alerts.write_config(conn, {"channel": "ntfy", "ntfy_topic": "kid-alerts"})
-        budget.create_group(
-            conn,
-            name="YouTube",
-            emoji="",
-            weekday_minutes=60,
-            weekend_minutes=60,
-            services=["youtube"],
-        )
+        budget.create_group(conn, name="YouTube", emoji="", services=["youtube"])
     worker = alerts.AlertWorker(store, settings)
     reconciler.alert_worker = worker
-    # the first run dies in metering; the skipped runs still probe the outage
+    # AdGuard rejects the credentials on every run; the probe still reports it
     for step in range(4):
         reconciler.run("loop", now=step)
     queued = []

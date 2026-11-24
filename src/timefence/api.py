@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import csv
-import io
 import json
 import logging
 import os
@@ -17,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -36,8 +34,6 @@ LOGIN_SLOTS = threading.BoundedSemaphore(4)
 MAX_JSON_BYTES = 1024 * 1024  # any JSON body beyond this is refused before parsing
 LOGIN_MAX_BYTES = 16 * 1024  # sign-in is anonymous, so its body is capped hard
 
-USAGE_DAYS = ("7", "14", "30")
-
 # What a user (kid) account may see; the admin payload is a superset.
 USER_APP_KEYS = (
     "name",
@@ -53,16 +49,13 @@ USER_GROUP_KEYS = (
     "id",
     "name",
     "emoji",
-    "minutes_today",
-    "bonus_minutes",
-    "used_minutes",
-    "remaining_minutes",
     "permitted",
     "status",
-    "blocked_until",
+    "open_now",
+    "opens_at",
+    "open_until",
     "free_until",
-    "bedtime_active",
-    "bedtime_until",
+    "paused",
 )
 STATIC = Path(__file__).parent / "static"
 ICON_CHARS = re.compile(r"^[A-Za-z0-9+/=]+$")
@@ -329,7 +322,6 @@ def create_app(
                 for g in budget.list_groups(conn)
                 if group_ids is None or g.id in group_ids
             ]
-            history = budget.history(conn, settings.zone, days=7, now=now, group_ids=group_ids)
         payload: dict[str, Any] = {
             "app": {
                 "name": i18n.t("app.title"),
@@ -341,36 +333,15 @@ def create_app(
                 "now": now,
             },
             "groups": groups,
-            "history": history,
             "adguard_error": reconciler.last_error,
             "adguard_error_kind": reconciler.last_error_kind,
             "adguard_retry_seconds": reconciler.backoff_remaining(),
             "last_sync": int(reconciler.last_ok_ts) if reconciler.last_ok_ts else None,
             "warnings": sorted(
-                reconciler.warnings
-                | {notice for notice in [migration_notice()] if notice}
-                | ({"tz_utc"} if settings.tz_source == "default" else set())
+                reconciler.warnings | ({"tz_utc"} if settings.tz_source == "default" else set())
             ),
         }
         return payload
-
-    def migration_notice() -> str | None:
-        """A group that needed "Start" now has plain daily minutes: say so once."""
-        with store as conn:
-            row = conn.execute(
-                "SELECT ts, detail FROM events WHERE kind='migration' ORDER BY id DESC LIMIT 1"
-            ).fetchone()
-        if not row:
-            return None
-        try:
-            detail = json.loads(row["detail"] or "{}")
-        except (TypeError, ValueError):
-            return None
-        if int(detail.get("converted_groups") or 0) <= 0:
-            return None
-        if time.time() - int(row["ts"]) > 7 * 86400:
-            return None
-        return "session_groups_converted"
 
     def critical_hits(domains: list[str]) -> list[dict]:
         hits = []
@@ -848,15 +819,6 @@ def create_app(
         return None
 
     def group_from_payload(data: dict, existing: budget.Group | None = None) -> dict:
-        def int_or(value: Any, fallback: int) -> int:
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                return fallback
-
-        weekday = int_or(data.get("weekday_minutes"), existing.weekday_minutes if existing else 60)
-        weekend_raw = data.get("weekend_minutes")
-        weekend = weekday if weekend_raw in (None, "") else int_or(weekend_raw, weekday)
         domains_text = data.get("domains_text")
         if domains_text is not None:
             domains = budget.normalize_domains(str(domains_text))
@@ -883,8 +845,6 @@ def create_app(
         return {
             "name": str(data.get("name", existing.name if existing else "")).strip(),
             "emoji": str(data.get("emoji", existing.emoji if existing else "")).strip(),
-            "weekday_minutes": weekday,
-            "weekend_minutes": weekend,
             "owner_id": owner_id,
             "set_owner": "owner_id" in data,
             "services": services,
@@ -990,27 +950,6 @@ def create_app(
         reconcile("group_pause")
         return {"ok": True, "group": group_payload(group, int(time.time()))}
 
-    @app.post(f"{base}/api/groups/{{group_id}}/bonus")
-    def api_group_bonus(group_id: int, request: Request, data: dict = Depends(json_body)):
-        sess = require("admin", request)
-        try:
-            minutes = int(data.get("minutes", 15))
-        except (TypeError, ValueError):
-            return json_error(400, "minutes is required", "bad_request")
-        with store as conn:
-            group = budget.get_group(conn, group_id)
-            if not group or group.deleted:
-                return json_error(404, i18n.t("error.not_found"), "not_found")
-            try:
-                budget.add_bonus(conn, group_id, minutes, settings.zone)
-            except budget.ValidationError as exc:
-                return json_error(400, str(exc), "invalid")
-            budget.log_event(
-                conn, "admin_bonus", {"group": group.name, "minutes": minutes, "actor": sess.role}
-            )
-        reconcile("admin_bonus")
-        return {"ok": True, "group": group_payload(group, int(time.time()))}
-
     @app.post(f"{base}/api/groups/{{group_id}}/free")
     def api_group_free(group_id: int, request: Request, data: dict = Depends(json_body)):
         sess = require("admin", request)
@@ -1057,6 +996,7 @@ def create_app(
                 conn, group_id, budget.next_local_midnight(int(time.time()), settings.zone)
             )
             budget.log_event(conn, "admin_block", {"group": group.name, "actor": sess.role})
+            group = budget.get_group(conn, group_id)
         reconcile("admin_block")
         return {
             "ok": True,
@@ -1220,45 +1160,6 @@ def create_app(
             )
         reconcile("discover_add")
         return {"ok": True, "group": group_payload(group, int(time.time())), "added": domains}
-
-    # ----------------------------------------------------------------- usage
-    def usage_rows(days: str) -> tuple[list[dict], JSONResponse | None]:
-        if days not in USAGE_DAYS:
-            return [], json_error(400, i18n.t("error.usage_days"), "invalid")
-        now = int(time.time())
-        with store as conn:
-            return budget.usage_range(conn, settings.zone, int(days), now), None
-
-    @app.get(f"{base}/api/usage")
-    def api_usage(request: Request, days: str = "7"):
-        require("admin", request)
-        rows, problem = usage_rows(days)
-        if problem is not None:
-            return problem
-        response = JSONResponse({"days": int(days), "rows": rows})
-        response.headers["Cache-Control"] = "no-store"
-        return response
-
-    @app.get(f"{base}/api/usage.csv")
-    def api_usage_csv(request: Request, days: str = "7"):
-        require("admin", request)
-        rows, problem = usage_rows(days)
-        if problem is not None:
-            return problem
-        buffer = io.StringIO()
-        writer = csv.writer(buffer, lineterminator="\n")
-        writer.writerow(["group", "date", "used_minutes", "bonus_minutes"])
-        for row in rows:
-            writer.writerow(
-                [csv_cell(row["group"]), row["day"], row["used_minutes"], row["bonus_minutes"]]
-            )
-        response = Response(
-            content=buffer.getvalue().encode("utf-8"),
-            media_type="text/csv; charset=utf-8",
-        )
-        response.headers["Content-Disposition"] = 'attachment; filename="timefence-usage.csv"'
-        response.headers["Cache-Control"] = "no-store"
-        return response
 
     # ---------------------------------------------------------------- alerts
     def alerts_payload() -> dict:
@@ -1494,21 +1395,6 @@ def create_app(
             )
         return {"ok": True, "deleted": row["username"]}
 
-    @app.post(f"{base}/api/groups/{{group_id}}/reset")
-    def api_group_reset(group_id: int, request: Request):
-        sess = require("admin", request)
-        with store as conn:
-            group = budget.get_group(conn, group_id)
-            if not group or group.deleted:
-                return json_error(404, i18n.t("error.not_found"), "not_found")
-            budget.reset_today(conn, group_id, settings.zone)
-            budget.clear_force_block(conn, group_id)
-            budget.log_event(conn, "admin_reset", {"group": group.name, "actor": sess.username})
-        reconcile("admin_reset")
-        with store as conn:
-            group = budget.get_group(conn, group_id)
-        return {"ok": True, "group": group_payload(group, int(time.time()))}
-
     @app.post(f"{base}/api/groups/{{group_id}}/force/clear")
     def api_group_force_clear(group_id: int, request: Request):
         sess = require("admin", request)
@@ -1545,15 +1431,6 @@ def create_app(
 
     app.mount(f"{base}/static", StaticFiles(directory=str(STATIC)), name="static")
     return app
-
-
-def csv_cell(value: object) -> str:
-    """A spreadsheet cell that cannot run as a formula."""
-    text = "".join(character for character in str(value or "") if ord(character) >= 32)
-    text = text.strip()
-    if text[:1] in {"=", "+", "-", "@", "'"}:
-        text = "'" + text
-    return text
 
 
 def _constant_eq(a: str, b: str) -> bool:

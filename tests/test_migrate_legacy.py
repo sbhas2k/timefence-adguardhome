@@ -78,7 +78,8 @@ def test_legacy_default_hash_leaves_setup_open(tmp_path):
     conn.close()
 
 
-def test_legacy_sessions_become_usage(tmp_path):
+def test_legacy_minutes_and_sessions_are_ignored(tmp_path, capsys):
+    """The old app only had daily minutes; v6 has no usage table to import into."""
     legacy = tmp_path / "legacy.db"
     target = tmp_path / "timefence.db"
     started = int(datetime(2026, 11, 12, 21, 0, tzinfo=TZ).timestamp())
@@ -89,15 +90,20 @@ def test_legacy_sessions_become_usage(tmp_path):
     )
 
     assert run_import(legacy, target) == 0
+    printed = capsys.readouterr().out
+    assert "ignoring" in printed.lower()
 
     conn = db.connect(target)
-    group = conn.execute("SELECT id FROM groups WHERE name='YouTube'").fetchone()
-    rows = {
-        row["day"]: row["seconds"]
-        for row in conn.execute(
-            "SELECT day, seconds FROM usage_seconds WHERE group_id=?", (group["id"],)
-        )
-    }
-    assert rows == {"2026-11-12": 300}
-    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+    assert db.current_version(conn) == 6
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "usage_seconds" not in tables
+    assert "bonus" not in tables
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(groups)")}
+    assert "weekday_minutes" not in columns
+    assert "weekend_minutes" not in columns
+
+    group = conn.execute("SELECT id, name, emoji FROM groups WHERE name='YouTube'").fetchone()
+    assert group["name"] == "YouTube"
+    assert conn.execute("SELECT COUNT(*) FROM group_windows").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM groups").fetchone()[0] == 1
     conn.close()

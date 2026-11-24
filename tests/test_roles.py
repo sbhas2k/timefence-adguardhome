@@ -34,16 +34,13 @@ GROUP_KEYS = {
     "id",
     "name",
     "emoji",
-    "minutes_today",
-    "bonus_minutes",
-    "used_minutes",
-    "remaining_minutes",
     "permitted",
     "status",
-    "blocked_until",
+    "open_now",
+    "opens_at",
+    "open_until",
     "free_until",
-    "bedtime_active",
-    "bedtime_until",
+    "paused",
 }
 
 
@@ -112,7 +109,7 @@ def test_user_state_is_reduced(settings, fake):
         create_kid(client)
         created = client.post(
             "/api/groups",
-            json={"name": "Games", "weekday_minutes": 30, "services": ["roblox"]},
+            json={"name": "Games", "services": ["roblox"]},
         )
         assert created.status_code == 200, created.text
 
@@ -127,11 +124,11 @@ def test_user_state_is_reduced(settings, fake):
         assert set(listed[0]) == GROUP_KEYS
 
 
-def test_kid_payload_has_only_the_bedtime_state(settings, fake, monkeypatch):
+def test_kid_payload_has_only_the_schedule_state(settings, fake, monkeypatch):
     client = TestClient(create_app(settings, adguard=fake))
     with client:
-        # frozen at local noon: the window is fixed and the sessions are minted
-        # at the same instant, so neither depends on when the suite runs
+        # frozen at local noon: the window is fixed against this instant, so the
+        # verdict does not depend on when the suite runs
         fixed = datetime(2026, 11, 11, 12, 0, tzinfo=UTC).timestamp()
         monkeypatch.setattr(time, "time", lambda: fixed)
         complete_setup(client)
@@ -141,7 +138,6 @@ def test_kid_payload_has_only_the_bedtime_state(settings, fake, monkeypatch):
             "/api/groups",
             json={
                 "name": "Games",
-                "weekday_minutes": 30,
                 "services": ["roblox"],
                 "windows": [{"start": start, "end": end, "days": "all"}],
             },
@@ -151,14 +147,47 @@ def test_kid_payload_has_only_the_bedtime_state(settings, fake, monkeypatch):
         sign_in(client, "kid", "kid-password")
         group = client.get("/api/state").json()["groups"][0]
         assert set(group) == GROUP_KEYS
-        assert group["bedtime_active"] is True
-        assert group["bedtime_until"] == end  # a local HH:MM, never an epoch
-        assert group["status"] == "bedtime"
+        assert group["open_now"] is True
+        assert group["open_until"] == end  # a local HH:MM, never an epoch
+        assert group["opens_at"] is None
+        assert group["status"] == "allowed"
+        assert group["permitted"] is True
+        assert group["id"] and group["name"] == "Games" and group["emoji"] == ""
+        assert group["paused"] is False
 
         # the window itself is admin-only, in both the state and the group list
         for payload in (group, client.get("/api/groups").json()["groups"][0]):
-            for hidden in ("windows", "start_min", "end_min", "days"):
+            for hidden in ("windows", "start_min", "end_min", "days", "services", "domains"):
                 assert hidden not in payload
+
+
+def test_kid_payload_names_the_next_opening(settings, fake, monkeypatch):
+    client = TestClient(create_app(settings, adguard=fake))
+    with client:
+        fixed = datetime(2026, 11, 11, 12, 0, tzinfo=UTC).timestamp()
+        monkeypatch.setattr(time, "time", lambda: fixed)
+        complete_setup(client)
+        create_kid(client)
+        created = client.post(
+            "/api/groups",
+            json={
+                "name": "Games",
+                "services": ["roblox"],
+                "windows": [{"start": "15:00", "end": "16:00", "days": "weekday"}],
+            },
+        )
+        assert created.status_code == 200, created.text
+
+        sign_in(client, "kid", "kid-password")
+        group = client.get("/api/state").json()["groups"][0]
+        assert set(group) == GROUP_KEYS
+        assert group["status"] == "outside_hours"
+        assert group["permitted"] is False
+        assert group["open_now"] is False
+        assert group["opens_at"] == "15:00"
+        assert group["open_until"] is None
+        # no epoch leaks into the kid payload: only a free window carries one
+        assert group["free_until"] is None
 
 
 def test_user_cannot_change_group_windows(settings, fake):
@@ -170,7 +199,6 @@ def test_user_cannot_change_group_windows(settings, fake):
             "/api/groups",
             json={
                 "name": "Games",
-                "weekday_minutes": 30,
                 "services": ["roblox"],
                 "windows": [{"start": "21:00", "end": "07:00", "days": "all"}],
             },
@@ -207,15 +235,12 @@ def test_user_sees_only_own_and_shared_groups(settings, fake):
                 "/api/groups",
                 json={
                     "name": name,
-                    "weekday_minutes": 20,
                     "services": [service],
                     "owner_id": owner,
                 },
             )
             assert created.status_code == 200, created.text
-        shared = client.post(
-            "/api/groups", json={"name": "Shared", "weekday_minutes": 10, "services": ["instagram"]}
-        )
+        shared = client.post("/api/groups", json={"name": "Shared", "services": ["instagram"]})
         assert shared.status_code == 200, shared.text
 
         admin_names = {g["name"] for g in client.get("/api/state").json()["groups"]}
@@ -312,24 +337,6 @@ def test_app_html_has_no_session_or_legacy_credentials_ui():
     banned = ('id="pin-form"', 'id="password-form"', "sessions-table", "history.sessions_today")
     for token in banned:
         assert token not in html, token
-
-
-def test_admin_state_warns_about_converted_session_groups(settings, fake):
-    import time as clock
-
-    from .conftest import locked_conn
-
-    app = create_app(settings, adguard=fake)
-    with TestClient(app) as client:
-        complete_setup(client)
-        with locked_conn(client.app) as conn:
-            conn.execute(
-                "INSERT INTO events(ts, kind, detail) VALUES(?, 'migration', ?)",
-                (int(clock.time()), '{"to": 4, "converted_groups": 2}'),
-            )
-            conn.commit()
-        warnings = client.get("/api/state").json()["warnings"]
-        assert "session_groups_converted" in warnings
 
 
 def _settings_for(tmp_path, base_path):

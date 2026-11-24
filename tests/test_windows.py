@@ -1,4 +1,8 @@
-"""Bedtime windows: membership, status, metering and the AdGuard state."""
+"""Allowed windows: membership, validation and the status they produce.
+
+A window now means "the group may be used here"; no window at all means the
+group is always allowed, and windows are the only schedule.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +12,6 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from timefence import budget, db
-from timefence.reconciler import BUCKET, Reconciler
 
 TZ = ZoneInfo("UTC")
 BERLIN = ZoneInfo("Europe/Berlin")
@@ -35,46 +38,14 @@ def a_window(start: str, end: str, days: str = "all") -> dict:
     return {"start": start, "end": end, "days": days}
 
 
-def make_group(conn, *, windows=(), minutes=60, name="YouTube", services=("youtube",), domains=()):
+def make_group(conn, *, windows=(), name="YouTube", services=("youtube",), domains=()):
     return budget.create_group(
         conn,
         name=name,
-        emoji="",
-        weekday_minutes=minutes,
-        weekend_minutes=minutes,
         services=list(services),
         domains=list(domains),
         windows=list(windows),
     )
-
-
-def stamp(ts: int) -> str:
-    return datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H:%M:%S")
-
-
-def entry(ts: int, host: str = "www.youtube.com") -> dict:
-    return {
-        "time": f"{stamp(ts)}.889389948Z",
-        "client": "192.168.1.20",
-        "reason": "NotFilteredNotFound",
-        "question": {"name": host, "type": "A"},
-    }
-
-
-def snapshot(store, group_id, now, tz=TZ):
-    """Everything the API reports about one group, computed once."""
-    with store as conn:
-        group = budget.get_group(conn, group_id)
-        state = budget.group_state(conn, group, tz, now)
-        permitted = budget.is_permitted(conn, group, tz, now)
-        status, blocked_until = budget.group_status(conn, group, tz, now)
-    return state, permitted, status, blocked_until
-
-
-def assert_agree(state, permitted, status):
-    assert state["status"] == status
-    assert state["permitted"] == permitted
-    assert permitted == (status in {"allowed", "free"})
 
 
 # --------------------------------------------------------------------------- #
@@ -92,11 +63,6 @@ def test_a_window_can_wrap_midnight(store):
         assert budget.active_window(group, ts_utc(2026, 11, 12, 0, 0), TZ) is not None
         assert budget.active_window(group, ts_utc(2026, 11, 12, 6, 59), TZ) is not None
         assert budget.active_window(group, ts_utc(2026, 11, 12, 7, 0), TZ) is None
-
-        active, end = budget.bedtime_state(conn, group, TZ, ts_utc(2026, 11, 11, 22))
-        assert active is True
-        assert end == ts_utc(2026, 11, 12, 7)
-        assert budget.bedtime_state(conn, group, TZ, ts_utc(2026, 11, 12, 8)) == (False, None)
 
 
 def test_a_window_within_one_day(store):
@@ -143,12 +109,7 @@ def test_overlapping_windows_are_a_union(store):
         assert budget.active_window(group, ts_utc(2026, 11, 14, 23, 30), TZ) is not None
 
 
-# --------------------------------------------------------------------------- #
-# daylight-saving days stay on the local wall clock
-# --------------------------------------------------------------------------- #
-
-
-def test_spring_forward_window_ends_at_the_transition(store):
+def test_a_window_over_a_dst_change_uses_the_wall_clock(store):
     # Berlin: 2026-03-29 02:00 CET jumps to 03:00 CEST, so 02:30 never happens.
     skipped = int(datetime(2026, 3, 29, 2, 30, tzinfo=BERLIN).timestamp())
     assert datetime.fromtimestamp(skipped, BERLIN).strftime("%H:%M") == "03:30"
@@ -156,16 +117,14 @@ def test_spring_forward_window_ends_at_the_transition(store):
     with store as conn:
         group = make_group(conn, windows=[a_window("01:00", "02:30")])
         assert budget.active_window(group, ts_berlin(2026, 3, 29, 1, 45), BERLIN) is not None
-        active, end = budget.bedtime_state(conn, group, BERLIN, ts_berlin(2026, 3, 29, 1, 0))
-
-    assert active is True
-    # the window ends at the transition instant, not at a silently resolved 03:30
-    assert end == ts_berlin(2026, 3, 29, 3, 0)
-    assert datetime.fromtimestamp(end, BERLIN).strftime("%H:%M") == "03:00"
-    assert end < skipped
+        # the window ends at the transition instant, not at a resolved 03:30
+        end = budget.schedule_state(group, BERLIN, ts_berlin(2026, 3, 29, 1, 0))[1]
+        assert end is not None
+        assert datetime.fromtimestamp(end, BERLIN).strftime("%H:%M") == "03:00"
+        assert end < skipped
 
 
-def test_fall_back_window_stays_active_until_the_second_end_time(store):
+def test_a_fall_back_window_stays_open_until_the_second_end_time(store):
     # Berlin: 2026-10-25 03:00 CEST falls back to 02:00 CET, so 02:xx repeats.
     first_pass = ts_berlin(2026, 10, 25, 2, 15, fold=0)
     second_pass = ts_berlin(2026, 10, 25, 2, 15, fold=1)
@@ -175,21 +134,10 @@ def test_fall_back_window_stays_active_until_the_second_end_time(store):
         group = make_group(conn, windows=[a_window("01:00", "02:30")])
         assert budget.active_window(group, first_pass, BERLIN) is not None
         assert budget.active_window(group, second_pass, BERLIN) is not None
-        active, end = budget.bedtime_state(conn, group, BERLIN, second_pass)
+        end = budget.schedule_state(group, BERLIN, second_pass)[1]
 
-    assert active is True
     assert end == ts_berlin(2026, 10, 25, 2, 30, fold=1)
     assert budget.window_active(group.windows[0], end, BERLIN) is False
-
-
-def test_a_midnight_window_reports_its_end_time(store):
-    with store as conn:
-        group = make_group(conn, windows=[a_window("21:00", "07:00")])
-        state = budget.group_state(conn, group, TZ, ts_utc(2026, 11, 11, 23, 30))
-    assert state["bedtime_active"] is True
-    assert state["bedtime_until"] == "07:00"
-    assert state["status"] == "bedtime"
-    assert state["blocked_until"] == ts_utc(2026, 11, 12, 7)
 
 
 # --------------------------------------------------------------------------- #
@@ -210,13 +158,20 @@ def test_windows_are_validated(store):
                 make_group(conn, windows=[bad])
 
 
+def test_windows_must_be_a_list_of_objects(store):
+    with store as conn:
+        for bad in ("21:00-07:00", {"start": "21:00"}, [5], [{"start": "21:00"}]):
+            with pytest.raises(budget.ValidationError):
+                make_group(conn, windows=bad)
+
+
 def test_at_most_four_windows(store):
     four = [a_window("06:00", "07:00"), a_window("12:00", "13:00")]
     four += [a_window("15:00", "16:00"), a_window("18:00", "19:00")]
     with store as conn:
         group = make_group(conn, windows=four)
         assert len(group.windows) == 4
-        with pytest.raises(budget.ValidationError):
+        with pytest.raises(budget.WindowError, match="at most 4 time windows"):
             make_group(
                 conn,
                 name="Other",
@@ -234,7 +189,7 @@ def test_windows_are_replaced_and_cleared_on_update(store):
         assert [w.as_dict() for w in replaced.windows] == [
             {"start": "12:00", "end": "13:00", "days": "weekend"}
         ]
-        kept = budget.update_group(conn, group.id, weekday_minutes=30)
+        kept = budget.update_group(conn, group.id, emoji="🎮")
         assert len(kept.windows) == 1
         cleared = budget.update_group(conn, group.id, windows=[])
         assert cleared.windows == []
@@ -242,106 +197,54 @@ def test_windows_are_replaced_and_cleared_on_update(store):
 
 
 # --------------------------------------------------------------------------- #
-# status, precedence and metering
+# status: windows are the allowed hours
 # --------------------------------------------------------------------------- #
 
 
-def test_status_and_permitted_agree(store):
-    evening = ts_utc(2026, 11, 11, 22)  # inside the bedtime window
+def test_no_windows_means_always_allowed(store):
     with store as conn:
-        bedtime = make_group(conn, windows=[a_window("21:00", "07:00")], minutes=60)
-        plain = make_group(conn, name="Plain", services=("roblox",), minutes=60)
+        group = make_group(conn)
+        moment = ts_utc(2026, 11, 11, 3)
+        assert budget.schedule_state(group, TZ, moment) == (True, None)
+        assert budget.group_status(conn, group, TZ, moment) == ("allowed", None)
+        assert budget.is_permitted(conn, group, TZ, moment) is True
 
-    state, permitted, status, _ = snapshot(store, plain.id, evening)
-    assert status == "allowed"
-    assert_agree(state, permitted, status)
 
-    state, permitted, status, _ = snapshot(store, bedtime.id, evening)
-    assert status == "bedtime"
-    assert_agree(state, permitted, status)
-
+def test_outside_the_window_is_outside_hours_with_the_next_opening(store):
     with store as conn:
-        budget.add_metered_seconds(conn, plain.id, budget.day_str(evening, TZ), 3600, 3600)
-    state, permitted, status, blocked_until = snapshot(store, plain.id, evening)
-    assert status == "limit_reached"
-    assert blocked_until == budget.next_local_midnight(evening, TZ)
-    assert_agree(state, permitted, status)
-
-    with store as conn:
-        budget.set_force_block(conn, bedtime.id, evening + 600)
-    state, permitted, status, blocked_until = snapshot(store, bedtime.id, evening)
-    assert status == "blocked_admin"
-    assert blocked_until == evening + 600
-    assert_agree(state, permitted, status)
-
-    # the admin's explicit "Free until" overrides everything, bedtime included
-    with store as conn:
-        budget.set_free_until(conn, bedtime.id, evening + 3600)
-    state, permitted, status, _ = snapshot(store, bedtime.id, evening)
-    assert status == "free"
-    assert state["bedtime_active"] is True
-    assert_agree(state, permitted, status)
-
-    with store as conn:
-        budget.update_group(conn, bedtime.id, paused=True)
-    state, permitted, status, _ = snapshot(store, bedtime.id, evening)
-    assert status == "paused"
-    assert_agree(state, permitted, status)
-
-
-def test_no_usage_is_charged_during_a_bedtime_window(store, fake):
-    with store as conn:
-        group = make_group(conn, windows=[a_window("21:00", "07:00")], minutes=60)
-    reconciler = Reconciler(store, fake, TZ)
-    reconciler.meter(ts_utc(2026, 11, 11, 21, 30), "startup")  # only sets the cursor
-
-    fake.entries = [entry(ts_utc(2026, 11, 11, 21, 40))]
-    assert reconciler.meter(ts_utc(2026, 11, 11, 21, 45)) == 0
-    with store as conn:
-        assert budget.metered_seconds(conn, group.id, "2026-11-11") == 0
-
-    # the same activity after the window is charged as usual
-    fake.entries = [entry(ts_utc(2026, 11, 12, 7, 5))]
-    assert reconciler.meter(ts_utc(2026, 11, 12, 7, 10)) == 1
-    with store as conn:
-        assert budget.metered_seconds(conn, group.id, "2026-11-12") == BUCKET
-
-
-# --------------------------------------------------------------------------- #
-# the reconciler follows the window without any special case
-# --------------------------------------------------------------------------- #
-
-
-def test_adguard_blocks_during_bedtime_and_unblocks_after(store, fake):
-    with store as conn:
-        make_group(conn, windows=[a_window("21:00", "07:00")], domains=("example.com",))
-    reconciler = Reconciler(store, fake, TZ)
-
-    evening = ts_utc(2026, 11, 11, 22)
-    reconciler.sync_services(evening)
-    reconciler.sync_domains(evening)
-    assert fake.ids == ["youtube"]
-    assert "||example.com^" in fake.rules
-
-    morning = ts_utc(2026, 11, 12, 8)
-    reconciler.sync_services(morning)
-    reconciler.sync_domains(morning)
-    assert fake.ids == []
-    assert fake.rules == []
-
-
-def test_windows_covering_the_whole_day_have_no_end(store):
-    # A union of windows can cover every minute, so there is no "until" to show.
-    now = ts_utc(2026, 11, 11, 12)
-    with store as conn:
-        group = make_group(
-            conn,
-            windows=[a_window("00:00", "23:59"), a_window("21:00", "07:00")],
+        group = make_group(conn, windows=[a_window("13:00", "14:30")])
+        now = ts_utc(2026, 11, 11, 12)
+        assert budget.group_status(conn, group, TZ, now) == (
+            "outside_hours",
+            ts_utc(2026, 11, 11, 13),
         )
-        assert budget.bedtime_state(conn, group, TZ, now) == (True, None)
-        state = budget.group_state(conn, group, TZ, now)
-    assert state["status"] == "bedtime"
-    assert state["bedtime_active"] is True
-    assert state["bedtime_until"] is None
-    assert state["blocked_until"] is None
-    assert state["permitted"] is False
+        assert budget.is_permitted(conn, group, TZ, now) is False
+
+        inside = ts_utc(2026, 11, 11, 13, 30)
+        assert budget.group_status(conn, group, TZ, inside) == ("allowed", None)
+        assert budget.is_permitted(conn, group, TZ, inside) is True
+
+
+def test_group_state_reports_the_next_opening_and_closing(store):
+    with store as conn:
+        group = make_group(conn, windows=[a_window("13:00", "14:30")])
+        closed = budget.group_state(conn, group, TZ, ts_utc(2026, 11, 11, 12))
+        assert closed["status"] == "outside_hours"
+        assert closed["open_now"] is False
+        assert closed["opens_at"] == "13:00"
+        assert closed["open_until"] is None
+        assert closed["blocked_until"] == ts_utc(2026, 11, 11, 13)
+        assert closed["next_change"] == ts_utc(2026, 11, 11, 13)
+
+        opened = budget.group_state(conn, group, TZ, ts_utc(2026, 11, 11, 13, 10))
+        assert opened["status"] == "allowed"
+        assert opened["open_now"] is True
+        assert opened["opens_at"] is None
+        assert opened["open_until"] == "14:30"
+        assert opened["next_change"] == ts_utc(2026, 11, 11, 14, 30)
+
+        all_day = make_group(conn, name="Always", services=("roblox",))
+        state = budget.group_state(conn, all_day, TZ, ts_utc(2026, 11, 11, 3))
+        assert state["open_now"] is True
+        assert state["open_until"] is None
+        assert state["next_change"] is None

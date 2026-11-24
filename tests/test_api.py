@@ -32,7 +32,7 @@ def complete_setup(client):
 
 
 def make_group(client, **overrides):
-    payload = {"name": "Games", "weekday_minutes": 45, "services": ["roblox"]}
+    payload = {"name": "Games", "services": ["roblox"]}
     payload.update(overrides)
     response = client.post("/api/groups", json=payload)
     assert response.status_code == 200, response.text
@@ -83,17 +83,15 @@ def test_static_files_are_revalidated_so_an_upgrade_is_not_served_stale(ready):
 
 def test_a_group_needs_a_service_or_a_domain(ready):
     client = ready["client"]
-    created = client.post("/api/groups", json={"name": "Nothing", "weekday_minutes": 30})
+    created = client.post("/api/groups", json={"name": "Nothing"})
     assert created.status_code == 400
     assert created.json()["code"] == "no_targets"
     empty_lists = client.post(
         "/api/groups",
-        json={"name": "Nothing", "weekday_minutes": 30, "services": [], "domains": []},
+        json={"name": "Nothing", "services": [], "domains": []},
     )
     assert empty_lists.status_code == 400
-    blank_text = client.post(
-        "/api/groups", json={"name": "Nothing", "weekday_minutes": 30, "domains_text": "  \n "}
-    )
+    blank_text = client.post("/api/groups", json={"name": "Nothing", "domains_text": "  \n "})
     assert blank_text.status_code == 400
     assert client.get("/api/state").json()["groups"] == []
 
@@ -218,7 +216,7 @@ def test_normal_user_cannot_use_admin_endpoints(ready):
     assert (
         client.post(
             "/api/groups",
-            json={"name": "x", "weekday_minutes": 1, "domains_text": "x.com"},
+            json={"name": "x", "domains_text": "x.com"},
             headers=headers,
         ).status_code
         == 403
@@ -232,9 +230,9 @@ def test_normal_user_cannot_use_admin_endpoints(ready):
 
 def test_auto_mode_is_allowed_by_default(ready, fake):
     client = ready["client"]
-    group = client.post(
-        "/api/groups", json={"name": "YouTube", "weekday_minutes": 60, "services": ["youtube"]}
-    ).json()["group"]
+    group = client.post("/api/groups", json={"name": "YouTube", "services": ["youtube"]}).json()[
+        "group"
+    ]
     assert group["permitted"] is True
     assert fake.ids == []  # nothing blocked: ads only
     assert fake.rules == []
@@ -244,17 +242,17 @@ def test_session_mode_is_rejected(ready):
     client = ready["client"]
     created = client.post(
         "/api/groups",
-        json={"name": "YouTube", "weekday_minutes": 60, "services": ["youtube"], "mode": "session"},
+        json={"name": "YouTube", "services": ["youtube"], "mode": "session"},
     )
     assert created.status_code == 400
     assert created.json()["code"] == "mode_removed"
 
-    group = client.post(
-        "/api/groups", json={"name": "YouTube", "weekday_minutes": 60, "services": ["youtube"]}
-    ).json()["group"]
+    group = client.post("/api/groups", json={"name": "YouTube", "services": ["youtube"]}).json()[
+        "group"
+    ]
     updated = client.put(
         f"/api/groups/{group['id']}",
-        json={"name": "YouTube", "weekday_minutes": 30, "mode": "session"},
+        json={"name": "YouTube", "mode": "session"},
     )
     assert updated.status_code == 400
     assert updated.json()["code"] == "mode_removed"
@@ -283,20 +281,24 @@ def test_state_has_no_session_fields(ready):
 
 def test_group_crud(ready, fake):
     client = ready["client"]
-    group = make_group(client, name="YouTube", emoji="▶️", weekday_minutes=60, services=["youtube"])
+    group = make_group(client, name="YouTube", emoji="▶️", services=["youtube"])
+    windows = [{"start": "13:00", "end": "14:00", "days": "all"}]
     updated = client.put(
         f"/api/groups/{group['id']}",
-        json={
-            "name": "YouTube",
-            "weekday_minutes": 30,
-            "weekend_minutes": 45,
-            "services": ["youtube"],
-        },
+        json={"name": "YouTube", "services": ["youtube"], "windows": windows},
     )
     assert updated.status_code == 200
-    assert updated.json()["group"]["weekend_minutes"] == 45
+    assert updated.json()["group"]["windows"] == windows
+    assert updated.json()["group"]["emoji"] == "▶️"
+    assert fake.ids == ["youtube"]  # outside 13:00-14:00
 
-    assert fake.ids == []  # allowed until the daily minutes are used
+    cleared = client.put(
+        f"/api/groups/{group['id']}",
+        json={"name": "YouTube", "services": ["youtube"], "windows": []},
+    )
+    assert cleared.status_code == 200
+    assert fake.ids == []  # no windows: always allowed
+
     assert client.post(f"/api/groups/{group['id']}/pause", json={"paused": True}).status_code == 200
     assert fake.ids == ["youtube"]
 
@@ -310,7 +312,6 @@ def test_domains_are_normalised_and_unique(ready, fake):
         "/api/groups",
         json={
             "name": "Games",
-            "weekday_minutes": 45,
             "domains_text": "https://Example-Game.com/play?x=1",
         },
     )
@@ -323,7 +324,7 @@ def test_domains_are_normalised_and_unique(ready, fake):
 
     second = client.post(
         "/api/groups",
-        json={"name": "Other", "weekday_minutes": 45, "domains_text": "example-game.com"},
+        json={"name": "Other", "domains_text": "example-game.com"},
     )
     assert second.status_code == 400
     assert "already used" in second.json()["error"]
@@ -351,7 +352,7 @@ def test_group_windows_round_trip_and_validation(ready, fake):
     def reject(payload):
         response = client.post(
             "/api/groups",
-            json={"name": "Other", "weekday_minutes": 30, "services": ["roblox"], **payload},
+            json={"name": "Other", "services": ["roblox"], **payload},
         )
         assert response.status_code == 400, response.text
         assert response.json()["code"] == "invalid_windows"
@@ -374,8 +375,8 @@ def test_group_windows_round_trip_and_validation(ready, fake):
 
 def test_status_and_permitted_agree(ready, fake, monkeypatch):
     client = ready["client"]
-    # frozen at local noon: the window and the session are both minted against
-    # this instant, so the result does not depend on when the suite runs
+    # frozen at UTC noon: the window is minted against this instant, so the
+    # result does not depend on when the suite runs
     fixed = datetime(2026, 11, 11, 12, 0, tzinfo=UTC).timestamp()
     monkeypatch.setattr(time, "time", lambda: fixed)
     login = client.post("/api/login", json=ADMIN2)
@@ -386,11 +387,13 @@ def test_status_and_permitted_agree(ready, fake, monkeypatch):
 
     state = client.get("/api/state").json()["groups"][0]
     listed = client.get("/api/groups").json()["groups"][0]
-    assert state["status"] == "bedtime"
-    assert state["permitted"] is False
+    assert state["status"] == "allowed"
+    assert state["permitted"] is True
     assert state["permitted"] == (state["status"] in {"allowed", "free"})
-    assert state["bedtime_active"] is True
-    assert state["bedtime_until"] == end
+    assert state["open_now"] is True
+    assert state["open_until"] == end  # a local HH:MM, never an epoch
+    assert state["opens_at"] is None
+    assert state["next_change"] == int(datetime(2026, 11, 11, 12, 55, tzinfo=UTC).timestamp())
     assert (listed["status"], listed["permitted"]) == (state["status"], state["permitted"])
 
     created = client.post(
@@ -402,15 +405,46 @@ def test_status_and_permitted_agree(ready, fake, monkeypatch):
     kid_total = {"X-CSRF-Token": login.json()["csrf"]}
     kid_state = client.get("/api/state", headers=kid_total).json()["groups"][0]
     assert (kid_state["status"], kid_state["permitted"]) == (state["status"], state["permitted"])
-    assert kid_state["bedtime_until"] == end
+    assert kid_state["open_until"] == end
+    assert set(kid_state) == {
+        "id",
+        "name",
+        "emoji",
+        "status",
+        "permitted",
+        "open_now",
+        "opens_at",
+        "open_until",
+        "free_until",
+        "paused",
+    }
     assert group["windows"] == [{"start": start, "end": end, "days": "all"}]
+
+
+def test_outside_hours_points_at_the_next_opening(ready, fake, monkeypatch):
+    client = ready["client"]
+    fixed = datetime(2026, 11, 11, 12, 0, tzinfo=UTC).timestamp()
+    monkeypatch.setattr(time, "time", lambda: fixed)
+    login = client.post("/api/login", json=ADMIN2)
+    assert login.status_code == 200, login.text
+    client.headers.update({"X-CSRF-Token": login.json()["csrf"]})
+    make_group(client, windows=[{"start": "15:00", "end": "16:00", "days": "all"}])
+
+    state = client.get("/api/state").json()["groups"][0]
+    assert state["status"] == "outside_hours"
+    assert state["permitted"] is False
+    assert state["open_now"] is False
+    assert state["opens_at"] == "15:00"
+    assert state["open_until"] is None
+    assert state["blocked_until"] == int(datetime(2026, 11, 11, 15, 0, tzinfo=UTC).timestamp())
+    assert fake.ids == ["roblox"]  # outside the window: blocked right away
 
 
 def test_critical_domain_needs_confirmation(ready):
     client = ready["client"]
     response = client.post(
         "/api/groups",
-        json={"name": "AppStore", "weekday_minutes": 10, "domains_text": "apps.apple.com"},
+        json={"name": "AppStore", "domains_text": "apps.apple.com"},
     )
     assert response.status_code == 409
     payload = response.json()
@@ -422,7 +456,6 @@ def test_critical_domain_needs_confirmation(ready):
         "/api/groups",
         json={
             "name": "AppStore",
-            "weekday_minutes": 10,
             "domains_text": "apps.apple.com",
             "confirm_critical": True,
         },
@@ -432,12 +465,8 @@ def test_critical_domain_needs_confirmation(ready):
 
 def test_discover_hides_noise_and_managed_domains(ready, fake):
     client = ready["client"]
-    client.post(
-        "/api/groups", json={"name": "Games", "weekday_minutes": 45, "domains_text": "known.com"}
-    )
-    client.post(
-        "/api/groups", json={"name": "Roblox", "weekday_minutes": 45, "services": ["roblox"]}
-    )
+    client.post("/api/groups", json={"name": "Games", "domains_text": "known.com"})
+    client.post("/api/groups", json={"name": "Roblox", "services": ["roblox"]})
     fake.entries = [
         make_entry("api.example-game.com"),
         make_entry("ssl.google-analytics.com"),
@@ -475,9 +504,9 @@ def test_test_endpoint_reports_blocked_hosts(ready, fake):
 
 def test_block_now_sets_a_force_block(ready, fake):
     client = ready["client"]
-    group = client.post(
-        "/api/groups", json={"name": "YouTube", "weekday_minutes": 60, "services": ["youtube"]}
-    ).json()["group"]
+    group = client.post("/api/groups", json={"name": "YouTube", "services": ["youtube"]}).json()[
+        "group"
+    ]
     assert fake.ids == []  # auto mode: allowed
     client.post(f"/api/groups/{group['id']}/block", json={})
     assert fake.ids == ["youtube"]
@@ -498,52 +527,89 @@ def test_healthz_and_meta_are_public(client):
 
 
 # --------------------------------------------------------------------------- #
-# per-account budgets, bonus adjustments, reset
+# the budget, usage endpoints and history are gone
 # --------------------------------------------------------------------------- #
 
+GROUP_KEYS = {
+    "id",
+    "name",
+    "emoji",
+    "windows",
+    "open_now",
+    "next_change",
+    "opens_at",
+    "open_until",
+    "status",
+    "permitted",
+    "blocked_until",
+    "free_until",
+    "force_block_until",
+    "paused",
+    "owner_id",
+    "services",
+    "domains",
+    "owner",
+}
 
-def test_negative_bonus_reduces_the_budget(ready, fake):
+
+def test_removed_budget_routes_are_gone(ready):
     client = ready["client"]
-    group = client.post(
-        "/api/groups", json={"name": "YouTube", "weekday_minutes": 30, "services": ["youtube"]}
-    ).json()["group"]
-    assert group["remaining_minutes"] == 30
-
-    assert client.post(f"/api/groups/{group['id']}/bonus", json={"minutes": -10}).status_code == 200
-    state = client.get("/api/state").json()["groups"][0]
-    assert state["bonus_minutes"] == -10
-    assert state["remaining_minutes"] == 20
-    assert fake.ids == []  # still allowed
-
-    # minus the rest -> blocked
-    client.post(f"/api/groups/{group['id']}/bonus", json={"minutes": -20})
-    assert client.get("/api/state").json()["groups"][0]["permitted"] is False
-    assert fake.ids == ["youtube"]
+    group = make_group(client)
+    removed = (
+        ("GET", "/api/usage"),
+        ("GET", "/api/usage.csv"),
+        ("POST", f"/api/groups/{group['id']}/bonus"),
+        ("POST", f"/api/groups/{group['id']}/reset"),
+    )
+    for method, path in removed:
+        response = client.request(method, path, json={})
+        assert response.status_code == 404, (method, path, response.text)
 
 
-def test_reset_today_clears_metered_usage(ready, fake):
+def test_legacy_minute_fields_are_ignored(ready):
+    """A stored client may still send the removed minute fields; they are ignored."""
     client = ready["client"]
-    group = client.post(
-        "/api/groups", json={"name": "YouTube", "weekday_minutes": 10, "services": ["youtube"]}
-    ).json()["group"]
-    from timefence import budget
+    response = client.post(
+        "/api/groups",
+        json={
+            "name": "Legacy",
+            "services": ["roblox"],
+            "weekday_minutes": 30,
+            "weekend_minutes": 45,
+        },
+    )
+    assert response.status_code == 200, response.text
+    group = response.json()["group"]
+    assert not {"weekday_minutes", "weekend_minutes"} & set(group)
+    assert group["windows"] == []
 
-    now = int(__import__("time").time())
-    day = budget.day_str(now, client.app.state.settings.zone)
-    with locked_conn(client.app) as conn:
-        budget.add_bonus(conn, group["id"], 15, client.app.state.settings.zone)  # 10 + 15 min
-        budget.add_metered_seconds(conn, group["id"], day, 1500)  # use it all
-    client.app.state.reconciler.run("test")
-    assert client.get("/api/state").json()["groups"][0]["permitted"] is False
-    assert fake.ids == ["youtube"]
 
-    assert client.post(f"/api/groups/{group['id']}/reset", json={}).status_code == 200
-    state = client.get("/api/state").json()["groups"][0]
-    assert state["used_minutes"] == 0
-    assert state["bonus_minutes"] == 0
-    assert state["remaining_minutes"] == 10
-    assert state["permitted"] is True
-    assert fake.ids == []
+def test_the_state_has_no_usage_history(ready):
+    client = ready["client"]
+    make_group(client)
+    state = client.get("/api/state").json()
+    assert "history" not in state
+    assert "groups" in state
+
+
+def test_the_group_payload_is_the_documented_shape(ready):
+    client = ready["client"]
+    make_group(client, emoji="🎮", windows=[{"start": "13:00", "end": "14:00", "days": "all"}])
+    group = client.get("/api/state").json()["groups"][0]
+    assert set(group) == GROUP_KEYS
+    assert group["owner"] is None
+    assert group["windows"] == [{"start": "13:00", "end": "14:00", "days": "all"}]
+    for gone in (
+        "weekday_minutes",
+        "weekend_minutes",
+        "minutes_today",
+        "bonus_minutes",
+        "used_minutes",
+        "remaining_minutes",
+        "bedtime_active",
+        "bedtime_until",
+    ):
+        assert gone not in group, gone
 
 
 def test_block_now_lasts_until_local_midnight_on_dst_day(tmp_path, fake, monkeypatch):
@@ -579,7 +645,7 @@ def test_block_now_lasts_until_local_midnight_on_dst_day(tmp_path, fake, monkeyp
         complete_setup(client)
         created = client.post(
             "/api/groups",
-            json={"name": "YouTube", "weekday_minutes": 60, "services": ["youtube"]},
+            json={"name": "YouTube", "services": ["youtube"]},
         )
         assert created.status_code == 200, created.text
         group_id = created.json()["group"]["id"]
@@ -604,9 +670,9 @@ def test_alert_config_is_masked_merged_and_validated(ready):
     shown = response.json()
     assert shown["channel"] == ""
     assert shown["enabled"] is True
-    assert shown["events"]["bedtime_started"] is False
-    assert shown["events"]["weekly_summary"] is False
-    assert shown["events"]["group_low"] is True
+    assert shown["events"]["group_closed"] is False
+    assert shown["events"]["sync_failing"] is True
+    assert shown["events"]["sync_recovered"] is True
 
     topic = "topic-SUPERSECRET"
     token = "token-THIS-MUST-NOT-LEAK"
@@ -618,7 +684,7 @@ def test_alert_config_is_masked_merged_and_validated(ready):
             "ntfy_topic": topic,
             "ntfy_token": token,
             "webhook_url": hook,
-            "events": {"weekly_summary": True},
+            "events": {"sync_failing": False},
         },
     )
     assert update.status_code == 200, update.text
@@ -630,16 +696,16 @@ def test_alert_config_is_masked_merged_and_validated(ready):
     assert shown["ntfy"]["topic_tail"] == topic[-2:]
     assert shown["ntfy"]["token_configured"] is True
     assert shown["webhook"]["path_tail"] == "ET"
-    assert shown["events"]["weekly_summary"] is True
+    assert shown["events"]["sync_failing"] is False
 
     body = client.get("/api/alerts").text
     assert topic not in body and token not in body
 
     # an absent key keeps the stored value, "" clears it
-    kept = client.put("/api/alerts", json={"events": {"group_low": False}}).json()
+    kept = client.put("/api/alerts", json={"events": {"group_closed": True}}).json()
     assert kept["channel"] == "ntfy"
     assert kept["ntfy"]["topic_tail"] == topic[-2:]
-    assert kept["events"]["group_low"] is False
+    assert kept["events"]["group_closed"] is True
     cleared = client.put("/api/alerts", json={"ntfy_token": ""}).json()
     assert cleared["ntfy"]["token_configured"] is False
 
@@ -660,7 +726,7 @@ def test_alert_config_is_masked_merged_and_validated(ready):
         {"ntfy_token": "token with a space"},
         {"webhook_url": "http://u:p@host/hook"},
         {"events": []},
-        {"events": {"group_low": "maybe"}},
+        {"events": {"group_closed": "maybe"}},
     ):
         response = client.put("/api/alerts", json=bad)
         assert response.status_code == 400, (bad, response.text)
@@ -806,14 +872,10 @@ def test_deleting_a_user_leaves_their_groups_shared(ready):
 
 def test_group_payload_types_are_checked(ready):
     client = ready["client"]
-    bad_services = client.post(
-        "/api/groups", json={"name": "X", "weekday_minutes": 30, "services": 5}
-    )
+    bad_services = client.post("/api/groups", json={"name": "X", "services": 5})
     assert bad_services.status_code == 400
     assert bad_services.json()["code"] == "invalid"
-    bad_domains = client.post(
-        "/api/groups", json={"name": "X", "weekday_minutes": 30, "domains": "example.com"}
-    )
+    bad_domains = client.post("/api/groups", json={"name": "X", "domains": "example.com"})
     assert bad_domains.status_code == 400
     assert bad_domains.json()["code"] == "invalid"
 
@@ -886,7 +948,7 @@ def test_the_group_test_probes_a_representative_service_host(settings):
         complete_setup(client)
         group = client.post(
             "/api/groups",
-            json={"name": "YouTube", "weekday_minutes": 30, "services": ["youtube"]},
+            json={"name": "YouTube", "services": ["youtube"]},
         ).json()["group"]
         results = client.get(f"/api/groups/{group['id']}/test").json()["results"]
 
@@ -911,7 +973,6 @@ def test_a_rewritten_answer_is_not_reported_as_blocked(settings):
             "/api/groups",
             json={
                 "name": "Mixed",
-                "weekday_minutes": 30,
                 "domains_text": "safesearch.example\nrewritten.example\nblocked.example",
             },
         ).json()["group"]

@@ -5,7 +5,12 @@ The old app (0.0.x) managed exactly one site ("youtube"/"testdom"), stored its
 state in /var/lib/screentime/state.db and hashed its credentials with Werkzeug.
 TimeFence verifies those hashes natively, so they are copied into the account
 records as-is; first-run setup only counts as complete when the imported admin
-password is not the default one. Session time is carried over as daily usage.
+password is not the default one.
+
+The old app limited each site by the minutes used, and TimeFence now limits by
+allowed time windows instead: the old daily minutes and its session history have
+no equivalent and are ignored (with a note). Every imported group has no allowed
+windows, so it is open until an admin sets times for it.
 
 Usage:
     sudo -u timefence /opt/timefence/venv/bin/python \
@@ -26,7 +31,6 @@ import argparse
 import sqlite3
 import sys
 import time
-from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -92,9 +96,15 @@ def main(argv: list[str] | None = None) -> int:
                 known_sites.append(row["site"])
 
     now = int(time.time())
+    if overrides:
+        print(
+            f"ignoring the legacy daily minutes for {len(overrides)} site(s): "
+            "groups now use allowed time windows, so imported groups are open "
+            "until you set times for them"
+        )
+
     for site in known_sites:
         name, emoji, service = DISPLAY.get(site, (site.capitalize(), "", site))
-        minutes = int(overrides.get(site) or 60)
 
         existing = target.execute(
             "SELECT id FROM groups WHERE name=? AND deleted=0", (name,)
@@ -105,9 +115,8 @@ def main(argv: list[str] | None = None) -> int:
             continue
 
         row = target.execute(
-            "INSERT INTO groups(name, emoji, weekday_minutes, weekend_minutes, paused, "
-            "created_at) VALUES(?,?,?,?,0,?)",
-            (name, emoji, minutes, minutes, now),
+            "INSERT INTO groups(name, emoji, paused, created_at) VALUES(?,?,0,?)",
+            (name, emoji, now),
         )
         gid = int(row.lastrowid)
         sites[site] = gid
@@ -121,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
                 (service, now),
             )
         target.commit()
-        print(f"created group {name!r} (id {gid}): {service}, {minutes} min/day")
+        print(f"created group {name!r} (id {gid}): {service}")
 
     # -- accounts ----------------------------------------------------------
     admin_hash = None
@@ -150,41 +159,11 @@ def main(argv: list[str] | None = None) -> int:
         state = "complete" if safe else "left open (the admin password is the default)"
         print(f"imported {copied} account hash(es); first-run setup is {state}")
 
-    # -- session time -> daily usage --------------------------------------
-    if "sessions" in tables:
-        count = 0
-        rows = legacy.execute("SELECT site, started_at, used_seconds FROM sessions ORDER BY id")
-        for row in rows:
-            gid = sites.get(row["site"])
-            if not gid:
-                continue
-            day = datetime.fromtimestamp(int(row["started_at"]), tz).strftime("%Y-%m-%d")
-            target.execute(
-                "INSERT INTO usage_seconds(day, group_id, seconds) VALUES(?,?,?) "
-                "ON CONFLICT(day, group_id) DO UPDATE "
-                "SET seconds = usage_seconds.seconds + excluded.seconds",
-                (day, gid, int(row["used_seconds"] or 0)),
-            )
-            count += 1
-        target.commit()
-        print(f"carried {count} session(s) over as daily usage")
-
-    # -- bonus + free allow ------------------------------------------------
-    if "bonus" in tables:
-        count = 0
-        for row in legacy.execute("SELECT day, site, seconds FROM bonus"):
-            gid = sites.get(row["site"])
-            if not gid:
-                continue
-            target.execute(
-                "INSERT INTO bonus(day, group_id, seconds) VALUES(?,?,?) "
-                "ON CONFLICT(day, group_id) DO UPDATE SET seconds=excluded.seconds",
-                (row["day"], gid, row["seconds"]),
-            )
-            count += 1
-        target.commit()
-        if count:
-            print(f"copied {count} bonus row(s)")
+    # -- sessions and bonus ------------------------------------------------
+    # The legacy app measured minutes; TimeFence does not meter DNS traffic any
+    # more, so there is nothing to carry over.
+    if "sessions" in tables or "bonus" in tables:
+        print("ignoring the legacy sessions and bonus rows: minutes are no longer metered")
     if "free_allow" in tables:
         for row in legacy.execute("SELECT site, until_ts FROM free_allow"):
             gid = sites.get(row["site"])
