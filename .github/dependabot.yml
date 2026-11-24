@@ -27,4 +27,4 @@ updates:
       # The CodeQL action refuses to mix versions in one workflow: every step
       # (init, analyze) must run the same version, so update them together.
       codeql-action:
-        patterns: ["github/codeql-action"]
+        patterns: ["github/codeql-action*"]
