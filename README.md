@@ -19,7 +19,7 @@ regenerate it are in [`docs/screenshots/`](docs/screenshots/).
 
 | Kid view (phone) | Kid view (phone, dark) |
 |---|---|
-| <img src="docs/screenshots/kid-390.png" width="260" alt="Kid view on a phone: one line per group saying open until or opens at, with a closed group muted"> | <img src="docs/screenshots/kid-390-dark.png" width="260" alt="The kid view on a phone in dark mode"> |
+| <img src="docs/screenshots/kid-390.png" width="260" alt="Kid view on a phone: one line per group saying open until or opens at, with the closed group set off in a warm highlight"> | <img src="docs/screenshots/kid-390-dark.png" width="260" alt="The kid view on a phone in dark mode"> |
 
 <img src="docs/screenshots/admin-today-1280.png" alt="Admin Today: the live schedule line, Block / Auto / Free and quick actions for each group">
 
@@ -40,9 +40,9 @@ regenerate it are in [`docs/screenshots/`](docs/screenshots/).
   windows at all means the group is always open.
 - **Read-only kid accounts with their own screen.** Admins manage everything; a
   `user` account sees only its own groups (plus shared ones) and gets one calm
-  phone-first screen: "Open until 19:00", "Opens at 16:00", or a muted
-  "Closed". It cannot change anything, and the server enforces that on every
-  route.
+  phone-first screen: "Open until 19:00", "Opens at 16:00", "Open all day" or
+  "Blocked by a parent", never a countdown. It cannot change anything, and the
+  server enforces that on every route.
 - **Per-account groups.** A group can be owned by a user, so each child has
   their own schedule. Both roles use username + password (no PIN).
 - **Easy overrides.** One `Block | Auto | Free` control per group on the Today
@@ -55,8 +55,8 @@ regenerate it are in [`docs/screenshots/`](docs/screenshots/).
   (no accounts, no third-party service): a message when a group's allowed time
   is over (off by default until you ask for it), and a warning when AdGuard
   Home stops answering plus a recovery message. Messages carry a group name and
-  numbers only; de-duplication and an hourly cap keep them from turning into
-  noise.
+  numbers only; de-duplication, one attempt per message (no retry) and an
+  hourly cap of 20 keep them from turning into noise.
 - **Reconciler** every 30 seconds: AdGuard is only written to when the desired
   state differs, and it preserves services/rules that TimeFence does not own.
 - **Admin tools**: edit allowed times and targets, **Discover** recent domains
@@ -86,8 +86,10 @@ docker compose up -d
 The example compose file runs `adguard/adguardhome` (host network, needs port
 53) and TimeFence on `127.0.0.1:8099`; it reads the password from
 `adguard_password.txt` below, so no `.env` file is involved. `.env.example` is
-for local runs (`uvicorn timefence.main:app` or `timefence run`), which read a
-`.env` from the working directory.
+a reference for local runs: `uvicorn timefence.main:app` and `timefence run` read
+the process environment (export the variables, or source a file in your shell);
+`install.sh` writes `/etc/timefence/timefence.env` for the systemd service
+instead.
 
 ### Script (systemd + venv)
 
@@ -119,8 +121,9 @@ Open `http://127.0.0.1:8099/` (or your reverse-proxied URL) and sign in.
 
 ## Configuration
 
-Everything comes from environment variables (or an `.env` file for Docker /
-local runs). `install.sh` writes `/etc/timefence/timefence.env` (mode 600).
+Everything comes from environment variables (there is no `.env` loader).
+`install.sh` writes `/etc/timefence/timefence.env` (mode 600) for the systemd
+service; `.env.example` lists every variable.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -165,7 +168,9 @@ Admin → **Groups** → **New group**:
 5. If a domain is shared/critical (App Store, iCloud, Google, Akamai, ...),
    TimeFence asks for explicit confirmation and explains what else breaks.
 
-Changes are applied immediately; no restart is needed.
+Changes reach AdGuard Home within seconds and need no restart; on a device they
+land as soon as its caches allow, see
+[A block is not instant](#a-block-is-not-instant-allow-a-few-minutes).
 
 ### Finding a game's domains
 
@@ -180,7 +185,8 @@ lets you tick domains and add them to a group. See
 Settings → **Alerts** sends one message per event to a single channel: a
 Telegram bot, an ntfy topic or a generic webhook. Only a group name, numbers and
 a time are ever sent. Until a channel is set up, the Today tab shows a
-**Set up alerts** button that takes you straight to the card.
+dismissible reminder with a **Set up alerts** button that takes you straight to
+the card.
 
 ### Telegram setup
 
@@ -223,8 +229,9 @@ longer to notice, **sometimes up to about five minutes**:
 - **Cached answers.** AdGuard Home, the router, the phone or TV and the app all
   cache DNS answers until their lifetime (TTL) runs out. YouTube and other big
   services publish lifetimes of minutes.
-- **Open connections.** A video that is already playing or a game session keeps
-  using the address it has, with no new lookup, until it reconnects or needs one.
+- **Open connections.** A game session or live stream holds its connection and
+  makes no DNS lookups at all, so a DNS change does not touch it until the app
+  closes the connection or reconnects.
 
 To make a block land sooner, fully close and reopen the app (or toggle Wi-Fi or
 airplane mode on the device). TimeFence does **not** change any of AdGuard's DNS
@@ -244,12 +251,14 @@ name every five minutes — is in [docs/remote-vm.md](docs/remote-vm.md); the or
 ## Recovering access
 
 If the admin password is lost or a sign-in is refused, set a new one from the
-server. Nothing is printed, and the service can keep running:
+server. The password itself is never echoed, and the service can keep running:
 
 ```bash
-sudo -u timefence env DATA_DIR=/var/lib/timefence \
-  /opt/timefence/venv/bin/python -m timefence passwd --role admin
+sudo runuser -u timefence -- /opt/timefence/venv/bin/timefence passwd --role admin
 ```
+
+(`timefence` is a system account without a shell, so `sudo -u` does not work;
+`runuser` does. `--data-dir` defaults to `$DATA_DIR` or `/var/lib/timefence`.)
 
 Add `--username NAME` to reset another account (`--role admin|user`). Rules:
 admin password ≥ 10 characters and not `admin`; user password ≥ 8 characters.
@@ -269,6 +278,10 @@ it for you:
 docker compose stop timefence && \
   docker compose run --rm --no-deps --entrypoint timefence timefence release
 ```
+
+Stopping the container blocks all TimeFence groups by design (see
+[fail-safety](docs/how-it-works.md#fail-safety)); starting it again returns to
+the schedule, and `release` lifts the blocks while it stays stopped.
 
 ## Documentation
 
@@ -322,6 +335,11 @@ groups.
 
 **Can I run it on a server with a changing home IP?** Yes — see
 [Running on a remote VM](docs/remote-vm.md).
+
+**Where do I ask for help or report a bug?** Open an issue on
+[GitHub](https://github.com/sbhas2k/timefence-adguardhome/issues). Report a
+security problem privately as described in [SECURITY.md](SECURITY.md), not in a
+public issue.
 
 ## Roadmap
 
