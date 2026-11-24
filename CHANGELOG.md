@@ -144,7 +144,7 @@ together and is released as one version, so this entry covers everything a
   one live line naming the schedule ("Open until 19:00", "Opens at 16:00",
   "Open all day"), a one-word state pill, and a list of apps and domains that
   collapses to "4 apps · 2 domains" until it is opened. A paused group keeps
-  only Resume. The four admin tabs stay on one row on a phone, and the alerts
+  only Resume. The three admin tabs stay on one row on a phone, and the alerts
   reminder is one dismissible line that comes back after two weeks while alerts
   stay off.
 - **The group editor edits allowed times** instead of minutes: up to four rows

@@ -86,7 +86,7 @@ docker compose up -d
 The example compose file runs `adguard/adguardhome` (host network, needs port
 53) and TimeFence on `127.0.0.1:8099`; it reads the password from
 `adguard_password.txt` below, so no `.env` file is involved. `.env.example` is
-for local runs (`uvicorn timefence.main:app` or `timefence serve`), which read a
+for local runs (`uvicorn timefence.main:app` or `timefence run`), which read a
 `.env` from the working directory.
 
 ### Script (systemd + venv)
