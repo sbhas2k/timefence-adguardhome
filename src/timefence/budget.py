@@ -44,15 +44,6 @@ class WindowError(ValidationError):
 # --------------------------------------------------------------------------- #
 
 
-def day_str(ts: int, tz: ZoneInfo) -> str:
-    return datetime.fromtimestamp(ts, tz).strftime("%Y-%m-%d")
-
-
-def local_midnight(ts: int, tz: ZoneInfo) -> int:
-    d = datetime.fromtimestamp(ts, tz).date()
-    return int(datetime(d.year, d.month, d.day, tzinfo=tz).timestamp())
-
-
 def next_local_midnight(ts: int, tz: ZoneInfo) -> int:
     """Start of the next local day; never `ts + 86400` (DST days are 23 or 25 hours)."""
     following = datetime.fromtimestamp(ts, tz).date() + timedelta(days=1)
@@ -677,7 +668,3 @@ def log_event(conn: sqlite3.Connection, kind: str, detail: dict | str = "") -> N
         (int(time.time()), kind, json.dumps(detail) if isinstance(detail, dict) else detail),
     )
     conn.commit()
-
-
-def today(tz: ZoneInfo, now: int | None = None) -> date:
-    return datetime.fromtimestamp(now or int(time.time()), tz).date()
