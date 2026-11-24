@@ -95,6 +95,9 @@ a { color: var(--accent); }
 .live-line.ok { color: var(--ok); }
 .live-line.warn { color: var(--warn); }
 .live-line.bad { color: var(--bad); }
+/* The allowed windows under the live line: muted, small, and it wraps rather
+   than scrolling sideways on a narrow phone. */
+.live-windows { margin: 4px 0 0; overflow-wrap: anywhere; }
 #alerts-card { scroll-margin-top: 96px; }
 .card .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
 

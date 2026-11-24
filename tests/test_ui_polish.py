@@ -1312,6 +1312,217 @@ def test_the_live_row_has_no_clock_maths_and_no_budget():
     assert "group.name" not in live
 
 
+WINDOWS_KEYS = (
+    "card.windows_line",
+    "card.window_range",
+    "card.window_days_weekday",
+    "card.window_days_weekend",
+)
+
+
+def windows_probe_script(js: str) -> str:
+    """liveHtml and windowsLineHtml with the real strings and the real esc."""
+    keys = (
+        "status.open_until",
+        "status.open_all_day",
+        "status.opens_at",
+        "status.paused",
+    ) + WINDOWS_KEYS
+    cases = [
+        {
+            "id": 1,
+            "status": "allowed",
+            "open_until": "21:00",
+            "windows": [
+                {"start": "14:00", "end": "15:00", "days": "all"},
+                {"start": "18:00", "end": "19:00", "days": "all"},
+            ],
+        },
+        {
+            "id": 2,
+            "status": "outside_hours",
+            "opens_at": "08:00",
+            "windows": [
+                {"start": "08:00", "end": "09:00", "days": "weekday"},
+                {"start": "10:00", "end": "11:00", "days": "weekend"},
+            ],
+        },
+        {"id": 3, "status": "allowed", "open_until": None, "windows": []},
+        {
+            "id": 4,
+            "status": "paused",
+            "paused": True,
+            "windows": [{"start": "16:00", "end": "17:00", "days": "all"}],
+        },
+        {
+            "id": 5,
+            "status": "allowed",
+            "open_until": None,
+            "windows": [{"start": "13:00\"><script>&'", "end": "14:00", "days": "all"}],
+        },
+    ]
+    return "".join(
+        [
+            "var i18n = " + json.dumps({key: i18n.STRINGS["en"][key] for key in keys}) + ";",
+            "function t(key, vars) {",
+            r"  return String(i18n[key] || key).replace(/\{(\w+)\}/g, function (whole, name) {",
+            "    return vars && Object.prototype.hasOwnProperty.call(vars, name)",
+            "      ? String(vars[name]) : whole;",
+            "  });",
+            "}",
+            js_function(js, "esc"),
+            js_function(js, "statusFor"),
+            js_function(js, "liveHtml"),
+            js_function(js, "windowsLineHtml"),
+            "var cases = " + json.dumps(cases) + ";",
+            "console.log(JSON.stringify(cases.map(function (group) {",
+            "  return [liveHtml(group), windowsLineHtml(group)];",
+            "})));",
+        ]
+    )
+
+
+def run_windows_probe(js: str) -> list:
+    done = subprocess.run(
+        [shutil.which("node"), "-e", windows_probe_script(js)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_the_today_card_lists_the_allowed_windows():
+    """The allowed windows already in the payload get one muted line."""
+    rows = run_windows_probe(read("static", "app.js"))
+    assert rows[0][0] == '<p class="live-line ok">Open until 21:00</p>'
+    assert rows[0][1] == (
+        '<p class="muted small live-windows">Allowed 14:00–15:00 · 18:00–19:00</p>'
+    )
+    # paused and blocked cards keep the schedule they would run next
+    assert rows[3][0] == '<p class="live-line warn">Paused</p>'
+    assert "16:00–17:00" in rows[3][1]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_the_windows_line_marks_weekdays_and_weekends():
+    """Only a restricted window carries a day range; 24-hour times are kept."""
+    rows = run_windows_probe(read("static", "app.js"))
+    assert rows[1][1] == (
+        '<p class="muted small live-windows">'
+        "Allowed 08:00–09:00 (Mon–Fri) · 10:00–11:00 (Sat–Sun)</p>"
+    )
+    assert i18n.STRINGS["en"]["card.window_days_weekday"] == "(Mon–Fri)"
+    assert i18n.STRINGS["en"]["card.window_days_weekend"] == "(Sat–Sun)"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_the_windows_line_is_absent_without_windows():
+    """No windows means always open: no line, no empty paragraph."""
+    js = read("static", "app.js")
+    rows = run_windows_probe(js)
+    assert rows[2][1] == ""
+    assert rows[2][0] == '<p class="live-line ok">Open all day</p>'
+    render = js_function(js, "renderToday")
+    assert "liveHtml(group) + windowsLineHtml(group)" in render
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_the_windows_line_escapes_server_text():
+    """A hostile window time cannot inject markup into the card."""
+    rows = run_windows_probe(read("static", "app.js"))
+    line = rows[4][1]
+    assert "<script>" not in line
+    assert "&lt;script&gt;" in line
+    # escaped once, never twice
+    assert "&amp;lt;" not in line
+    assert "&amp;quot;" not in line
+    # only the paragraph's own opening and closing tags may be real markup
+    assert line.count("<") == 2
+
+
+def signature_probe_script(js: str) -> str:
+    """signatureFor with the real modeFor and window token, so edits repaint."""
+    base = {
+        "id": 7,
+        "name": "Kids",
+        "status": "allowed",
+        "paused": False,
+        "free_until": None,
+        "force_block_until": 0,
+    }
+    cases = [
+        dict(base, windows=[{"start": "14:00", "end": "15:00", "days": "all"}]),
+        dict(base, windows=[{"start": "14:00", "end": "16:00", "days": "all"}]),
+        dict(base, windows=[{"start": "14:00", "end": "15:00", "days": "weekend"}]),
+        dict(base, windows=[{"start": "14:00", "end": "15:00", "days": "all"}]),
+        dict(base, windows=[]),
+    ]
+    return "".join(
+        [
+            js_function(js, "modeFor"),
+            js_function(js, "windowsKey"),
+            js_function(js, "signatureFor"),
+            "var cases = " + json.dumps(cases) + ";",
+            "console.log(JSON.stringify(cases.map(signatureFor)));",
+        ]
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_editing_a_window_changes_the_card_signature():
+    """An edited window must repaint the card, and an unchanged one must not."""
+    js = read("static", "app.js")
+    done = subprocess.run(
+        [shutil.which("node"), "-e", signature_probe_script(js)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    first, later_end, other_days, same_as_first, no_windows = json.loads(done.stdout)
+    assert first and isinstance(first, str)
+    assert first != later_end
+    assert first != other_days
+    assert first == same_as_first
+    assert first != no_windows
+    for gone in ("Date.now()", "minutes"):
+        assert gone not in js_function(js, "signatureFor"), gone
+
+
+def test_the_windows_line_reuses_the_muted_small_text():
+    """Small, muted, wrapping: no new colour, no horizontal scroll."""
+    js = read("static", "app.js")
+    line = js_function(js, "windowsLineHtml")
+    # only t(), esc() and the payload: no clock maths, no markup from the server
+    for token in ("esc(", 't("card.windows_line"', "group.windows", " · "):
+        assert token in line, token
+    for gone in ("Date.now()", "innerHTML", "style=", "<script"):
+        assert gone not in line, gone
+    css = css_text()
+    rule_text = rule(css, ".live-windows")
+    assert "overflow-wrap: anywhere" in rule_text
+    assert 'class="muted small live-windows"' in line
+    assert "color: var(--muted)" in rule(css, ".muted")
+    assert "font-size: 13px" in rule(css, ".small")
+
+
+def test_the_windows_line_strings_are_shipped():
+    for key in WINDOWS_KEYS:
+        assert i18n.t(key) != key, key
+    assert "{times}" in i18n.STRINGS["en"]["card.windows_line"]
+    assert "{start}" in i18n.STRINGS["en"]["card.window_range"]
+    assert "{end}" in i18n.STRINGS["en"]["card.window_range"]
+    assert "–" in i18n.STRINGS["en"]["card.window_range"]
+    assert "Allowed" in i18n.STRINGS["en"]["card.windows_line"]
+
+
 def kid_probe_script(js: str) -> str:
     """bigLine with the real strings, so node can prove the kid text."""
     keys = (
