@@ -110,7 +110,6 @@ STRINGS: dict[str, dict[str, str]] = {
         "admin.tab.today": "Today",
         "admin.tab.groups": "Groups",
         "admin.tab.settings": "Settings",
-        "admin.free_label": "Allow freely until",
         "admin.extra_until": "Extra time until",
         "admin.free_tomorrow": "(tomorrow)",
         "admin.mode_label": "Mode for {name}",
@@ -298,6 +297,7 @@ STRINGS: dict[str, dict[str, str]] = {
         # AdGuard Home", "AdGuard Home answered HTTP 502"); do not prefix them
         "error.adguard": "{detail}",
         "error.adguard_auth": "AdGuard Home rejected the credentials. The next attempt is in {seconds} s; check ADGUARD_USER and ADGUARD_PASSWORD.",
+        "error.try_again_soon": "TimeFence is updating AdGuard Home right now; try again in a moment.",
         "error.windows_invalid": "Check the allowed times: at most 4 time windows, start and end as HH:MM and different, and days all, or a list of weekday names.",
         "error.window_start_equals_end": "A time window must start and end at different times.",
         "error.window_bad_time": "A time window needs a start and an end as HH:MM, for example 21:00.",

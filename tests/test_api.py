@@ -653,6 +653,27 @@ def test_block_all_needs_an_admin_and_a_csrf_token(ready):
     assert client.post("/api/release-all", json={}).status_code == 403
 
 
+def test_block_all_is_busy_while_the_reconciler_runs(ready, fake, monkeypatch):
+    """A hands-on action that cannot start is a 503, not an AdGuard 502."""
+    client = ready["client"]
+    reconciler = client.app.state.reconciler
+
+    class _NeverFrees:
+        def acquire(self, timeout=None):
+            return False
+
+    monkeypatch.setattr(reconciler, "_run_lock", _NeverFrees())
+    response = client.post("/api/block-all", json={})
+    assert response.status_code == 503, response.text
+    assert response.json()["code"] == "busy"
+    released = client.post("/api/release-all", json={})
+    assert released.status_code == 503
+    assert released.json()["code"] == "busy"
+    # nothing was written to AdGuard while the lock was held
+    assert fake.ids == []
+    assert fake.rules == []
+
+
 # --------------------------------------------------------------------------- #
 # the budget, usage endpoints and history are gone
 # --------------------------------------------------------------------------- #

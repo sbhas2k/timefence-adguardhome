@@ -19,6 +19,11 @@ from .adguard import AdGuardAuthError, AdGuardClient, AdGuardError
 
 log = logging.getLogger("timefence.reconciler")
 
+# The one error a hands-on action can report because it could not start: the
+# periodic reconciler still holds its run lock. The API turns this into a 503
+# ("try again in a moment") rather than an AdGuard failure.
+BUSY_ERROR = "reconcile run still busy"
+
 SECTION_BEGIN = "# timefence:begin"
 SECTION_END = "# timefence:end"
 LEGACY_MARKERS = ("budget-app",)  # migrated silently on the first run
@@ -346,7 +351,7 @@ class Reconciler:
         self.closed = True
         if not acquired:
             log.error("shutdown: a reconcile run is still busy, blocks not applied")
-            return {"changed": [], "errors": ["reconcile run still busy"]}
+            return {"changed": [], "errors": [BUSY_ERROR]}
         try:
             changed: list[str] = []
             with self.store as conn:
@@ -415,7 +420,7 @@ class Reconciler:
         acquired = self._run_lock.acquire(timeout=5)
         if not acquired:
             log.warning("block-all skipped: a reconcile run is still in progress")
-            return {"changed": [], "errors": ["reconcile run still busy"]}
+            return {"changed": [], "errors": [BUSY_ERROR]}
         try:
             changed: list[str] = []
             owned, services, domains, groups = self._managed_targets()
@@ -448,7 +453,7 @@ class Reconciler:
         acquired = self._run_lock.acquire(timeout=5)
         if not acquired:
             log.warning("release-all skipped: a reconcile run is still in progress")
-            return {"changed": [], "errors": ["reconcile run still busy"]}
+            return {"changed": [], "errors": [BUSY_ERROR]}
         try:
             changed: list[str] = []
             with self.store as conn:

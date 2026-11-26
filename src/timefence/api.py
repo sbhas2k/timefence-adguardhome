@@ -23,7 +23,7 @@ from . import APP_TITLE, __version__, alerts, budget, credentials, db, i18n, pre
 from .adguard import AdGuardClient, AdGuardError
 from .config import Settings
 from .discover import PublicSuffixList, SuffixList, aggregate, humanize_age, recent_clients
-from .reconciler import BLOCKED_REASONS, Reconciler, rule_host
+from .reconciler import BLOCKED_REASONS, BUSY_ERROR, Reconciler, rule_host
 
 log = logging.getLogger("timefence.web")
 
@@ -1039,13 +1039,25 @@ def create_app(
             "group": group_payload(group, int(time.time())),
         }
 
+    def _hands_on_error(result: dict):
+        """The one-shot block-all / release-all can only fail two ways: the
+        reconciler still holds its run lock (busy: try again in a moment) or
+        AdGuard Home refused (a real 502). Distinguish them in the response."""
+        errors = result.get("errors") or []
+        if not errors:
+            return None
+        if errors[0] == BUSY_ERROR:
+            return json_error(503, i18n.t("error.try_again_soon"), "busy")
+        return json_error(502, i18n.t("error.adguard", detail=errors[0]), "adguard")
+
     @app.post(f"{base}/api/block-all")
     def api_block_all(request: Request):
         """Block every managed target now; the schedule is not changed."""
         require("admin", request)
         result = reconciler.manual_block_all()
-        if result["errors"]:
-            return json_error(502, i18n.t("error.adguard", detail=result["errors"][0]), "adguard")
+        refused = _hands_on_error(result)
+        if refused is not None:
+            return refused
         reconcile("admin_block_all")
         return {"ok": True, "changed": result["changed"]}
 
@@ -1054,8 +1066,9 @@ def create_app(
         """Lift what TimeFence owns from AdGuard Home; foreign rules stay."""
         require("admin", request)
         result = reconciler.manual_release_all()
-        if result["errors"]:
-            return json_error(502, i18n.t("error.adguard", detail=result["errors"][0]), "adguard")
+        refused = _hands_on_error(result)
+        if refused is not None:
+            return refused
         reconcile("admin_release_all")
         return {"ok": True, "changed": result["changed"]}
 
