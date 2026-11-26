@@ -7,7 +7,7 @@ so a preset can never change a schedule behind the admin's back.
 The windows use the same day strings the API validates: the `all` sentinel or a
 comma-separated list in week order (`mon,tue,wed,thu,fri`).
 
-Domain lists are deliberately empty for 1.1.0. The host lists that would make
+Domain lists are deliberately empty for now. The host lists that would make
 these presets useful name services such as video and game sites, and none of
 them could be checked against a real AdGuard service catalogue with this
 release, so the presets carry windows only and the group's own domains field

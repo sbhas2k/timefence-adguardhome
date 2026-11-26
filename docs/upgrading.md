@@ -174,7 +174,7 @@ There is no schema change unless a release's entry says so. When a release does
 change the schema, the migration writes one verified copy named
 `timefence.db.pre-v<schema>.bak` next to the database before its first change.
 
-### 1.0.x to 1.1.0
+### 1.0.x to the next release
 
 - The database moves to **schema v7** and the copy is `timefence.db.pre-v7.bak`.
   The step rewrites the stored day filter of every allowed time: `all` stays
