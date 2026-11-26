@@ -548,13 +548,17 @@
       '<div class="row tight mt free-panel' + (open ? "" : " hidden") +
       '" id="free-panel-' + group.id + '" data-free-panel="' + group.id + '">' +
       '<input type="time" data-free-time="' + group.id + '" value="' + esc(until) +
-      '" aria-label="' + esc(t("admin.free_label")) + '">' +
+      '" aria-label="' + esc(t("admin.extra_until")) + '">' +
       '<span class="muted small' + (tomorrow ? "" : " hidden") +
       '" data-free-tomorrow="' + group.id + '">' + esc(t("admin.free_tomorrow")) + "</span>" +
       '<button type="button" class="btn primary" data-action="free-apply" data-group="' +
       group.id + '" aria-label="' +
-      esc(t("admin.free_allow_for", { name: group.name })) + '">' +
-      esc(t("admin.free_allow")) + "</button>" +
+      esc(t("admin.extra_time_for", { name: group.name })) + '">' +
+      esc(t("admin.extra_time")) + "</button>" +
+      '<button type="button" class="btn' + (free ? "" : " hidden") +
+      '" data-action="free-clear" data-group="' + group.id + '" aria-label="' +
+      esc(t("admin.free_clear_for", { name: group.name })) + '">' +
+      esc(t("admin.free_clear")) + "</button>" +
       '<button type="button" class="btn' + (free ? " hidden" : "") +
       '" data-action="free-cancel" data-free-cancel="' + group.id + '" data-group="' + group.id +
       '">' + esc(t("common.cancel")) + "</button>" +
@@ -1589,6 +1593,11 @@
       var until = freeTimeChoice[String(groupId)] || defaultFreeTime() ||
         (freeInput ? freeInput.value : "");
       setMode(groupId, "free", until);
+    } else if (action === "free-clear") {
+      /* Clear ends the free window now; the schedule decides what happens next. */
+      pendingFree[String(groupId)] = false;
+      delete freeTimeChoice[String(groupId)];
+      adminAction("free/clear", groupId, null, t("toast.free_cleared", { name: name }));
     } else if (action === "free-cancel") {
       pendingFree[String(groupId)] = false;
       delete freeTimeChoice[String(groupId)];

@@ -100,6 +100,11 @@ def test_parse_hhmm_rolls_to_tomorrow():
     assert datetime.fromtimestamp(later, TZ).day == 11
     tomorrow = budget.parse_hhmm("08:00", now, TZ)
     assert datetime.fromtimestamp(tomorrow, TZ).day == 12
+    # "extra time until" a time that already passed today means tomorrow, and
+    # the current minute is never "later" (the free window must last a while)
+    assert datetime.fromtimestamp(budget.parse_hhmm("22:00", now, TZ), TZ).day == 12
+    assert datetime.fromtimestamp(budget.parse_hhmm("21:59", now, TZ), TZ).day == 12
+    assert datetime.fromtimestamp(budget.parse_hhmm("22:01", now, TZ), TZ).day == 11
     with pytest.raises(budget.ValidationError):
         budget.parse_hhmm("25:00", now, TZ)
 

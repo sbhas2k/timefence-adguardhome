@@ -568,16 +568,17 @@ def test_the_free_segment_only_opens_a_panel():
     assert "api(" not in open_leg
     assert "setMode(" not in open_leg
 
-    # the panel holds the time box, its hint, Allow and a Cancel, and Allow is the call
+    # the panel holds the time box, its hint, Extra time, Clear and a Cancel
     controls = js_function(js, "controlsHtml")
     assert 'data-free-panel="' in controls
     assert 'data-free-time="' in controls
     assert 'data-free-tomorrow="' in controls
     assert 'data-action="free-apply"' in controls
-    assert 'esc(t("admin.free_allow"))' in controls
+    assert 'esc(t("admin.extra_time"))' in controls
+    assert 'data-action="free-clear"' in controls
     assert 'data-action="free-cancel"' in controls
     assert 'esc(t("common.cancel"))' in controls
-    assert i18n.t("admin.free_allow") != "admin.free_allow"
+    assert i18n.t("admin.extra_time") != "admin.extra_time"
 
     apply_start = js.index('if (action === "free-apply") {')
     apply = js[apply_start : js.index("} else if", apply_start + 5)]
@@ -1053,6 +1054,29 @@ def test_the_free_segment_names_its_panel_and_moves_focus_into_it():
     assert "id=\"free-panel-' + group.id" in controls
     mode = js[js.index('if (action === "mode")') : js.index('action === "free-apply"')]
     assert "[data-free-time=" in mode and ".focus()" in mode
+
+
+def test_the_free_panel_offers_extra_time_and_a_clear_button():
+    """Extra time is the one-tap override; Clear ends it on the existing route."""
+    js = read("static", "app.js")
+    controls = js_function(js, "controlsHtml")
+    # the apply button of the Free panel is the Extra time action
+    assert 'esc(t("admin.extra_time"))' in controls
+    assert 'data-action="free-apply"' in controls
+    # Clear exists only when the group is already free, and it is a separate action
+    assert 'data-action="free-clear"' in controls
+    assert 'free ? "" : " hidden"' in controls
+    assert 'esc(t("admin.free_clear"))' in controls
+    # a free group's panel is open, so Clear is reachable without opening a menu
+    assert 'var free = mode === "free";' in controls
+    assert "var open = free || Boolean(pendingFree[id]);" in controls
+
+    start = js.index('if (action === "free-clear") {')
+    branch = js[start : js.index("} else if", start + 5)]
+    assert 'adminAction("free/clear"' in branch
+    assert 't("toast.free_cleared"' in branch
+    for key in ("admin.extra_time", "admin.free_clear"):
+        assert i18n.t(key) != key, key
 
 
 # ------------------------------------------------ the allowed-times schedule

@@ -536,6 +536,59 @@ def test_healthz_and_meta_are_public(client):
     assert "unofficial" in meta
 
 
+def test_extra_time_until_and_clear_move_the_group_and_adguard(ready, fake, monkeypatch):
+    """The existing /free and /free/clear routes, driven the way the card does."""
+    client = ready["client"]
+    fixed = int(datetime(2026, 11, 11, 12, 0, tzinfo=UTC).timestamp())
+    monkeypatch.setattr(time, "time", lambda: fixed)
+    # the session clock is the patched one too, so sign in again for a live CSRF token
+    assert login(client, **ADMIN2).status_code == 200
+    group = make_group(client, windows=[{"start": "15:00", "end": "16:00", "days": "all"}])
+    gid = group["id"]
+    assert client.get("/api/state").json()["groups"][0]["status"] == "outside_hours"
+    assert fake.ids == ["roblox"]
+
+    # a time later today is honoured as today
+    allowed = client.post(f"/api/groups/{gid}/free", json={"until": "13:30"})
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["until"] == int(datetime(2026, 11, 11, 13, 30, tzinfo=UTC).timestamp())
+    state = client.get("/api/state").json()["groups"][0]
+    assert (state["status"], state["permitted"]) == ("free", True)
+    assert state["free_until"] == allowed.json()["until"]
+    assert fake.ids == []  # free lifts the block outside the window
+
+    cleared = client.post(f"/api/groups/{gid}/free/clear")
+    assert cleared.status_code == 200, cleared.text
+    state = client.get("/api/state").json()["groups"][0]
+    assert (state["status"], state["permitted"]) == ("outside_hours", False)
+    assert state["free_until"] is None
+    assert fake.ids == ["roblox"]  # the schedule blocks again
+
+    # a time that already passed today belongs to tomorrow
+    past = client.post(f"/api/groups/{gid}/free", json={"until": "11:00"})
+    assert past.status_code == 200, past.text
+    tomorrow = int(datetime(2026, 11, 12, 11, 0, tzinfo=UTC).timestamp())
+    assert past.json()["until"] == tomorrow
+
+
+def test_a_kid_sees_the_free_time_but_no_admin_fields(ready):
+    """The reduced payload carries free_until; the card has no buttons to press."""
+    client = ready["client"]
+    created = client.post(
+        "/api/users", json={"username": "kid", "password": "kid-password", "role": "user"}
+    )
+    assert created.status_code == 200, created.text
+    group = make_group(client)
+    free = client.post(f"/api/groups/{group['id']}/free", json={"until": "23:00"})
+    assert free.status_code == 200, free.text
+    login(client, "kid", "kid-password")
+    kid_state = client.get("/api/state").json()["groups"][0]
+    assert kid_state["status"] == "free"
+    assert kid_state["free_until"] is not None
+    for hidden in ("windows", "force_block_until", "services", "domains", "owner_id"):
+        assert hidden not in kid_state
+
+
 # --------------------------------------------------------------------------- #
 # the budget, usage endpoints and history are gone
 # --------------------------------------------------------------------------- #
