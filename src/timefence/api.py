@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from . import APP_TITLE, __version__, alerts, budget, credentials, db, i18n, security
+from . import APP_TITLE, __version__, alerts, budget, credentials, db, i18n, presets, security
 from .adguard import AdGuardClient, AdGuardError
 from .config import Settings
 from .discover import PublicSuffixList, SuffixList, aggregate, humanize_age, recent_clients
@@ -800,6 +800,12 @@ def create_app(
     @app.get(f"{base}/api/i18n")
     def api_i18n():
         return i18n.strings()
+
+    @app.get(f"{base}/api/presets")
+    def api_presets(request: Request):
+        """The starter schedules the group editor offers for a new group."""
+        require("admin", request)
+        return {"presets": presets.payload()}
 
     # ----------------------------------------------------------------- state
     @app.get(f"{base}/api/state")

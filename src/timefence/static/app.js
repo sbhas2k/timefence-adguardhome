@@ -910,12 +910,21 @@
   }
 
   function openGroupEditor(group) {
-    api("GET", "/api/users")
-      .then(function (data) { openGroupEditorWith(group, data.users || []); })
-      .catch(function () { openGroupEditorWith(group, []); });
+    var users = api("GET", "/api/users").then(function (data) {
+      return data.users || [];
+    }).catch(function () { return []; });
+    /* A preset only fills a new group's fields, so a failed fetch simply means
+       the row is absent and the editor works as before. */
+    var presets = api("GET", "/api/presets").then(function (data) {
+      return data.presets || [];
+    }).catch(function () { return []; });
+    Promise.all([users, presets]).then(function (results) {
+      openGroupEditorWith(group, results[0], results[1]);
+    });
   }
 
-  function openGroupEditorWith(group, users) {
+  function openGroupEditorWith(group, users, presets) {
+    presets = presets || [];
     group = group || {
       name: "", emoji: "⏳", services: [], domains: [], windows: [], paused: false, owner_id: null
     };
@@ -1018,6 +1027,34 @@
       });
     }
 
+    /* Only a new group gets the starter row: an existing schedule is never
+       replaced by a preset, so nothing can be lost with one tap. */
+    function presetRow() {
+      if (group.id || !presets.length) { return ""; }
+      return '<div class="stack mt" id="preset-row">' +
+        '<p class="muted small">' + esc(t("preset.apply")) + "</p>" +
+        '<div class="row tight">' +
+        presets.map(function (preset) {
+          return '<button type="button" class="btn" data-action="apply-preset" data-preset="' +
+            esc(preset.key) + '">' + esc(t(preset.name_key)) + "</button>";
+        }).join("") + "</div></div>";
+    }
+
+    function applyPreset(key) {
+      var preset = presets.filter(function (item) { return item.key === key; })[0];
+      if (!preset) { return; }
+      windows = (preset.windows || []).map(function (w) {
+        return { start: w.start, end: w.end, days: w.days };
+      });
+      paintWindows();
+      var domains = $("#g-domains");
+      if (domains && preset.domains && preset.domains.length) {
+        domains.value = preset.domains.join("
+");
+      }
+      toast(t("toast.preset_applied"));
+    }
+
     function sheet() {
       var chips = selected.services.map(function (id) {
         return '<span class="chip">' + esc(id) + ' <button type="button" data-action="remove-service" data-service="' +
@@ -1026,6 +1063,7 @@
       return (
         '<h2>' + esc(group.id ? t("groups.edit") : t("groups.add")) + "</h2>" +
         '<p class="alert bad hidden" id="group-error" role="alert"></p>' +
+        presetRow() +
         '<form id="group-form" class="stack mt">' +
         '<div class="row"><div class="w-emoji"><label for="g-emoji">' + esc(t("groups.emoji")) +
         '</label><input type="text" id="g-emoji" value="' + esc(group.emoji || "") + '" maxlength="8"></div>' +
@@ -1129,6 +1167,9 @@
           );
         });
       }
+      $$("[data-action='apply-preset']").forEach(function (button) {
+        button.addEventListener("click", function () { applyPreset(button.dataset.preset); });
+      });
       $$("[data-action='pick-services']").forEach(function (button) {
         button.addEventListener("click", function () {
           openServicePicker(selected.services, function (next) {
