@@ -52,6 +52,20 @@ RESULT_KEYS = (
 )
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_the_shipped_scripts_parse():
+    """A syntax error in static/app.js must fail here, not only in a browser."""
+    for name in ("app.js", "kid.js"):
+        done = subprocess.run(
+            [shutil.which("node"), "--check", str(package_file("static", name))],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert done.returncode == 0, (name, done.stderr)
+
+
 def test_the_header_stays_on_one_line():
     css = css_text()
     html = read("templates", "base.html")

@@ -1049,8 +1049,7 @@
       paintWindows();
       var domains = $("#g-domains");
       if (domains && preset.domains && preset.domains.length) {
-        domains.value = preset.domains.join("
-");
+        domains.value = preset.domains.join("\n");
       }
       toast(t("toast.preset_applied"));
     }
