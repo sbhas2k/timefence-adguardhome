@@ -1033,6 +1033,26 @@ def create_app(
             "group": group_payload(group, int(time.time())),
         }
 
+    @app.post(f"{base}/api/block-all")
+    def api_block_all(request: Request):
+        """Block every managed target now; the schedule is not changed."""
+        require("admin", request)
+        result = reconciler.manual_block_all()
+        if result["errors"]:
+            return json_error(502, i18n.t("error.adguard", detail=result["errors"][0]), "adguard")
+        reconcile("admin_block_all")
+        return {"ok": True, "changed": result["changed"]}
+
+    @app.post(f"{base}/api/release-all")
+    def api_release_all(request: Request):
+        """Lift what TimeFence owns from AdGuard Home; foreign rules stay."""
+        require("admin", request)
+        result = reconciler.manual_release_all()
+        if result["errors"]:
+            return json_error(502, i18n.t("error.adguard", detail=result["errors"][0]), "adguard")
+        reconcile("admin_release_all")
+        return {"ok": True, "changed": result["changed"]}
+
     # ------------------------------------------------------------------ test
     def _probe_hosts(service_id: str, hosts: list[str]) -> list[str]:
         """The two hosts that best represent a service for a one-shot probe.

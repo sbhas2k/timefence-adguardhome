@@ -589,6 +589,70 @@ def test_a_kid_sees_the_free_time_but_no_admin_fields(ready):
         assert hidden not in kid_state
 
 
+def group_fields(client) -> dict:
+    """Every per-group override, exactly as stored."""
+    with locked_conn(client.app) as conn:
+        return {
+            row["id"]: (
+                row["paused"],
+                row["force_block_until"],
+                conn.execute(
+                    "SELECT until_ts FROM free_allow WHERE group_id=?", (row["id"],)
+                ).fetchone(),
+            )
+            for row in conn.execute("SELECT id, paused, force_block_until FROM groups")
+        }
+
+
+def event_kinds(client) -> list[str]:
+    with locked_conn(client.app) as conn:
+        return [row["kind"] for row in conn.execute("SELECT kind FROM events ORDER BY id")]
+
+
+def test_block_all_and_release_all_are_admin_only_and_keep_group_fields(ready, fake):
+    """Two one-shot admin actions; the per-group fields never change."""
+    client = ready["client"]
+    allowed = make_group(client, domains=["allowed.example"])
+    before = group_fields(client)
+
+    response = client.post("/api/block-all", json={})
+    assert response.status_code == 200, response.text
+    assert response.json() == {"ok": True, "changed": ["services", "domains"]}
+    # the endpoint ran a reconcile pass, so the schedule decides the final state
+    assert fake.ids == []
+    assert fake.rules == []
+    assert group_fields(client) == before
+    assert "admin_block_all" in event_kinds(client)
+
+    released = client.post("/api/release-all", json={})
+    assert released.status_code == 200, released.text
+    assert released.json() == {"ok": True, "changed": []}
+    assert "admin_release_all" in event_kinds(client)
+    assert group_fields(client) == before
+    state = client.get("/api/state").json()["groups"][0]
+    assert state["id"] == allowed["id"]
+    assert state["status"] == "allowed"
+
+
+def test_block_all_needs_an_admin_and_a_csrf_token(ready):
+    client = ready["client"]
+    without_token = client.post(
+        "/api/block-all", json={}, headers={"X-CSRF-Token": "not-the-token"}
+    )
+    assert without_token.status_code == 403
+    assert without_token.json()["code"] == "csrf"
+
+    created = client.post(
+        "/api/users", json={"username": "kid", "password": "kid-password", "role": "user"}
+    )
+    assert created.status_code == 200, created.text
+    login(client, "kid", "kid-password")
+    refused = client.post("/api/block-all", json={})
+    assert refused.status_code == 403
+    assert refused.json()["code"] == "read_only"
+    assert client.post("/api/release-all", json={}).status_code == 403
+
+
 # --------------------------------------------------------------------------- #
 # the budget, usage endpoints and history are gone
 # --------------------------------------------------------------------------- #

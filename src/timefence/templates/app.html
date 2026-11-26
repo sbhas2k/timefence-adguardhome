@@ -21,6 +21,10 @@
     <button type="button" class="btn ghost" data-action="hint-dismiss"
             aria-label="{{ t('alerts.hint_dismiss_label') }}">{{ t("alerts.hint_dismiss") }}</button>
   </div>
+  <div class="between mt hidden" id="today-actions">
+    <button class="btn danger" id="block-all">{{ t("header.block_all") }}</button>
+    <button class="btn" id="release-all">{{ t("header.release_all") }}</button>
+  </div>
   <div id="groups" class="stack"></div>
   <p class="muted small center hidden" id="no-groups">{{ t("groups.empty") }}</p>
 </section>

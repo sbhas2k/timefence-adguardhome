@@ -132,7 +132,7 @@
   }
 
   /* A time the admin typed wins over the default for the life of the page. A
-     group that is already free starts at the end of its window, so Allow
+     group that is already free starts at the end of its window, so Extra time
      changes that window instead of offering a fresh default. */
   function freeTimeValue(group) {
     var id = String(group.id);
@@ -749,6 +749,8 @@
     var isAdmin = role === "admin";
     $("#role-badge").textContent = isAdmin ? "admin" : "user";
     $("#admin-tabs").classList.toggle("hidden", !isAdmin);
+    var todayActions = $("#today-actions");
+    if (todayActions) { todayActions.classList.toggle("hidden", !isAdmin); }
     $$("#admin-tabs .tab").forEach(function (button) {
       button.setAttribute("aria-selected", button.dataset.tab === tab ? "true" : "false");
     });
@@ -1575,7 +1577,7 @@
       var to = target.dataset.mode || "";
       if (to === "free") {
         /* Free is two-step: the tap only opens the time panel, and nothing is
-           sent until Allow is pressed. A group that is already free keeps its
+           sent until Extra time is pressed. A group that is already free keeps its
            panel open, so a tap on it changes nothing. */
         pendingFree[String(groupId)] = group ? modeFor(group) !== "free" : false;
         paintMode(target.closest("[data-card-group]"), group);
@@ -1698,6 +1700,43 @@
       render();
     });
   });
+
+  /* "Block everything now" / "Release everything": one admin action for the
+     whole house, behind the same confirm dialog as a delete. Nothing about a
+     single group's pause, free time or forced block is changed. */
+  function allGroupsAction(kind) {
+    var label = kind === "block" ? t("header.block_all") : t("header.release_all");
+    openModal(
+      '<h2>' + esc(label) + "</h2>" +
+      '<p class="sub">' + esc(t("common.confirm")) + "</p>" +
+      '<div class="row mt"><button class="btn" data-action="modal-close">' +
+      esc(t("common.cancel")) + "</button>" +
+      '<button class="btn primary" id="all-groups-confirm">' + esc(t("common.yes")) + "</button></div>"
+    );
+    $("#all-groups-confirm").addEventListener("click", function (event) {
+      var button = event.currentTarget;
+      button.disabled = true;
+      api("POST", "/api/" + (kind === "block" ? "block-all" : "release-all"), {})
+        .then(function () {
+          closeModal();
+          toast(t(kind === "block" ? "toast.blocked_all" : "toast.released_all"));
+          return refresh();
+        })
+        .catch(function (error) {
+          button.disabled = false;
+          toast(error.message);
+        });
+    });
+  }
+
+  var blockAllButton = $("#block-all");
+  if (blockAllButton) {
+    blockAllButton.addEventListener("click", function () { allGroupsAction("block"); });
+  }
+  var releaseAllButton = $("#release-all");
+  if (releaseAllButton) {
+    releaseAllButton.addEventListener("click", function () { allGroupsAction("release"); });
+  }
 
   var newGroupButton = $("#new-group");
   if (newGroupButton) {

@@ -1079,6 +1079,35 @@ def test_the_free_panel_offers_extra_time_and_a_clear_button():
         assert i18n.t(key) != key, key
 
 
+def test_the_today_header_offers_block_all_and_release_all_to_admins():
+    """Two whole-house actions, in the Today header, behind a confirm dialog."""
+    html = read("templates", "app.html")
+    assert 'id="today-actions"' in html
+    assert 'id="block-all"' in html
+    assert 'id="release-all"' in html
+    assert 't("header.block_all")' in html
+    assert 't("header.release_all")' in html
+    for key in (
+        "header.block_all",
+        "header.release_all",
+        "toast.blocked_all",
+        "toast.released_all",
+    ):
+        assert i18n.t(key) != key, key
+
+    js = read("static", "app.js")
+    # a user account never sees the buttons, and the server refuses the calls
+    render = js_function(js, "render")
+    assert 'todayActions.classList.toggle("hidden", !isAdmin);' in render
+    action = js_function(js, "allGroupsAction")
+    assert 't("common.confirm")' in action
+    assert 't("common.yes")' in action
+    assert '"/api/" + (kind === "block" ? "block-all" : "release-all")' in action
+    assert "refresh()" in action
+    for key in ("block-all", "release-all"):
+        assert f'$("#{key}")' in js, key
+
+
 # ------------------------------------------------ the allowed-times schedule
 # The backend has no daily minutes any more: a group is open inside its
 # allowed windows (0-4 of them, no windows = always open) and closed outside.
