@@ -303,9 +303,13 @@ control API it uses.
 
 **Does it count how long a site is used?** No. TimeFence keeps a schedule, not
 a stopwatch: the group is open inside its allowed times and blocked outside
-them, whatever happens in between. A stream or a game that is already running
-may keep going until it reconnects and has to look a name up again, and a device
-that bypasses your DNS (DoH, a VPN, mobile data) is not blocked at all — see
+them, whatever happens in between. Time-based control works because it needs no
+measuring: a block is simply a DNS answer, and DNS lookups are staggered — a
+device asks for a name only when it has to, and it caches the answer until the
+published lifetime runs out. So there is nothing to track per visit: inside
+the window the answers are real, outside they are refused, and an already open
+stream keeps going until it reconnects and asks again. A device that bypasses
+your DNS (DoH, a VPN, mobile data) is not blocked at all — see
 [limitations](docs/limitations.md).
 
 **I forgot the admin password.** See [Recovering access](#recovering-access).
@@ -338,14 +342,6 @@ groups.
 [GitHub](https://github.com/sbhas2k/timefence-adguardhome/issues). Report a
 security problem privately as described in [SECURITY.md](SECURITY.md), not in a
 public issue.
-
-## Roadmap
-
-- Per-device rules (a schedule per client address rather than per group)
-- YouTube restricted mode as an alternative to blocking
-- Pi-hole support
-- Multiple AdGuard instances
-- Translations (the UI strings already live in `src/timefence/i18n.py`)
 
 ## Development
 
