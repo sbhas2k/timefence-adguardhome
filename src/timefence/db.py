@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 log = logging.getLogger("timefence.db")
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 SKIP_BACKUP_ENV = "TIMEFENCE_SKIP_MIGRATION_BACKUP"
 
 MIGRATION_1 = """
@@ -166,6 +166,51 @@ DELETE FROM group_windows;
 ALTER TABLE groups DROP COLUMN weekday_minutes;
 ALTER TABLE groups DROP COLUMN weekend_minutes;
 """
+
+
+# v7: a window's days are `all` or a comma-separated list of day names
+# (`mon,fri`) instead of only the weekday/weekend buckets. SQLite cannot change
+# a CHECK constraint in place, so the table is recreated and its rows mapped:
+# all -> all, weekday -> mon..fri, weekend -> sat,sun. A callable step, like v4,
+# because it rewrites data. A fresh database runs steps 5, 6 and 7 in order, so
+# step 7 drops the v5 table it has just created and replaces it with this one;
+# the runner applies each step once, so that is safe.
+MIGRATION_7_CREATE = """
+CREATE TABLE group_windows_v7 (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id  INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    start_min INTEGER NOT NULL CHECK (start_min BETWEEN 0 AND 1439),
+    end_min   INTEGER NOT NULL CHECK (end_min BETWEEN 0 AND 1439),
+    days      TEXT NOT NULL,
+    CHECK (start_min <> end_min)
+)
+"""
+
+MIGRATION_7_COPY = """
+INSERT INTO group_windows_v7(id, group_id, start_min, end_min, days)
+    SELECT id, group_id, start_min, end_min,
+        CASE days
+            WHEN 'weekday' THEN 'mon,tue,wed,thu,fri'
+            WHEN 'weekend' THEN 'sat,sun'
+            ELSE days
+        END
+    FROM group_windows
+"""
+
+MIGRATION_7_DROP = "DROP TABLE group_windows"
+MIGRATION_7_RENAME = "ALTER TABLE group_windows_v7 RENAME TO group_windows"
+MIGRATION_7_INDEX = "CREATE INDEX group_windows_group ON group_windows(group_id)"
+
+
+def _migration_7(conn: sqlite3.Connection, tz: ZoneInfo) -> None:
+    """Map every stored window's day filter to the v7 day list."""
+    # Every statement stays inside the runner's transaction; executescript would
+    # commit the caller's work before running, which is not atomic.
+    conn.execute(MIGRATION_7_CREATE)
+    conn.execute(MIGRATION_7_COPY)
+    conn.execute(MIGRATION_7_DROP)
+    conn.execute(MIGRATION_7_RENAME)
+    conn.execute(MIGRATION_7_INDEX)
 
 
 class DataMigrationRequired(RuntimeError):
@@ -390,6 +435,7 @@ MIGRATIONS: dict[int, str | Callable[[sqlite3.Connection, ZoneInfo], None]] = {
     4: _migration_4,
     5: MIGRATION_5,
     6: MIGRATION_6,
+    7: _migration_7,
 }
 
 

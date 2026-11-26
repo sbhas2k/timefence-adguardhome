@@ -24,7 +24,11 @@ DOMAIN_RE = re.compile(
 CLOCK_RE = re.compile(r"^([01][0-9]|2[0-3]):([0-5][0-9])$")
 
 WINDOW_LIMIT = 4
-WINDOW_DAYS = ("all", "weekday", "weekend")
+# A window's days are `all` or a comma-separated list of the short names below,
+# normalised to week order (a window starts on one of these days).
+WINDOW_DAYS_ALL = "all"
+WINDOW_DAYS_SHORT = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+_WINDOW_DAYS_INDEX = {name: index for index, name in enumerate(WINDOW_DAYS_SHORT)}
 PERMITTED_STATUSES = frozenset({"allowed", "free"})
 # How far ahead the next opening/closing is looked for. A weekly schedule always
 # flips inside this window; a schedule that covers every minute never does.
@@ -212,7 +216,7 @@ class Window:
 
     start_min: int
     end_min: int
-    days: str = "all"
+    days: str = WINDOW_DAYS_ALL
 
     def as_dict(self) -> dict[str, str]:
         return {
@@ -247,7 +251,7 @@ def normalize_windows(items: object) -> list[Window]:
     out: list[Window] = []
     for item in items:
         if isinstance(item, Window):
-            out.append(item)
+            out.append(Window(item.start_min, item.end_min, normalize_days(item.days)))
             continue
         if not isinstance(item, dict):
             raise WindowError("each window needs a start, an end and days", "shape")
@@ -255,20 +259,40 @@ def normalize_windows(items: object) -> list[Window]:
         end_min = clock_minutes(item.get("end"))
         if start_min == end_min:
             raise WindowError("a window must start and end at different times", "start_equals_end")
-        days = str(item.get("days") or "all").strip().lower()
-        if days not in WINDOW_DAYS:
-            raise WindowError("days must be all, weekday or weekend", "bad_days")
-        out.append(Window(start_min, end_min, days))
+        out.append(Window(start_min, end_min, normalize_days(item.get("days"))))
     return out
 
 
+def normalize_days(value: object) -> str:
+    """`all`, or the named weekdays as one comma-separated string in week order.
+
+    Duplicates collapse, `all` wins over the full list, and an empty value means
+    every day; anything else is refused instead of silently widening a window.
+    """
+    text = str(value if value is not None else "").strip().lower()
+    if not text or text == WINDOW_DAYS_ALL:
+        return WINDOW_DAYS_ALL
+    chosen: set[str] = set()
+    for token in text.split(","):
+        name = token.strip()
+        if name not in _WINDOW_DAYS_INDEX:
+            raise WindowError("days must be all, or a list of weekday names", "bad_days")
+        chosen.add(name)
+    if len(chosen) == len(WINDOW_DAYS_SHORT):
+        return WINDOW_DAYS_ALL
+    return ",".join(name for name in WINDOW_DAYS_SHORT if name in chosen)
+
+
 def days_match(days: str, weekday: int) -> bool:
-    """`weekday` is 0 (Monday) .. 6 (Sunday)."""
-    if days == "weekday":
-        return weekday < 5
-    if days == "weekend":
-        return weekday >= 5
-    return True
+    """`weekday` is 0 (Monday) .. 6 (Sunday).
+
+    The stored string is `all` or a comma-separated list of short day names, so
+    a window can name any days of the week (`mon,fri`) instead of only weekday
+    and weekend buckets.
+    """
+    if days == WINDOW_DAYS_ALL:
+        return True
+    return WINDOW_DAYS_SHORT[weekday] in frozenset(days.split(","))
 
 
 def window_active(window: Window, ts: int, tz: ZoneInfo) -> bool:

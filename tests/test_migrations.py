@@ -32,6 +32,12 @@ def build_v5_db(path) -> sqlite3.Connection:
     return conn
 
 
+def build_v6_db(path) -> sqlite3.Connection:
+    conn = db.connect(path)
+    assert db.migrate(conn, TZ, target=6) == 6
+    return conn
+
+
 def add_group(conn, name, *, mode="session", deleted=0, created_at=0) -> int:
     cur = conn.execute(
         "INSERT INTO groups(name, emoji, weekday_minutes, weekend_minutes, paused, deleted, "
@@ -275,7 +281,7 @@ def test_failed_v4_leaves_v3_intact(tmp_path, monkeypatch):
 
     assert db.migrate(conn, TZ, target=5) == 5
     assert usage(conn, group, "2026-11-10") == 300
-    assert db.migrate(conn, TZ) == 6
+    assert db.migrate(conn, TZ) == 7
     conn.close()
 
 
@@ -303,28 +309,37 @@ def test_failed_string_migration_is_atomic(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
-def test_fresh_db_reaches_v6_without_a_backup(tmp_path):
+def test_fresh_db_reaches_v7_without_a_backup(tmp_path):
     path = tmp_path / "fresh.db"
     conn = db.connect(path)
 
-    assert db.migrate(conn, TZ) == 6
-    assert db.current_version(conn) == 6
-    for goal in (4, 5, 6):
+    assert db.migrate(conn, TZ) == 7
+    assert db.current_version(conn) == 7
+    for goal in (4, 5, 6, 7):
         assert not path.with_name(f"{path.name}.pre-v{goal}.bak").exists()
     assert "bonus" not in table_names(conn)
     assert "usage_seconds" not in table_names(conn)
     assert not {"weekday_minutes", "weekend_minutes"} & group_columns(conn)
+    # steps 5 and 7 both create group_windows on a fresh database; the v7 shape wins
+    assert {row[1] for row in conn.execute("PRAGMA table_info(group_windows)")} == {
+        "id",
+        "group_id",
+        "start_min",
+        "end_min",
+        "days",
+    }
+    assert conn.execute("SELECT COUNT(*) FROM group_windows").fetchone()[0] == 0
     conn.close()
 
 
 def test_newer_db_is_refused(tmp_path):
     conn = db.connect(tmp_path / "t.db")
-    conn.execute("PRAGMA user_version=7")
+    conn.execute("PRAGMA user_version=8")
     conn.commit()
 
     with pytest.raises(RuntimeError, match="newer than this build"):
         db.migrate(conn, TZ)
-    assert db.current_version(conn) == 7
+    assert db.current_version(conn) == 8
     conn.close()
 
 
@@ -334,12 +349,12 @@ def test_migrate_is_idempotent(tmp_path):
     normal_group(conn)
     conn.commit()
 
-    assert db.migrate(conn, TZ) == 6
-    backup = path.with_name(path.name + ".pre-v6.bak")
+    assert db.migrate(conn, TZ) == 7
+    backup = path.with_name(path.name + ".pre-v7.bak")
     assert backup.exists()
     stamp = backup.stat().st_mtime_ns
 
-    assert db.migrate(conn, TZ) == 6
+    assert db.migrate(conn, TZ) == 7
     # a second call applies nothing, so it must not rewrite the copy
     assert backup.stat().st_mtime_ns == stamp
     assert not path.with_name(path.name + ".pre-v4.bak").exists()
@@ -363,16 +378,21 @@ def test_migrate_refuses_data_migration_when_not_allowed(tmp_path):
     conn.close()
 
 
-def test_passwd_works_on_a_v4_db(tmp_path):
-    """A pure-DDL v5+v6 chain still lets the CLI open and upgrade an older database."""
+def test_passwd_refuses_an_older_db_until_the_server_upgraded_it(tmp_path):
+    """v7 rewrites window rows, so an offline command may not run it."""
     path = tmp_path / "t.db"
     conn = build_v4_db(path)
     normal_group(conn)
     conn.commit()
 
-    assert db.migrate(conn, TZ, allow_data_migration=False) == 6
-    assert db.current_version(conn) == 6
-    assert path.with_name(path.name + ".pre-v6.bak").exists()
+    with pytest.raises(db.DataMigrationRequired, match="start TimeFence once"):
+        db.migrate(conn, TZ, allow_data_migration=False)
+    assert db.current_version(conn) == 4
+
+    # the server runs the upgrade; afterwards the pure-DDL check passes again
+    assert db.migrate(conn, TZ) == 7
+    assert db.migrate(conn, TZ, allow_data_migration=False) == 7
+    assert path.with_name(path.name + ".pre-v7.bak").exists()
     conn.close()
 
 
@@ -521,8 +541,8 @@ def test_v6_drops_the_budget_tables_and_columns(tmp_path):
     conn.execute("INSERT INTO free_allow(group_id, until_ts) VALUES(?, 1800000000)", (group,))
     conn.commit()
 
-    assert db.migrate(conn, TZ) == 6
-    assert db.current_version(conn) == 6
+    assert db.migrate(conn, TZ) == 7
+    assert db.current_version(conn) == 7
 
     assert "bonus" not in table_names(conn)
     assert "usage_seconds" not in table_names(conn)
@@ -553,7 +573,7 @@ def test_v5_to_v6_writes_a_verified_pre_v6_backup(tmp_path):
     backup = path.with_name(path.name + ".pre-v6.bak")
     backup.write_bytes(b"corrupt, not a database")
 
-    db.migrate(conn, TZ)
+    db.migrate(conn, TZ, target=6)
 
     with sqlite3.connect(backup) as check:
         assert int(check.execute("PRAGMA user_version").fetchone()[0]) == 5
@@ -572,7 +592,8 @@ def test_v6_step_is_a_plain_script_so_the_cli_can_open(tmp_path):
     normal_group(conn)
     conn.commit()
 
-    assert db.migrate(conn, TZ, allow_data_migration=False) == 6
+    # only step 6 is pending, so the CLI may run it; v7 is a callable step
+    assert db.migrate(conn, TZ, target=6, allow_data_migration=False) == 6
     assert path.with_name(path.name + ".pre-v6.bak").exists()
     conn.close()
 
@@ -593,6 +614,132 @@ def test_v6_failure_leaves_v5_intact(tmp_path, monkeypatch):
     assert db.current_version(conn) == 5
     assert "usage_seconds" in table_names(conn)
     assert {"weekday_minutes", "weekend_minutes"} <= group_columns(conn)
+    conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# schema v7: a window can name any days of the week
+# --------------------------------------------------------------------------- #
+
+
+def v6_group(conn, name="Games") -> int:
+    """A group row as it looks at v6: the minute columns are already gone."""
+    cur = conn.execute(
+        "INSERT INTO groups(name, emoji, paused, deleted, created_at) VALUES(?,?,0,0,0)",
+        (name, ""),
+    )
+    return int(cur.lastrowid)
+
+
+def add_window(conn, group_id, start_min, end_min, days) -> int:
+    cur = conn.execute(
+        "INSERT INTO group_windows(group_id, start_min, end_min, days) VALUES(?,?,?,?)",
+        (group_id, start_min, end_min, days),
+    )
+    return int(cur.lastrowid)
+
+
+def window_rows(conn) -> list[tuple]:
+    return [
+        tuple(row)
+        for row in conn.execute(
+            "SELECT id, group_id, start_min, end_min, days FROM group_windows ORDER BY id"
+        )
+    ]
+
+
+def test_v6_to_v7_maps_every_old_day_value(tmp_path):
+    conn = build_v6_db(tmp_path / "t.db")
+    group = v6_group(conn)
+    all_id = add_window(conn, group, 1260, 420, "all")
+    weekday_id = add_window(conn, group, 360, 420, "weekday")
+    weekend_id = add_window(conn, group, 720, 780, "weekend")
+    conn.commit()
+
+    assert db.migrate(conn, TZ) == 7
+    assert db.current_version(conn) == 7
+    assert window_rows(conn) == [
+        (all_id, group, 1260, 420, "all"),
+        (weekday_id, group, 360, 420, "mon,tue,wed,thu,fri"),
+        (weekend_id, group, 720, 780, "sat,sun"),
+    ]
+    # the table shape is the v7 one, with the index back on the new table
+    assert {row[1] for row in conn.execute("PRAGMA table_info(group_windows)")} == {
+        "id",
+        "group_id",
+        "start_min",
+        "end_min",
+        "days",
+    }
+    indexes = {row[1] for row in conn.execute("PRAGMA index_list(group_windows)")}
+    assert "group_windows_group" in indexes
+    # the new column carries no CHECK list: any day list is storable
+    add_window(conn, group, 0, 60, "mon,fri")
+    conn.commit()
+    assert window_rows(conn)[-1][4] == "mon,fri"
+    # the foreign key still cascades
+    conn.execute("DELETE FROM groups WHERE id=?", (group,))
+    assert window_rows(conn) == []
+    conn.close()
+
+
+def test_v6_to_v7_writes_a_verified_pre_v7_backup(tmp_path):
+    path = tmp_path / "t.db"
+    conn = build_v6_db(path)
+    group = v6_group(conn)
+    add_window(conn, group, 1260, 420, "weekday")
+    conn.commit()
+    backup = path.with_name(path.name + ".pre-v7.bak")
+    backup.write_bytes(b"corrupt, not a database")
+
+    db.migrate(conn, TZ)
+
+    with sqlite3.connect(backup) as check:
+        assert int(check.execute("PRAGMA user_version").fetchone()[0]) == 6
+        assert check.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert check.execute("SELECT days FROM group_windows").fetchone()[0] == "weekday"
+    if os.name != "nt":
+        assert backup.stat().st_mode & 0o777 == 0o600
+    conn.close()
+
+
+def test_v7_is_a_callable_step_so_the_cli_must_wait(tmp_path):
+    assert callable(db.MIGRATIONS[7])
+    conn = build_v6_db(tmp_path / "t.db")
+    v6_group(conn)
+    conn.commit()
+
+    with pytest.raises(db.DataMigrationRequired):
+        db.migrate(conn, TZ, allow_data_migration=False)
+    assert db.current_version(conn) == 6
+    assert db.migrate(conn, TZ) == 7
+    conn.close()
+
+
+def test_v7_failure_leaves_v6_intact(tmp_path, monkeypatch):
+    conn = build_v6_db(tmp_path / "t.db")
+    group = v6_group(conn)
+    add_window(conn, group, 1260, 420, "weekend")
+    conn.commit()
+
+    def failing(connection, tz):
+        connection.execute(db.MIGRATION_7_CREATE)
+        connection.execute(db.MIGRATION_7_COPY)
+        raise RuntimeError("boom")
+
+    monkeypatch.setitem(db.MIGRATIONS, 7, failing)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        db.migrate(conn, TZ)
+
+    assert db.current_version(conn) == 6
+    assert window_rows(conn) == [(1, group, 1260, 420, "weekend")]
+    assert (
+        conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='group_windows_v7'").fetchone()[
+            0
+        ]
+        == 0
+    )
     conn.close()
 
 

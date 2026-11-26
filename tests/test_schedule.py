@@ -99,7 +99,7 @@ def test_a_window_wrapping_midnight_closes_on_the_morning_after():
 
 def test_the_day_filter_belongs_to_the_day_the_window_starts():
     tz = ZoneInfo("UTC")
-    group = a_group([Window(22 * 60, 7 * 60, "weekday")])
+    group = a_group([Window(22 * 60, 7 * 60, "mon,tue,wed,thu,fri")])
     # Friday 22:00 opens and stays open into Saturday morning
     assert budget.schedule_state(group, tz, ts(2026, 11, 13, 21)) == (False, ts(2026, 11, 13, 22))
     assert budget.schedule_state(group, tz, ts(2026, 11, 14, 2)) == (True, ts(2026, 11, 14, 7))
@@ -109,7 +109,7 @@ def test_the_day_filter_belongs_to_the_day_the_window_starts():
 
 def test_a_weekend_only_window_reaches_five_days_ahead():
     tz = ZoneInfo("UTC")
-    group = a_group([Window(20 * 60, 23 * 60, "weekend")])
+    group = a_group([Window(20 * 60, 23 * 60, "sat,sun")])
     monday = ts(2026, 11, 16, 8)
     assert budget.schedule_state(group, tz, monday) == (False, ts(2026, 11, 21, 20))
 
@@ -194,6 +194,14 @@ def test_a_window_over_the_fall_back_hour_stays_open_through_it():
 # --------------------------------------------------------------------------- #
 
 
+def random_days(rng: random.Random) -> str:
+    """`all` or any set of days, the way the editor can now produce them."""
+    if rng.random() < 0.25:
+        return budget.WINDOW_DAYS_ALL
+    picked = [day for day in budget.WINDOW_DAYS_SHORT if rng.random() < 0.5]
+    return budget.normalize_days(",".join(picked) or "all")
+
+
 def random_windows(rng: random.Random) -> list[Window]:
     windows = []
     for _ in range(rng.randint(0, 4)):
@@ -201,7 +209,7 @@ def random_windows(rng: random.Random) -> list[Window]:
         end = rng.randrange(0, 1439)
         if end >= start:
             end += 1
-        windows.append(Window(start, end, rng.choice(budget.WINDOW_DAYS)))
+        windows.append(Window(start, end, random_days(rng)))
     return windows
 
 

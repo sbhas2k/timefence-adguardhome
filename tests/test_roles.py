@@ -173,7 +173,7 @@ def test_kid_payload_names_the_next_opening(settings, fake, monkeypatch):
             json={
                 "name": "Games",
                 "services": ["roblox"],
-                "windows": [{"start": "15:00", "end": "16:00", "days": "weekday"}],
+                "windows": [{"start": "15:00", "end": "16:00", "days": "mon,tue,wed,thu,fri"}],
             },
         )
         assert created.status_code == 200, created.text

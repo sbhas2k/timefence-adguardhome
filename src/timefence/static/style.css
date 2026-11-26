@@ -238,8 +238,18 @@ fieldset { margin: 0; padding: 10px 12px 12px; border: 1px solid var(--border); 
    on a phone, so no fixed column can push the page sideways. */
 .window-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
 .window-row > input[type="time"] { flex: 1 1 120px; width: auto; min-width: 0; }
-.window-row > select { flex: 1 1 130px; min-width: 0; }
+.window-row > .day-chips { flex: 1 1 100%; }
 .window-row > .btn { flex: 0 0 auto; }
+/* Seven day chips plus "Every day": a pressed chip is a day the window starts
+   on. They wrap like everything else in the row, never scroll the page. */
+.day-chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-width: 0; }
+.day-chip { min-width: 34px; min-height: 34px; padding: 0 8px; font-size: 13px; }
+.day-chip[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  color: var(--accent);
+  font-weight: 700;
+}
 fieldset legend { padding: 0 4px; font-size: 13px; font-weight: 600; color: var(--muted); }
 
 .tabs { display: flex; flex-wrap: nowrap; gap: 6px; margin-bottom: 14px; overflow-x: auto; padding-bottom: 2px; }
@@ -400,5 +410,5 @@ tbody tr:last-child td { border-bottom: none; }
 
 /* A 320 px phone: the window row gives each control the full width it needs. */
 @media (max-width: 360px) {
-  .window-row > input[type="time"], .window-row > select { flex: 1 1 100%; }
+  .window-row > input[type="time"], .window-row > .day-chips { flex: 1 1 100%; }
 }

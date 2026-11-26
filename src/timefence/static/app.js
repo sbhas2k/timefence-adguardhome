@@ -398,16 +398,35 @@
   }
 
   /* The allowed windows under the live line: 24-hour times exactly as the
-     server sends them, plus the day range only when a window is restricted.
+     server sends them, plus the day list only when a window is restricted.
+     `all` is the common case and stays unmarked, so the line stays readable.
      No windows means always open, so the line is left out entirely. */
+  var CARD_DAY_KEYS = {
+    mon: "card.day_mon",
+    tue: "card.day_tue",
+    wed: "card.day_wed",
+    thu: "card.day_thu",
+    fri: "card.day_fri",
+    sat: "card.day_sat",
+    sun: "card.day_sun"
+  };
+
+  /* "(" + the picked days in week order + ")": the server already normalised
+     the list, so no ordering or de-duplication happens here. */
+  function windowDaysLabel(days) {
+    if (!days || days === "all") { return ""; }
+    var names = String(days).split(",").map(function (day) {
+      var key = CARD_DAY_KEYS[day.trim()];
+      return key ? t(key) : "";
+    }).filter(function (name) { return Boolean(name); });
+    return names.length ? " (" + names.join(", ") + ")" : " " + t("card.window_days_some");
+  }
+
   function windowsLineHtml(group) {
     var windows = group.windows || [];
     if (!windows.length) { return ""; }
     var labels = windows.map(function (w) {
-      var label = t("card.window_range", { start: w.start, end: w.end });
-      if (w.days === "weekday") { label += " " + t("card.window_days_weekday"); }
-      if (w.days === "weekend") { label += " " + t("card.window_days_weekend"); }
-      return label;
+      return t("card.window_range", { start: w.start, end: w.end }) + windowDaysLabel(w.days);
     });
     return '<p class="muted small live-windows">' +
       esc(t("card.windows_line", { times: labels.join(" · ") })) + "</p>";
@@ -899,16 +918,64 @@
       return { start: w.start, end: w.end, days: w.days };
     });
 
-    function dayOptions(selectedDay) {
-      var days = [
-        { value: "all", label: t("groups.days_all") },
-        { value: "weekday", label: t("groups.days_weekday") },
-        { value: "weekend", label: t("groups.days_weekend") }
-      ];
-      return days.map(function (day) {
-        return '<option value="' + day.value + '"' +
-          (day.value === selectedDay ? " selected" : "") + ">" + esc(day.label) + "</option>";
-      }).join("");
+    /* The editor's Days row: one chip per weekday plus "Every day". A window
+       stores the normalised string the server validates (`all` or `mon,fri`),
+       never the chip state, so what the form sends is what the schedule uses. */
+    var WEEK = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+    var DAY_CHIP_KEYS = {
+      mon: "groups.days_mon",
+      tue: "groups.days_tue",
+      wed: "groups.days_wed",
+      thu: "groups.days_thu",
+      fri: "groups.days_fri",
+      sat: "groups.days_sat",
+      sun: "groups.days_sun"
+    };
+    var DAY_NAME_KEYS = {
+      mon: "groups.day_mon",
+      tue: "groups.day_tue",
+      wed: "groups.day_wed",
+      thu: "groups.day_thu",
+      fri: "groups.day_fri",
+      sat: "groups.day_sat",
+      sun: "groups.day_sun"
+    };
+
+    function dayChipsHtml(index, days) {
+      var chosen = !days || days === "all" ? [] : String(days).split(",");
+      function chip(day, label, long) {
+        var pressed = day === "all"
+          ? (!chosen.length || chosen.length === WEEK.length)
+          : chosen.indexOf(day) >= 0;
+        return '<button type="button" class="btn ghost day-chip" data-day="' + day +
+          '" aria-pressed="' + (pressed ? "true" : "false") + '" aria-label="' + esc(long) +
+          '" title="' + esc(long) + '">' + esc(label) + "</button>";
+      }
+      return '<div class="row tight day-chips" data-window-days="' + index +
+        '" role="group" aria-label="' + esc(t("groups.window_days")) + '">' +
+        WEEK.map(function (day) {
+          return chip(day, t(DAY_CHIP_KEYS[day]), t(DAY_NAME_KEYS[day]));
+        }).join("") +
+        chip("all", t("groups.days_all"), t("groups.days_all")) + "</div>";
+    }
+
+    function readDayChips(box) {
+      var pressed = $$("[data-day]", box).filter(function (chip) {
+        return chip.getAttribute("aria-pressed") === "true" && chip.dataset.day !== "all";
+      }).map(function (chip) { return chip.dataset.day; });
+      if (!pressed.length || pressed.length === WEEK.length) { return "all"; }
+      return WEEK.filter(function (day) { return pressed.indexOf(day) >= 0; }).join(",");
+    }
+
+    function paintDayChips(box, days) {
+      var chosen = !days || days === "all" ? [] : String(days).split(",");
+      $$("[data-day]", box).forEach(function (chip) {
+        var day = chip.dataset.day;
+        var pressed = day === "all"
+          ? (!chosen.length || chosen.length === WEEK.length)
+          : chosen.indexOf(day) >= 0;
+        chip.setAttribute("aria-pressed", pressed ? "true" : "false");
+      });
     }
 
     /* One allowed time: from, until, which days. An empty list means always
@@ -922,8 +989,7 @@
           '" aria-label="' + esc(t("groups.window_from")) + '">' +
           '<input type="time" data-window-end="' + index + '" value="' + esc(w.end) +
           '" aria-label="' + esc(t("groups.window_until")) + '">' +
-          '<select data-window-days="' + index + '" aria-label="' +
-          esc(t("groups.window_days")) + '">' + dayOptions(w.days) + "</select>" +
+          dayChipsHtml(index, w.days) +
           '<button type="button" class="btn ghost" data-action="remove-window" data-window="' +
           index + '">' + esc(t("groups.window_remove")) + "</button></div>";
       }).join("");
@@ -941,7 +1007,7 @@
         return {
           start: start ? start.value : w.start,
           end: end ? end.value : w.end,
-          days: days ? days.value : w.days
+          days: days ? readDayChips(days) : w.days
         };
       });
     }
@@ -1026,11 +1092,35 @@
       var windowList = $("#allowed-windows");
       if (windowList) {
         windowList.addEventListener("click", function (event) {
-          var target = event.target.closest("[data-action='remove-window']");
-          if (!target) { return; }
-          windows = readWindows();
-          windows.splice(Number(target.dataset.window), 1);
-          paintWindows();
+          var remove = event.target.closest("[data-action='remove-window']");
+          if (remove) {
+            windows = readWindows();
+            windows.splice(Number(remove.dataset.window), 1);
+            paintWindows();
+            return;
+          }
+          var chip = event.target.closest("[data-day]");
+          if (!chip) { return; }
+          var box = chip.closest("[data-window-days]");
+          if (!box) { return; }
+          var day = chip.dataset.day;
+          if (day === "all") {
+            paintDayChips(box, "all");
+            return;
+          }
+          var current = readDayChips(box);
+          var chosen = current === "all" ? [] : current.split(",");
+          if (chosen.indexOf(day) >= 0) {
+            chosen = chosen.filter(function (name) { return name !== day; });
+          } else {
+            chosen.push(day);
+          }
+          /* Deselecting the last day means every day, the same rule the
+             server applies to an empty day list. */
+          paintDayChips(
+            box,
+            chosen.length ? WEEK.filter(function (name) { return chosen.indexOf(name) >= 0; }).join(",") : "all"
+          );
         });
       }
       $$("[data-action='pick-services']").forEach(function (button) {

@@ -1202,9 +1202,11 @@ def test_the_allowed_times_editor_replaces_the_minutes_fields():
     assert "windows: readWindows()" in payload
     for token in ("minutes", "weekday", "weekend"):
         assert token not in payload, token
-    # the three day choices are the values the server validates
-    for value in ('value: "all"', 'value: "weekday"', 'value: "weekend"'):
-        assert value in editor, value
+    # the seven day chips plus Every day: the values the server validates
+    assert 'var WEEK = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];' in editor
+    assert 'chip("all"' in editor
+    assert "aria-pressed" in editor
+    assert "data-window-days=" in editor
 
     for key in (
         "groups.allowed_heading",
@@ -1215,10 +1217,23 @@ def test_the_allowed_times_editor_replaces_the_minutes_fields():
         "groups.window_days",
         "groups.window_remove",
         "groups.days_all",
-        "groups.days_weekday",
-        "groups.days_weekend",
+        "groups.days_mon",
+        "groups.days_tue",
+        "groups.days_wed",
+        "groups.days_thu",
+        "groups.days_fri",
+        "groups.days_sat",
+        "groups.days_sun",
+        "groups.day_mon",
+        "groups.day_tue",
+        "groups.day_wed",
+        "groups.day_thu",
+        "groups.day_fri",
+        "groups.day_sat",
+        "groups.day_sun",
     ):
-        assert f't("{key}"' in editor, key
+        # the day keys live in the chip-label maps, so the literal name is enough
+        assert f'"{key}"' in editor, key
         assert i18n.t(key) != key, key
     # a new group starts with no allowed times at all, which means always open
     assert "windows: []," in editor
@@ -1248,7 +1263,7 @@ def live_probe_script(js: str) -> str:
             "status": "outside_hours",
             "open_until": None,
             "opens_at": "14:00",
-            "windows": [{"start": "14:00", "end": "16:00", "days": "weekend"}],
+            "windows": [{"start": "14:00", "end": "16:00", "days": "sat,sun"}],
         },
         {"id": 4, "status": "free", "free_until": 1999999999, "windows": []},
         {"id": 5, "status": "blocked_admin", "force_block_until": 1999999999, "windows": []},
@@ -1315,8 +1330,15 @@ def test_the_live_row_has_no_clock_maths_and_no_budget():
 WINDOWS_KEYS = (
     "card.windows_line",
     "card.window_range",
-    "card.window_days_weekday",
-    "card.window_days_weekend",
+    "card.window_days_all",
+    "card.window_days_some",
+    "card.day_mon",
+    "card.day_tue",
+    "card.day_wed",
+    "card.day_thu",
+    "card.day_fri",
+    "card.day_sat",
+    "card.day_sun",
 )
 
 
@@ -1343,8 +1365,8 @@ def windows_probe_script(js: str) -> str:
             "status": "outside_hours",
             "opens_at": "08:00",
             "windows": [
-                {"start": "08:00", "end": "09:00", "days": "weekday"},
-                {"start": "10:00", "end": "11:00", "days": "weekend"},
+                {"start": "08:00", "end": "09:00", "days": "mon,tue,wed,thu,fri"},
+                {"start": "10:00", "end": "11:00", "days": "sat,sun"},
             ],
         },
         {"id": 3, "status": "allowed", "open_until": None, "windows": []},
@@ -1373,6 +1395,7 @@ def windows_probe_script(js: str) -> str:
             js_function(js, "esc"),
             js_function(js, "statusFor"),
             js_function(js, "liveHtml"),
+            js_function(js, "windowDaysLabel"),
             js_function(js, "windowsLineHtml"),
             "var cases = " + json.dumps(cases) + ";",
             "console.log(JSON.stringify(cases.map(function (group) {",
@@ -1409,15 +1432,19 @@ def test_the_today_card_lists_the_allowed_windows():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
-def test_the_windows_line_marks_weekdays_and_weekends():
-    """Only a restricted window carries a day range; 24-hour times are kept."""
+def test_the_windows_line_names_the_picked_days():
+    """Only a restricted window carries a day list; 24-hour times are kept."""
     rows = run_windows_probe(read("static", "app.js"))
     assert rows[1][1] == (
         '<p class="muted small live-windows">'
-        "Allowed 08:00–09:00 (Mon–Fri) · 10:00–11:00 (Sat–Sun)</p>"
+        "Allowed 08:00–09:00 (Mon, Tue, Wed, Thu, Fri) · 10:00–11:00 (Sat, Sun)</p>"
     )
-    assert i18n.STRINGS["en"]["card.window_days_weekday"] == "(Mon–Fri)"
-    assert i18n.STRINGS["en"]["card.window_days_weekend"] == "(Sat–Sun)"
+    # a window on every day carries no day qualifier at all
+    assert rows[0][1] == (
+        '<p class="muted small live-windows">Allowed 14:00–15:00 · 18:00–19:00</p>'
+    )
+    assert i18n.STRINGS["en"]["card.day_mon"] == "Mon"
+    assert i18n.STRINGS["en"]["card.window_days_all"] == "(Mon–Sun)"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
@@ -1458,7 +1485,7 @@ def signature_probe_script(js: str) -> str:
     cases = [
         dict(base, windows=[{"start": "14:00", "end": "15:00", "days": "all"}]),
         dict(base, windows=[{"start": "14:00", "end": "16:00", "days": "all"}]),
-        dict(base, windows=[{"start": "14:00", "end": "15:00", "days": "weekend"}]),
+        dict(base, windows=[{"start": "14:00", "end": "15:00", "days": "sat,sun"}]),
         dict(base, windows=[{"start": "14:00", "end": "15:00", "days": "all"}]),
         dict(base, windows=[]),
     ]
