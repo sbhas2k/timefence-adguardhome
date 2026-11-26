@@ -115,6 +115,13 @@ The `group_closed` alert says when the group opens again as a local `HH:MM`.
 With windows that only apply to some days (for example weekends), the next
 opening can be several days away and the message still shows only the time.
 
+## A window cannot cover the last minute of the day
+
+A window cannot end at 24:00, so `00:00 – 23:59` would leave a group blocked for
+the last minute of that day; give it no windows to allow it all day. Windows
+that wrap midnight (`18:00 – 01:00` on `mon,tue,wed,thu,fri`) are expressible,
+and their day list names the day the window starts on.
+
 ## Shutdown blocks everything on purpose
 
 Stopping TimeFence cleanly blocks every managed group, so children cannot

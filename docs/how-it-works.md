@@ -11,9 +11,9 @@ match that intent.
 - **free_allow** — a group is allowed whatever its schedule says until a
   timestamp.
 - **group_windows** — 0..4 **allowed** windows per group: start and end as
-  minutes after local midnight, and the days they apply to (`all`, `weekday`,
-  `weekend`). Inside a window the group is open; outside every window it is
-  blocked. No rows = always open.
+  minutes after local midnight, and the days they apply to (`all`, or a
+  comma-separated list in week order such as `mon,fri`). Inside a window the
+  group is open; outside every window it is blocked. No rows = always open.
 - **alerts_sent** — one row per notification, reserved before delivery so a
   restart does not resend it and the hourly limit can be counted (a failed
   delivery keeps its row). Pruned after 14 days.
@@ -25,22 +25,25 @@ match that intent.
   writes or reads it.
 
 The SQLite file is `${DATA_DIR}/timefence.db`, created and migrated atomically on
-start (`PRAGMA user_version`, schema v6). An upgrade of an existing database
+start (`PRAGMA user_version`, schema v7). An upgrade of an existing database
 first writes one verified copy named `<database>.pre-v<schema>.bak` next to it. The file is mode 0600 and the data
 directory 0700; the process sets `umask 077` before creating anything.
 
 ## Allowed times
 
 A group is open when *at least one* of its windows contains the local time, and
-the day filter of a window belongs to the day the window **starts**: a
-`weekday` 21:00 – 07:00 window covers Saturday morning, because it started on
-Friday night. Windows may cross midnight and overlapping windows are a union; a
-`weekend` window only ever applies to Saturday and Sunday. A group with no
-windows has no restriction and is always open — it can still be blocked, paused
-or freed like any other group.
+the day list of a window belongs to the day the window **starts**: a window on
+`mon,tue,wed,thu,fri` that runs 21:00 – 07:00 covers Saturday morning, because
+it started on Friday night, and a `sat,sun` window only ever applies to Saturday
+and Sunday. Any set of days is allowed (`mon,fri`, all seven, or the `all`
+sentinel meaning every day). Windows may cross midnight and overlapping windows
+are a union. A group with no windows has no restriction and is always open — it
+can still be blocked, paused or freed like any other group.
 
 To allow a group all day, give it no windows: a window cannot end at 24:00, so
-`00:00 – 23:59` would close the group for the last minute of the day.
+`00:00 – 23:59` would close the group for the last minute of the day. A window
+that wraps midnight is expressible instead (for example `18:00 – 01:00` on
+`mon,tue,wed,thu,fri`), and its day list still names the day it starts on.
 
 ```
 open_now = any(window contains (local date, local minute-of-day))

@@ -174,6 +174,19 @@ There is no schema change unless a release's entry says so. When a release does
 change the schema, the migration writes one verified copy named
 `timefence.db.pre-v<schema>.bak` next to the database before its first change.
 
+### 1.0.x to 1.1.0
+
+- The database moves to **schema v7** and the copy is `timefence.db.pre-v7.bak`.
+  The step rewrites the stored day filter of every allowed time: `all` stays
+  `all`, `weekday` becomes `mon,tue,wed,thu,fri` and `weekend` becomes `sat,sun`,
+  so every existing schedule keeps its meaning.
+- **A window can now name any days**, not only weekdays or weekends. The editor
+  shows seven day chips plus "Every day", and the Today card names the picked
+  days when they are not all of them.
+- The schema step rewrites rows, so `timefence passwd` reports that the database
+  must be upgraded first: start TimeFence once after the update, then the
+  command works again.
+
 ```bash
 # script install
 cd timefence-adguardhome
@@ -195,6 +208,7 @@ previous release.
 
 | TimeFence | AdGuard Home | Python |
 |---|---|---|
+| 1.1.x | 0.107.x (control API v1) | 3.12 or newer |
 | 1.0.x | 0.107.x (control API v1) | 3.12 or newer |
 | 0.3.x | 0.107.x (control API v1) | 3.12 |
 

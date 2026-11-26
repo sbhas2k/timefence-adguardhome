@@ -5,7 +5,7 @@
 TimeFence is a small companion app for [AdGuard Home](https://adguard.com/adguard-home/overview.html).
 You group the apps and sites you want to ration (YouTube, Roblox, "the whole
 Play Store"...) and give each group up to four **allowed times**: a start, an
-end and the days it applies to (every day, weekdays or weekends). Inside those
+end and the days it applies to (every day, or any days you pick). Inside those
 times the group works normally; outside them TimeFence blocks it at the DNS
 level, and the block lifts by itself when the next window opens. A group with
 no windows is always open.
@@ -34,10 +34,11 @@ regenerate it are in [`docs/screenshots/`](docs/screenshots/).
 - **Unlimited groups.** Each group has a name, an emoji, 0–4 allowed times,
   any number of AdGuard *blocked services* and any number of custom domains.
 - **Allowed times, not a stopwatch.** Nothing is metered and nothing counts
-  down: a group is open inside its windows and blocked outside them, every day,
-  with no daily limit to keep track of. Windows may cross midnight ("21:00 –
-  07:00"), and the day filter belongs to the day the window starts on. No
-  windows at all means the group is always open.
+  down: a group is open inside its windows and blocked outside them, with no
+  daily limit to keep track of. Each window names any set of days you like
+  (Mondays and Fridays, just weekends, every day), may cross midnight ("21:00 –
+  07:00", "18:00 – 01:00"), and its day list belongs to the day the window
+  starts on. No windows at all means the group is always open.
 - **Read-only kid accounts with their own screen.** Admins manage everything; a
   `user` account sees only its own groups (plus shared ones) and gets one calm
   phone-first screen: "Open until 19:00", "Opens at 16:00", "Open all day" or
@@ -155,10 +156,11 @@ result without starting the web server.
 Admin → **Groups** → **New group**:
 
 1. Name + emoji (e.g. `Games` 🎮).
-2. Optionally add up to four **allowed times**: a start, an end, and whether
-   they apply every day, on weekdays or at weekends. The day is the day the
-   window starts on, and a window may cross midnight. No times = always open;
-   the helper text says so in the editor.
+2. Optionally add up to four **allowed times**: a start, an end, and the days
+   they apply to (seven day chips plus "Every day", so any set of days you
+   pick). The day is the day the window starts on, and a window may cross
+   midnight. No times = always open; the helper text says so in the editor. A
+   new group can also start from one of the two presets.
 3. Pick AdGuard **services** with the searchable picker (these are the official
    AdGuard "blocked services" ids), and/or paste **domains**, one per line.
    Pasted URLs are reduced to their hostname; each becomes `||domain^`, which

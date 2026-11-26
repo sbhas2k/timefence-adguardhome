@@ -4,6 +4,47 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project uses [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-11-24
+
+Nothing has to be reconfigured by hand. The database moves to schema v7 and the
+migration writes one verified copy first (`timefence.db.pre-v7.bak`), so a 1.0.x
+install upgrades on start and keeps every schedule it already had.
+
+### Added
+
+- **Any days you pick per allowed time.** A window used to be limited to every
+  day, weekdays or weekends; it now names any set of days (`mon,fri`,
+  `sat,sun`, all seven). The editor's Days select becomes seven day chips plus
+  "Every day", and the Today card adds the picked days to the schedule line,
+  e.g. "Allowed 16:00–18:00 (Mon, Fri)". Windows that wrap midnight are now
+  expressible per schedule, for example `18:00 – 01:00` on weekdays, and the day
+  list still names the day the window starts on.
+- **Extra time and Clear on the Today card.** A free group's panel now ends with
+  a Clear button (the existing `/free/clear` route) and its apply button is the
+  one-tap **Extra time**, defaulting to an hour ahead in the server's timezone.
+  The kid screen keeps showing "Free time until HH:MM" with no controls.
+- **Block everything now / Release everything.** Two admin buttons in the Today
+  header block every managed target at once, or lift everything TimeFence owns
+  (foreign AdGuard services and rules always stay). They are one-shot: they
+  never change a group's pause, free time or forced block, and the next
+  reconcile pass still follows each group's own schedule.
+- **Two starter presets** for a new group: School day (09:00–17:00 on weekdays,
+  09:00–18:00 at weekends) and No late nights (18:00–01:00 on weekdays,
+  17:00–01:00 at weekends). They only fill the editor's fields — nothing is
+  written until the group is saved — and they ship **windows only**: no AdGuard
+  service catalogue was available to verify a domain list against, so the
+  groups' own domains field stays in charge of targets.
+
+### Changed
+
+- The database is **schema v7**. The migration recreates `group_windows` with a
+  free-form day list and maps the old values (`all` → `all`, `weekday` →
+  `mon,tue,wed,thu,fri`, `weekend` → `sat,sun`). Because that step rewrites
+  rows, `timefence passwd` asks for one server start first, exactly like a data
+  migration from an older schema.
+- The day-picker strings and the "days must be all, weekdays or weekends" error
+  texts were replaced with the day-list wording.
+
 ## [1.0.0] - 2026-11-24
 
 The first public release since 0.3.0. The 0.4 and 0.5 work was developed

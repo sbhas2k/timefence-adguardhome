@@ -190,7 +190,7 @@ def test_legacy_default_hash_leaves_setup_open(tmp_path):
 
 
 def test_legacy_minutes_and_sessions_are_ignored(tmp_path, capsys):
-    """The old app only had daily minutes; v6 has no usage table to import into."""
+    """The old app only had daily minutes; there is no usage table to import into."""
     legacy = tmp_path / "legacy.db"
     target = tmp_path / "timefence.db"
     started = int(datetime(2026, 11, 12, 21, 0, tzinfo=TZ).timestamp())
@@ -205,7 +205,7 @@ def test_legacy_minutes_and_sessions_are_ignored(tmp_path, capsys):
     assert "ignoring" in printed.lower()
 
     conn = db.connect(target)
-    assert db.current_version(conn) == 6
+    assert db.current_version(conn) == 7
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "usage_seconds" not in tables
     assert "bonus" not in tables
