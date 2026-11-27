@@ -22,6 +22,31 @@ class ConfigError(RuntimeError):
     """Raised when the environment does not describe a usable configuration."""
 
 
+def redact_url(url: object) -> str:
+    """`url` with any userinfo masked, for logs, prints and the config dump.
+
+    Deliberately blunt: everything up to the last `@` is replaced, not just
+    what a URL parser would call userinfo. A password may hold characters that
+    split a URL (`@`, `/`, `?`, `#`), so a careful parse can read the boundary
+    in the wrong place; over-masking a URL that happens to hold an `@` later on
+    is harmless, printing a password is not. The scheme and everything after
+    that `@` stay, so a credentialled URL still shows its host and port. That
+    also means a URL with no `@` comes back exactly as it went in. Never raises.
+    """
+    try:
+        text = url if isinstance(url, str) else str(url)
+    except Exception:  # noqa: BLE001 - a config dump must never raise
+        return "***"
+    if not text:
+        return text
+    marker = text.find("://")
+    head, rest = (text[: marker + 3], text[marker + 3 :]) if marker >= 0 else ("", text)
+    at = rest.rfind("@")
+    if at < 0:
+        return text
+    return f"{head}***@{rest[at + 1 :]}"
+
+
 def _zoneinfo_key(path: str | Path) -> str | None:
     """'/usr/share/zoneinfo/Europe/London' -> 'Europe/London'."""
     text = str(path).replace("\\", "/")
@@ -221,7 +246,7 @@ def _parse_networks(value: str | None) -> tuple[ipaddress._BaseNetwork, ...]:
 
 @dataclass
 class Settings:
-    adguard_url: str = "http://127.0.0.1:3000"
+    adguard_url: str = field(default="http://127.0.0.1:3000", repr=False)
     adguard_user: str = "admin"
     adguard_password: str = field(default="", repr=False)
     base_path: str = "/"
@@ -322,7 +347,7 @@ class Settings:
 
     def redacted(self) -> dict:
         return {
-            "adguard_url": self.adguard_url,
+            "adguard_url": redact_url(self.adguard_url),
             "adguard_user": self.adguard_user,
             "adguard_password": "***" if self.adguard_password else "(unset)",
             "base_path": self.base_path,
