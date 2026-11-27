@@ -31,12 +31,12 @@ Add accounts and sample groups, then capture at 390×844 (phone) and 1280×800
 (desktop), light and dark. Keep each PNG small (well under 150 KB) and make sure
 no browser chrome, address bar or real data is in the frame.
 
-Five captures are taller or narrower than those two sizes, because the content
-does not fit the viewport:
+Five captures are not at those sizes: four are full-page captures, taller than
+the viewport, and one is a deliberate crop, smaller than a desktop frame.
 
-- `admin-today-1280.png` and `admin-today-1280-dark.png` are full-page desktop
+- `admin-today-1280.png` and `admin-today-1280-dark.png`: full-page desktop
   captures (1280×927), not viewport crops.
-- `admin-today-390.png` (390×968) and `groups-editor-390.png` (390×889) are
+- `admin-today-390.png` (390×968) and `groups-editor-390.png` (390×889):
   full-page phone captures.
-- `alerts-1280.png` is a card crop of the Alerts settings panel (748×732), not a
+- `alerts-1280.png`: the Alerts settings panel as a card crop (748×732), not a
   full-width desktop frame.
