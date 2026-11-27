@@ -295,6 +295,7 @@ the schedule, and `release` lifts the blocks while it stays stopped.
 - [Running in Docker](docs/docker.md)
 - [Deploy on a VM, step by step](docs/vm-deploy.md) — AdGuard Home + TimeFence on a VM for a home network, with DDNS
 - [Running on a remote VM](docs/remote-vm.md) — firewall rules, the DDNS allow-list helper, recovery
+- [Multiple AdGuard Home servers](docs/multiple-dns-servers.md) — one TimeFence, replicated by AdGuard Sync
 
 ## FAQ
 
