@@ -17,10 +17,11 @@ jobs:
   analyze:
     runs-on: ubuntu-latest
     steps:
-      - uses: github/codeql-action/init@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea  # v4.39.4
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: github/codeql-action/init@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea  # v4.39.4
         with:
-          languages: python
+          # both are scanned: src/timefence/static holds hand-written JavaScript
+          languages: python, javascript
           config-file: ./.github/codeql/codeql-config.yml
       - uses: github/codeql-action/analyze@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea  # v4.39.4
         with:
