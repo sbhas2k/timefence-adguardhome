@@ -208,7 +208,6 @@ previous release.
 
 | TimeFence | AdGuard Home | Python |
 |---|---|---|
-| 1.1.x | 0.107.x (control API v1) | 3.12 or newer |
 | 1.0.x | 0.107.x (control API v1) | 3.12 or newer |
 | 0.3.x | 0.107.x (control API v1) | 3.12 |
 
