@@ -16,7 +16,9 @@ install upgrades on start and keeps every schedule it already had.
   day, weekdays or weekends; it now names any set of days (`mon,fri`,
   `sat,sun`, all seven). The editor's Days select becomes seven day chips plus
   "Every day", and the Today card adds the picked days to the schedule line,
-  e.g. "Allowed 16:00–18:00 (Mon, Fri)". Windows that wrap midnight are now
+  e.g. "Allowed 16:00–18:00 (Mon, Fri)". The chips read "Mo Tu We Th Fr Sa Su",
+  so Tuesday and Thursday (and Saturday and Sunday) are no longer the same
+  letter; the full day name stays in the tooltip and the screen-reader label. Windows that wrap midnight are now
   expressible per schedule, for example `18:00 – 01:00` on weekdays, and the day
   list still names the day the window starts on.
 - **Extra time and Clear on the Today card.** A free group's panel now ends with
@@ -29,12 +31,14 @@ install upgrades on start and keeps every schedule it already had.
   blocks every group that is not paused until local midnight; `Free` opens a
   time panel and, once applied, frees every group until then and clears any
   stored block so it cannot come back; `Auto` clears both and the allowed times
-  take over again. Paused groups are never touched: paused always means
-  blocked. `Block` and `Auto` ask first and say what will happen, `Free` only
+  take over again. A paused group stays paused and never receives Block or
+  Free, and any Block or Free it carried is cancelled, so resuming it lands on
+  its schedule. `Block` and `Auto` ask first and say what will happen, `Free` only
   asks for the time. A segment is highlighted only when every group agrees, and
   the row disappears when every group is paused. The answer says whether
   AdGuard Home has applied it yet; if it has not, the change is saved and the
-  next reconcile pass applies it.
+  next reconcile pass applies it. One Apply at a time: a second tap while the
+  first is in flight is ignored, and a failed one keeps the chosen time.
 - **Two starter presets** for a new group: School day (09:00–17:00 on weekdays,
   09:00–18:00 at weekends) and No late nights (18:00–01:00 on weekdays,
   17:00–01:00 at weekends). They only fill the editor's fields — nothing is
@@ -54,6 +58,16 @@ install upgrades on start and keeps every schedule it already had.
 
 ### Fixed
 
+- **Times are always 24-hour.** Some views printed the browser's 12-hour form
+  ("09:00 PM") next to a 24-hour one ("21:00"), so one screen could show both.
+  Every time the app prints is now 24-hour `HH:MM` in the server's timezone,
+  on the kid screen as well. The time picker itself still follows the browser,
+  as it has to.
+- **A Free time on a clock-change day ends at the time you typed.** A time
+  inside a spring-forward gap (the hour the clock skips) now lands on the gap
+  edge instead of an hour later, and a time inside an autumn repeated hour
+  takes the pass that is still ahead, so a free window is never stretched past
+  the wall time. The same rule as the allowed times.
 - **The AdGuard Home address is printed without the password in it.** If
   `ADGUARD_URL` carried credentials (`http://user:password@host`), the startup
   log line and `timefence check` printed them as typed. The address is now shown

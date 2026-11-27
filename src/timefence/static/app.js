@@ -40,6 +40,8 @@
      switch drop it, so a stale time can never turn into a nearly-24-hour Free;
      a failed Apply keeps what was typed. */
   var allFree = { open: false, choice: null };
+  /* One Apply at a time: a double tap (or Enter held down) must not send twice. */
+  var allFreeInflight = false;
 
   var $ = function (sel) { return document.querySelector(sel); };
   var $$ = function (sel, root) {
@@ -61,18 +63,10 @@
     });
   }
 
+  /* 24-hour HH:MM in the server zone, whatever the browser's locale is: a
+     screen that mixes "21:00" with "09:00 PM" is unreadable. */
   function clock(ts) {
-    var seconds = Number(ts);
-    if (!seconds) { return ""; }
-    try {
-      return new Intl.DateTimeFormat(undefined, {
-        hour: "2-digit",
-        minute: "2-digit",
-        timeZone: timezone
-      }).format(new Date(seconds * 1000));
-    } catch (err) {
-      return "";
-    }
+    return hhmm(ts);
   }
 
   /* Minutes since midnight for an HH:MM value, or null when it is not one. */
@@ -1908,16 +1902,34 @@
     });
   }
 
+  function setAllFreeBusy(isBusy) {
+    var button = $("#all-free-apply");
+    if (!button) { return; }
+    button.disabled = isBusy;
+    if (isBusy) {
+      button.setAttribute("aria-disabled", "true");
+    } else {
+      button.removeAttribute("aria-disabled");
+    }
+  }
+
   function applyAllFree() {
+    if (allFreeInflight) { return; }  // a second tap while the first is in flight
     var until = allFreeUntil();
     if (!until) { return; }
-    api("POST", "/api/free-all", { until: until })
+    allFreeInflight = true;
+    setAllFreeBusy(true);
+    return api("POST", "/api/free-all", { until: until })
       .then(function (data) {
         resetAllFree();
         toast(allGroupsToast("free", data, until));
         return refresh();
       })
-      .catch(function (error) { toast(error.message); });  // a retry keeps the time
+      .catch(function (error) { toast(error.message); })  // a retry keeps the time
+      .then(function () {
+        allFreeInflight = false;
+        setAllFreeBusy(false);
+      });
   }
 
   var newGroupButton = $("#new-group");

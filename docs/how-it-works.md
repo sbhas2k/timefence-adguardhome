@@ -83,8 +83,11 @@ on the schedule.
 The Today screen's **All groups** row writes the same per-group fields for the
 whole house: Block clears free time and forces a block until local midnight,
 Free sets a free-until time and clears any forced block, Auto clears both. The
-choice is stored, so the reconcile loop keeps it on every pass; paused groups
-are never touched and a deleted group is ignored. Each action is one database
+choice is stored, so the reconcile loop keeps it on every pass. Every action
+first cancels any Block and Free on every group, paused ones included, and never
+adds either to a paused group: a group paused while it carried an override
+follows its schedule again when it is resumed. The paused flag is never changed
+and a deleted group is ignored. Each action is one database
 transaction and one event (`admin_block_all`, `admin_free_all`,
 `admin_auto_all`), and the response says whether AdGuard Home applied it yet —
 if not, the next pass does. The API also reports `open_now` and `next_change`, plus

@@ -672,6 +672,14 @@ def seed_house(client) -> dict:
     assert (
         client.post(f"/api/groups/{paused['id']}/pause", json={"paused": True}).status_code == 200
     )
+    # a paused group can carry both overrides; every action must cancel them
+    with locked_conn(client.app) as conn:
+        conn.execute(
+            "INSERT INTO free_allow(group_id, until_ts) VALUES(?,?)",
+            (paused["id"], int(datetime(2026, 11, 11, 18, 0, tzinfo=UTC).timestamp())),
+        )
+        conn.execute("UPDATE groups SET force_block_until=? WHERE id=?", (MIDNIGHT, paused["id"]))
+        conn.commit()
     return {
         "inside": inside,
         "outside": outside,
@@ -691,7 +699,7 @@ def test_block_all_blocks_an_in_hours_group_and_keeps_the_choice(ready, fake, mo
     client = ready["client"]
     freeze(monkeypatch, client)
     groups = seed_house(client)
-    paused_before = all_group_state(client)[groups["paused"]["id"]]
+    assert all_group_state(client)[groups["paused"]["id"]]["free"] != 0
 
     response = client.post("/api/block-all", json={})
     assert response.status_code == 200, response.text
@@ -700,7 +708,8 @@ def test_block_all_blocks_an_in_hours_group_and_keeps_the_choice(ready, fake, mo
     stored = all_group_state(client)
     for name in ("inside", "outside", "free", "blocked"):
         assert stored[groups[name]["id"]] == {"paused": False, "block": MIDNIGHT, "free": 0}
-    assert stored[groups["paused"]["id"]] == paused_before  # never touched
+    # paused stays paused, and its Block and Free are cancelled, never added to
+    assert stored[groups["paused"]["id"]] == {"paused": True, "block": 0, "free": 0}
 
     domains = blocked_domains(fake)
     assert domains == {
@@ -1069,7 +1078,6 @@ def test_the_matrix_of_every_starting_state_and_action(
     freeze(monkeypatch, client)
     windows, free_ts, block_ts = START_STATES[state]
     group = build_state(client, windows, free_ts, block_ts, paused=paused)
-    before = stored_row(client, group["id"])
     payload, mode = ACTIONS[action]
 
     response = client.post(f"/api/{action}", json=payload)
@@ -1077,8 +1085,10 @@ def test_the_matrix_of_every_starting_state_and_action(
     assert response.json()["groups"] == (0 if paused else 1)
 
     if paused:
-        # paused always wins and is never written by a whole-house action
-        assert stored_row(client, group["id"]) == before
+        # paused stays paused; its Block and Free are cancelled, neither added
+        after = stored_row(client, group["id"])
+        assert after["paused"] is True
+        assert (after["block"], after["free"]) == (0, None)
         status = "paused"
     else:
         after = stored_row(client, group["id"])
@@ -1103,6 +1113,50 @@ def test_the_matrix_of_every_starting_state_and_action(
     snapshot = (stored_row(client, group["id"]), set(fake.rules))
     client.app.state.reconciler.run("test")
     assert (stored_row(client, group["id"]), set(fake.rules)) == snapshot
+
+
+START_OVERRIDES = {
+    "free": (int(datetime(2026, 11, 11, 18, 0, tzinfo=UTC).timestamp()), 0),
+    "block": (None, NEXT_MIDNIGHT),
+    "both": (int(datetime(2026, 11, 11, 18, 0, tzinfo=UTC).timestamp()), NEXT_MIDNIGHT),
+}
+
+
+@pytest.mark.parametrize("action", sorted(ACTIONS))
+@pytest.mark.parametrize("start", sorted(START_OVERRIDES))
+def test_resuming_a_paused_group_does_not_bring_a_cancelled_override_back(
+    ready, fake, monkeypatch, action, start
+):
+    """Pause -> whole-house action -> resume must land on the schedule."""
+    client = ready["client"]
+    freeze(monkeypatch, client)
+    free_ts, block_ts = START_OVERRIDES[start]
+    group = make_group(client, name="Subject", services=[], domains=["subject.example"])
+    gid = group["id"]
+    with locked_conn(client.app) as conn:
+        if free_ts:
+            conn.execute("INSERT INTO free_allow(group_id, until_ts) VALUES(?,?)", (gid, free_ts))
+        if block_ts:
+            conn.execute("UPDATE groups SET force_block_until=? WHERE id=?", (block_ts, gid))
+        conn.commit()
+    assert client.post(f"/api/groups/{gid}/pause", json={"paused": True}).status_code == 200
+
+    payload, _mode = ACTIONS[action]
+    assert client.post(f"/api/{action}", json=payload).status_code == 200
+    assert stored_row(client, gid) == {
+        "paused": True,
+        "deleted": False,
+        "block": 0,
+        "free": None,
+    }
+
+    assert client.post(f"/api/groups/{gid}/pause", json={"paused": False}).status_code == 200
+    state = {g["id"]: g for g in client.get("/api/state").json()["groups"]}[gid]
+    assert state["status"] == "allowed"  # no windows, nothing stored
+    assert state["free_until"] is None
+    assert state["force_block_until"] == 0
+    client.app.state.reconciler.run("test")
+    assert "subject.example" not in blocked_domains(fake)
 
 
 @pytest.mark.parametrize("action", sorted(ACTIONS))
@@ -1168,6 +1222,80 @@ def test_free_time_names_its_day_from_the_real_route(
     kid = {g["id"]: g for g in client.get("/api/state").json()["groups"]}[group["id"]]
     assert kid["free_until_day"] == free_until_day
     assert set(kid) <= set(USER_GROUP_KEYS)
+
+
+def pinned_app(tmp_path, fake, monkeypatch, zone_name, year, month, day, hour, minute, fold=0):
+    """An app whose clock and zone are pinned, so a DST edge can be driven by HTTP."""
+    import types
+    from zoneinfo import ZoneInfo
+
+    from timefence import api as api_module
+    from timefence import budget as budget_module
+    from timefence.config import Settings
+
+    zone = ZoneInfo(zone_name)
+    fixed = int(datetime(year, month, day, hour, minute, tzinfo=zone, fold=fold).timestamp())
+    fake_time = types.SimpleNamespace(time=lambda: fixed)
+    monkeypatch.setattr(api_module, "time", fake_time)
+    monkeypatch.setattr(budget_module, "time", fake_time)
+    settings = Settings.from_env(
+        {
+            "ADGUARD_URL": "http://127.0.0.1:3000",
+            "ADGUARD_USER": "admin",
+            "ADGUARD_PASSWORD": "secret",
+            "BASE_PATH": "/",
+            "TZ": zone_name,
+            "DATA_DIR": str(tmp_path / "data"),
+            "SECURE_COOKIES": "false",
+            "RECONCILE_INTERVAL": "60",
+            "LOG_LEVEL": "WARNING",
+        }
+    )
+    return create_app(settings, adguard=fake), zone
+
+
+@pytest.mark.parametrize("route", ["card", "all"])
+def test_a_free_time_in_a_spring_gap_ends_at_the_gap_edge(tmp_path, fake, monkeypatch, route):
+    """London skips 01:00-02:00 on 2027-03-28: 01:30 ends at 02:00, not 02:30."""
+    app, london = pinned_app(tmp_path, fake, monkeypatch, "Europe/London", 2027, 3, 28, 0, 30)
+    with TestClient(app) as client:
+        complete_setup(client)
+        group = make_group(client, name="Gap", services=[], domains=["gap.example"])
+        path = f"/api/groups/{group['id']}/free" if route == "card" else "/api/free-all"
+        response = client.post(path, json={"until": "01:30"})
+        assert response.status_code == 200, response.text
+        until = response.json()["until"]
+    assert datetime.fromtimestamp(until, london).strftime("%H:%M") == "02:00"
+    assert until == int(datetime(2027, 3, 28, 2, 0, tzinfo=london).timestamp())
+
+
+@pytest.mark.parametrize("route", ["card", "all"])
+@pytest.mark.parametrize(
+    ("now_args", "expected_utc"),
+    [
+        # before the first 01:30 BST: the earlier pass
+        ((2026, 10, 25, 0, 30, 0), (2026, 10, 25, 0, 30)),
+        # the first pass has passed 01:30 BST: the second pass is still ahead
+        ((2026, 10, 25, 1, 45, 0), (2026, 10, 25, 1, 30)),
+        # inside the second pass (GMT), before 01:30 GMT
+        ((2026, 10, 25, 1, 15, 1), (2026, 10, 25, 1, 30)),
+    ],
+)
+def test_a_free_time_takes_the_next_pass_of_a_repeated_hour(
+    tmp_path, fake, monkeypatch, route, now_args, expected_utc
+):
+    """The repeated hour never stretches a free window past the wall time."""
+    app, london = pinned_app(tmp_path, fake, monkeypatch, "Europe/London", *now_args)
+    with TestClient(app) as client:
+        complete_setup(client)
+        group = make_group(client, name="Fall", services=[], domains=["fall.example"])
+        path = f"/api/groups/{group['id']}/free" if route == "card" else "/api/free-all"
+        response = client.post(path, json={"until": "01:30"})
+        assert response.status_code == 200, response.text
+        until = response.json()["until"]
+    assert datetime.fromtimestamp(until, london).strftime("%H:%M") == "01:30"
+    utc = datetime(*expected_utc, tzinfo=UTC)
+    assert until == int(utc.timestamp())
 
 
 # --------------------------------------------------------------------------- #

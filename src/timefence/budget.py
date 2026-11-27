@@ -93,7 +93,14 @@ def next_local_midnight(ts: int, tz: ZoneInfo) -> int:
 
 
 def parse_hhmm(value: str, now: int, tz: ZoneInfo) -> int:
-    """'21:00' -> epoch of the next occurrence (today if still in the future)."""
+    """'21:00' -> epoch of the next occurrence (today if still in the future).
+
+    The wall time is resolved through the same rule the allowed windows use: a
+    time the clock skips (a spring-forward gap, or a zone that skips midnight)
+    lands on the gap edge, and a time the clock repeats (an autumn fall-back)
+    takes the earliest pass still ahead of `now`, so a free window is never
+    longer than the wall time says. The answer is always strictly after `now`.
+    """
     try:
         hh_s, mm_s = value.strip().split(":")[:2]
         hh, mm = int(hh_s), int(mm_s)
@@ -101,10 +108,14 @@ def parse_hhmm(value: str, now: int, tz: ZoneInfo) -> int:
         raise ValidationError("time must be HH:MM") from exc
     if not (0 <= hh <= 23 and 0 <= mm <= 59):
         raise ValidationError("time must be HH:MM")
-    local = datetime.fromtimestamp(now, tz).replace(hour=hh, minute=mm, second=0, microsecond=0)
-    if local.timestamp() <= now:
-        local += timedelta(days=1)
-    return int(local.timestamp())
+    today = datetime.fromtimestamp(now, tz).date()
+    minute = hh * 60 + mm
+    for day in (today, today + timedelta(days=1)):
+        for fold in (0, 1):
+            instant = _wall_instant(day, minute, tz, fold)
+            if instant > now:
+                return instant
+    raise ValidationError("time must be HH:MM")  # unreachable: tomorrow is ahead
 
 
 def clock_text(minutes: int) -> str:
@@ -363,7 +374,12 @@ def _day_start(day: date, tz: ZoneInfo) -> int:
 
 
 def _local_instant(day: date, minute_of_day: int, tz: ZoneInfo, fold: int) -> int:
-    """Epoch for a local wall time; a skipped time resolves to the gap edge."""
+    """Epoch for a local wall time on `day`; `fold` picks a repeated hour's pass.
+
+    In a spring-forward gap neither fold is the wall time: `fold=0` reads it
+    with the old offset and `fold=1` with the new one. `_wall_instant` on top of
+    this resolves a skipped time to the gap edge.
+    """
     return int(
         datetime(
             day.year,
@@ -375,6 +391,32 @@ def _local_instant(day: date, minute_of_day: int, tz: ZoneInfo, fold: int) -> in
             fold=fold,
         ).timestamp()
     )
+
+
+def _wall_instant(day: date, minute_of_day: int, tz: ZoneInfo, fold: int) -> int:
+    """Epoch of a local wall time; a time the clock skips resolves to the gap edge.
+
+    In a gap the two folds sit either side of the transition (`fold=1` before
+    it, `fold=0` after it, for a forward jump), so the edge is the first minute
+    between them with the new offset. That also holds for a zone whose clock
+    skips midnight, where the day's own start is not on the wall clock.
+    """
+    instant = _local_instant(day, minute_of_day, tz, fold)
+    if clock_str(instant, tz) == clock_text(minute_of_day):
+        return instant
+    early = _local_instant(day, minute_of_day, tz, 1)
+    late = _local_instant(day, minute_of_day, tz, 0)
+    low, high = min(early, late), max(early, late)
+    base = _offset(low, tz)
+    while high - low > 60:
+        middle = low + ((high - low) // 120) * 60
+        if middle <= low:
+            break
+        if _offset(middle, tz) == base:
+            low = middle
+        else:
+            high = middle
+    return high
 
 
 def _transition_instant(day_start: int, next_start: int, tz: ZoneInfo) -> int:
@@ -703,27 +745,38 @@ def clear_free(conn: sqlite3.Connection, gid: int) -> None:
 
 
 ALL_GROUP_MODES = ("block", "free", "auto")
-LIVE_GROUPS = "SELECT id FROM groups WHERE deleted=0 AND paused=0"
+LIVE_GROUPS = "SELECT id FROM groups WHERE deleted=0"  # every group still in use
+ACTIVE_GROUPS = "SELECT id FROM groups WHERE deleted=0 AND paused=0"
 
 
 def set_every_group_mode(
     conn: sqlite3.Connection, mode: str, now: int, tz: ZoneInfo, until_ts: int = 0
 ) -> int:
-    """Apply one mode to every live group (not paused, not deleted); returns how many.
+    """Apply one mode to every live group (not deleted); returns the non-paused count.
 
     `block` clears free time and forces a block until the next local midnight,
     `free` sets the given end and clears any forced block (so the block cannot
     come back when the free time is over), `auto` clears both.
 
+    Every mode first cancels any stored Block and Free on every live group,
+    **paused ones included**: a group paused while it carried an override must
+    follow its schedule again when it is resumed, not the override. Neither is
+    ever added to a paused group, and the paused flag is never changed.
+    Deleted groups are not touched at all.
+
     The caller owns the commit: the per-group helpers each commit on their own,
     and half the house in Block and half in Auto would be worse than neither.
-    Paused groups keep their own fields, because paused always wins anyway.
     """
     if mode not in ALL_GROUP_MODES:
         raise ValidationError(f"unknown all-groups mode: {mode}")
-    # Every mode starts by clearing free time: Block and Auto end it, Free
-    # replaces it. Leaving the rows behind would keep a group free after Auto.
+    if mode == "free" and (not until_ts or until_ts <= now):
+        # A free row with no end (or one already behind us) would clear every
+        # block and expire immediately; refuse it before anything is written.
+        raise ValidationError("a free time must be later than now")
+    # Cancel both overrides on every live group first, paused groups included,
+    # then add the requested one to the non-paused groups only.
     conn.execute(f"DELETE FROM free_allow WHERE group_id IN ({LIVE_GROUPS})")
+    conn.execute("UPDATE groups SET force_block_until=0 WHERE deleted=0")
     if mode == "block":
         conn.execute(
             "UPDATE groups SET force_block_until=? WHERE deleted=0 AND paused=0",
@@ -733,12 +786,9 @@ def set_every_group_mode(
         conn.executemany(
             "INSERT INTO free_allow(group_id, until_ts) VALUES(?,?) "
             "ON CONFLICT(group_id) DO UPDATE SET until_ts=excluded.until_ts",
-            [(int(row["id"]), int(until_ts)) for row in conn.execute(LIVE_GROUPS)],
+            [(int(row["id"]), int(until_ts)) for row in conn.execute(ACTIVE_GROUPS)],
         )
-        conn.execute("UPDATE groups SET force_block_until=0 WHERE deleted=0 AND paused=0")
-    else:
-        conn.execute("UPDATE groups SET force_block_until=0 WHERE deleted=0 AND paused=0")
-    row = conn.execute(f"SELECT COUNT(*) AS n FROM ({LIVE_GROUPS})").fetchone()
+    row = conn.execute(f"SELECT COUNT(*) AS n FROM ({ACTIVE_GROUPS})").fetchone()
     return int(row["n"])
 
 
@@ -803,8 +853,9 @@ def group_state(
         "permitted": status in PERMITTED_STATUSES,
         "blocked_until": blocked_until,
         "free_until": free,
-        # A free time always ends under 24 h ahead (parse_hhmm), so the whole-day
-        # rule would hide every "tomorrow"; the date alone decides here.
+        # A free time ends at most 24 h ahead (a typed time equal to now rolls to
+        # tomorrow, so exactly 24 h is possible), so the whole-day rule would hide
+        # every "tomorrow": the date alone decides here.
         "free_until_day": day_label(now, free, tz) if free else None,
         "force_block_until": group.force_block_until if group.force_block_until > now else 0,
         "paused": group.paused,

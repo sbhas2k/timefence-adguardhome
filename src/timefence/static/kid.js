@@ -25,13 +25,15 @@
     });
   }
 
+  /* 24-hour HH:MM in the server zone, never the browser's 12-hour form. */
   function clock(ts) {
     var seconds = Number(ts);
     if (!seconds) { return ""; }
     try {
-      return new Intl.DateTimeFormat(undefined, {
+      return new Intl.DateTimeFormat("en-GB", {
         hour: "2-digit",
         minute: "2-digit",
+        hourCycle: "h23",
         timeZone: timezone
       }).format(new Date(seconds * 1000));
     } catch (err) {

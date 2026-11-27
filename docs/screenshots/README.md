@@ -8,8 +8,8 @@ in any capture.
 
 | file | size | shows |
 |---|---|---|
-| `kid-390.png` | 390×861 | the read-only kid screen on a phone: one line per group saying opens at 21:00, opens tomorrow at 16:00, open all day or free time until, with the closed groups set off in a warm highlight |
-| `kid-390-dark.png` | 390×861 | the same kid screen in dark mode |
+| `kid-390.png` | 390×844 | the read-only kid screen on a phone: one line per group saying opens at 21:00, opens tomorrow at 16:00, open all day or free time until, with the closed groups set off in a warm highlight |
+| `kid-390-dark.png` | 390×844 | the same kid screen in dark mode |
 | `kid-1280.png` | 1280×834 | the kid screen at desktop width |
 | `admin-today-390.png` | 390×1205 | the admin Today list on a phone: the All groups Block / Auto / Free row, then each group's live line with the day of its next opening and its allowed times, Block / Auto / Free, and the free group's Extra time and Clear buttons |
 | `admin-today-1280.png` | 1280×1151 | the same Today list at desktop width |

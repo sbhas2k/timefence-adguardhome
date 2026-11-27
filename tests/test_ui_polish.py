@@ -1176,6 +1176,130 @@ def test_the_today_header_offers_one_whole_house_row_to_admins():
     assert "allFree.choice" in js
 
 
+def test_the_day_chip_labels_are_two_letters_and_unique():
+    """M/T/W/T/F/S/S cannot be told apart: Tue/Thu and Sat/Sun looked the same."""
+    labels = [
+        i18n.STRINGS["en"][f"groups.days_{day}"]
+        for day in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+    ]
+    assert labels == ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
+    assert len(set(labels)) == 7
+    # the full name stays in the title and the aria-label
+    assert i18n.STRINGS["en"]["groups.day_mon"] == "Monday"
+    assert i18n.STRINGS["en"]["groups.day_sat"] == "Saturday"
+
+
+def clock_probe_script(js: str, moments: list[int]) -> str:
+    """clock() with the formatter's own arguments captured."""
+    return "".join(
+        [
+            "var timezone = 'UTC';",
+            "var seen = [];",
+            "var Real = Intl.DateTimeFormat;",
+            "Intl.DateTimeFormat = function (locale, options) {",
+            "  seen.push([locale, options && options.hourCycle]);",
+            "  return new Real(locale, options);",
+            "};",
+            js_function(js, "hhmm") if "  function hhmm(" in js else "",
+            js_function(js, "clock"),
+            "var moments = " + json.dumps(moments) + ";",
+            "console.log(JSON.stringify([moments.map(clock), seen]));",
+        ]
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+@pytest.mark.parametrize("name", ["app.js", "kid.js"])
+def test_every_printed_time_is_24_hour_in_the_server_zone(name):
+    """One screen showed "21:00" next to "01:36 PM": the browser locale leaked in."""
+    js = read("static", name)
+    midnight = 1794441900  # 2026-11-11T00:05:00Z
+    evening = 1794517200  # 2026-11-11T21:00:00Z
+    done = subprocess.run(
+        [shutil.which("node"), "-e", clock_probe_script(js, [midnight, evening])],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    printed, seen = json.loads(done.stdout)
+    assert printed == ["00:05", "21:00"]  # not "12:05 am" / "09:00 pm"
+    assert seen and all(entry == ["en-GB", "h23"] for entry in seen), seen
+
+
+def all_free_guard_probe_script(js: str) -> str:
+    """Two taps on Apply must send one request; a failure re-enables it."""
+    return "".join(
+        [
+            "var allFree = { open: true, choice: '22:00' };",
+            "var allFreeInflight = false;",
+            "var button = { disabled: false, attrs: {},",
+            "  setAttribute: function (k, v) { this.attrs[k] = v; },",
+            "  removeAttribute: function (k) { delete this.attrs[k]; } };",
+            "function $(sel) { return sel === '#all-free-apply' ? button : null; }",
+            "function allFreeUntil() { return allFree.choice; }",
+            "function resetAllFree() { allFree.open = false; allFree.choice = null; }",
+            "function allGroupsToast() { return 'free'; }",
+            "var toasts = [];",
+            "function toast(message) { toasts.push(message); }",
+            "function refresh() { return Promise.resolve(); }",
+            "var calls = 0;",
+            "var settles = [];",
+            "function api() {",
+            "  calls += 1;",
+            "  return new Promise(function (resolve, reject) {",
+            "    settles.push([resolve, reject]);",
+            "  });",
+            "}",
+            js_function(js, "setAllFreeBusy"),
+            js_function(js, "applyAllFree"),
+            "(async function () {",
+            "  var first = applyAllFree();",
+            "  applyAllFree();",
+            "  var firstCalls = calls;",
+            "  var busyWhileInFlight = button.disabled === true;",
+            "  settles[0][1](new Error('nope'));",
+            "  await first;",
+            "  var afterFailure = [calls, button.disabled, allFree.choice];",
+            "  var retry = applyAllFree();",
+            "  var retried = calls;",
+            "  settles[1][0]({ ok: true, applied: true });",
+            "  await retry;",
+            "  console.log(JSON.stringify({",
+            "    firstCalls: firstCalls,",
+            "    busyWhileInFlight: busyWhileInFlight,",
+            "    afterFailure: afterFailure,",
+            "    retried: retried,",
+            "    afterSuccess: [button.disabled, allFree.choice, toasts.length]",
+            "  }));",
+            "})();",
+        ]
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_applying_the_whole_house_free_twice_sends_one_request():
+    """Three clicks sent three POSTs; the card control already guards this."""
+    js = read("static", "app.js")
+    done = subprocess.run(
+        [shutil.which("node"), "-e", all_free_guard_probe_script(js)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    got = json.loads(done.stdout)
+    assert got["firstCalls"] == 1  # the second tap is ignored while in flight
+    assert got["busyWhileInFlight"] is True  # Apply is disabled, so a keyboard tap is too
+    assert got["afterFailure"] == [1, False, "22:00"]  # re-enabled, typed time kept
+    assert got["retried"] == 2  # and a retry really sends
+    assert got["afterSuccess"] == [False, None, 2]
+
+
 def all_free_probe_script(js: str) -> str:
     """The whole-house Free panel's own state: open, cancel, reopen, retry."""
     return "".join(

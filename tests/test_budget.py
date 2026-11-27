@@ -109,6 +109,58 @@ def test_parse_hhmm_rolls_to_tomorrow():
         budget.parse_hhmm("25:00", now, TZ)
 
 
+LONDON = ZoneInfo("Europe/London")
+SANTIAGO = ZoneInfo("America/Santiago")
+
+
+def london_at(year, month, day, hour, minute, fold=0):
+    return int(datetime(year, month, day, hour, minute, tzinfo=LONDON, fold=fold).timestamp())
+
+
+def local_clock(ts, tz):
+    return datetime.fromtimestamp(ts, tz).strftime("%H:%M")
+
+
+def test_parse_hhmm_resolves_a_spring_gap_to_the_gap_edge():
+    """London skips 01:00-02:00 on 2027-03-28; 01:30 becomes 02:00, not 02:30."""
+    now = london_at(2027, 3, 28, 0, 30)
+    got = budget.parse_hhmm("01:30", now, LONDON)
+    assert local_clock(got, LONDON) == "02:00"
+    assert got == london_at(2027, 3, 28, 2, 0)
+    assert got > now
+
+
+@pytest.mark.parametrize(
+    ("now_args", "expected_clock", "expected_utc"),
+    [
+        # first pass (BST), before the first 01:30: the earlier occurrence
+        ((2026, 10, 25, 0, 30, 0), "01:30", (2026, 10, 25, 0, 30)),
+        # first pass has passed 01:30 BST: the second occurrence (GMT) is ahead
+        ((2026, 10, 25, 1, 45, 0), "01:30", (2026, 10, 25, 1, 30)),
+        # inside the second pass (GMT), before 01:30 GMT
+        ((2026, 10, 25, 1, 15, 1), "01:30", (2026, 10, 25, 1, 30)),
+        # both passes are behind: tomorrow
+        ((2026, 10, 25, 1, 45, 1), "01:30", (2026, 10, 26, 1, 30)),
+    ],
+)
+def test_parse_hhmm_takes_the_next_pass_of_a_repeated_hour(now_args, expected_clock, expected_utc):
+    """The repeated hour resolves to the earliest pass still ahead of now."""
+    year, month, day, hour, minute, fold = now_args
+    now = london_at(year, month, day, hour, minute, fold)
+    got = budget.parse_hhmm("01:30", now, LONDON)
+    assert local_clock(got, LONDON) == expected_clock
+    assert got > now
+    assert got == int(datetime(*expected_utc, tzinfo=ZoneInfo("UTC")).timestamp())
+
+
+def test_parse_hhmm_handles_a_gap_that_skips_midnight():
+    """Santiago jumps 00:00 -> 01:00 on 2026-09-06; 00:30 becomes 01:00."""
+    now = int(datetime(2026, 9, 5, 23, 30, tzinfo=SANTIAGO).timestamp())
+    got = budget.parse_hhmm("00:30", now, SANTIAGO)
+    assert local_clock(got, SANTIAGO) == "01:00"
+    assert got > now
+
+
 NY = ZoneInfo("America/New_York")
 
 
@@ -514,6 +566,26 @@ def test_only_outside_hours_names_its_day(conn):
     )
     state = budget.group_state(conn, paused, TZ, ts_on(2026, 11, 13, 9))
     assert (state["status"], state["opens_day"]) == ("paused", None)
+
+
+def test_free_all_refuses_a_missing_or_past_until(conn):
+    """A free row with no end would clear every block and expire at once."""
+    now = ts_on(2026, 11, 11, 12)
+    group = make_group(conn, windows=[], name="Subject", services=(), domains=("subject.test",))
+    budget.set_force_block(conn, group.id, ts_on(2026, 11, 12, 0))
+    conn.commit()
+
+    for until_ts in (0, None, -1, ts_on(2026, 11, 11, 11), now):
+        with pytest.raises(budget.ValidationError):
+            budget.set_every_group_mode(conn, "free", now, TZ, until_ts=until_ts)
+        assert budget.free_until(conn, group.id) is None
+        assert budget.get_group(conn, group.id).force_block_until == ts_on(2026, 11, 12, 0)
+
+    # a valid end is accepted and clears the stored block
+    budget.set_every_group_mode(conn, "free", now, TZ, until_ts=ts_on(2026, 11, 11, 13))
+    conn.commit()
+    assert budget.free_until(conn, group.id) == ts_on(2026, 11, 11, 13)
+    assert budget.get_group(conn, group.id).force_block_until == 0
 
 
 def test_free_time_names_the_day_it_ends(conn):

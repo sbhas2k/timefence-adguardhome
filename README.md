@@ -53,8 +53,9 @@ regenerate it are in [`docs/screenshots/`](docs/screenshots/).
   The group list has a pause toggle, and a paused card keeps only Resume. Every
   action is applied once (double taps are ignored while in flight) and confirmed
   with a toast. An **All groups** row at the top does the same for the whole
-  house: the choice is stored on each group, so the reconcile loop keeps it, and
-  a paused group is never changed.
+  house: the choice is stored on each group, so the reconcile loop keeps it. A
+  paused group stays paused and never receives Block or Free, but any Block or
+  Free it already carried is cancelled, so resuming it lands on its schedule.
 - **Alerts when it matters.** One Telegram bot, one ntfy topic or one webhook
   (no accounts, no third-party service): a message when a group's allowed time
   is over (off by default until you ask for it), and a warning when AdGuard
