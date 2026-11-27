@@ -60,8 +60,9 @@ have different admin credentials: `SECONDARY_ADGUARD_USER` and
 
 ## What to know before you rely on it
 
-- **The replica lags by one sync cycle.** A "block everything now" lands on
-  the primary immediately and on the secondary within `REFRESH_INTERVAL_SECS`.
+- **The replica lags by one sync cycle.** A Block, Free or Auto choice from the
+  "All groups" row lands on the primary at the next reconcile pass and on the
+  secondary within `REFRESH_INTERVAL_SECS`.
   TimeFence's reconciler keeps re-pushing the current state to the primary
   every `RECONCILE_INTERVAL`, so the replica converges to the current
   decision rather than chasing a stale one. For a fallback box, sixty
@@ -74,8 +75,9 @@ have different admin credentials: `SECONDARY_ADGUARD_USER` and
   `SYNC_BLOCKED_SERVICES` and `SYNC_CUSTOM_RULES` on.
 - **Keep the two AdGuard Home instances the same version.** TimeFence blocks
   by service id and by rule text; the ids have to match on both boxes.
-- **Sync stays one-way.** "Release everything" in TimeFence's UI lifts the
-  blocks on the primary, and the sync carries that lifting to the replica.
+- **Sync stays one-way.** Choosing Auto in TimeFence's "All groups" row (or
+  running `timefence release`) lifts the blocks on the primary, and the sync
+  carries that lifting to the replica.
   Nothing you do in the replica's UI is authoritative — the next sync
   overwrites it.
 - **Leave `SYNC_ENCRYPTION_SETTINGS` off** (its default). Certificates and

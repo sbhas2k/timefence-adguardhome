@@ -106,6 +106,7 @@ class Message:
     time_iso: str = ""
     group: str = ""
     time_text: str = ""
+    time_day: str = ""
     outage_seconds: int = 0
 
 
@@ -371,9 +372,20 @@ def public_config(conn: sqlite3.Connection, now: int) -> dict:
 # --------------------------------------------------------------------------- #
 
 
+def _day_word(code: str) -> str:
+    """The word for "tomorrow" or for a short weekday name, in the UI language."""
+    if code == "tomorrow":
+        return i18n.t("common.tomorrow")
+    return i18n.t(f"card.day_{code}")
+
+
 def message_text(message: Message) -> str:
     if message.event == "group_closed":
-        return i18n.t("alert.closed", group=message.group, time=message.time_text)
+        group, when = message.group, message.time_text
+        if message.time_day:
+            day = _day_word(message.time_day)
+            return i18n.t("alert.closed_day", group=group, day=day, time=when)
+        return i18n.t("alert.closed", group=group, time=when)
     if message.event == "sync_failing":
         return i18n.t("alert.sync_failing")
     if message.event == "sync_recovered":
@@ -692,6 +704,7 @@ class AlertWorker:
             time_iso=_iso(now, tz),
             group=group.name,
             time_text=budget.clock_str(blocked_until, tz),
+            time_day=budget.day_label(now, blocked_until, tz) or "",
         )
 
     def _probe_outage(

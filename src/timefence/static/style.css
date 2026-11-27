@@ -147,6 +147,15 @@ a { color: var(--accent); }
 .muted { color: var(--muted); }
 .small { font-size: 13px; }
 .mt { margin-top: 12px; }
+/* The whole-house row sits between the header and the first card: the gap below
+   matches the .mt gap above. The hidden class is display:none, so a kid never
+   sees the space. The label and the three equal segments wrap rather than
+   scroll the page sideways on a 320 px phone. */
+#today-actions { margin-bottom: 12px; }
+#today-actions .wrap-bar { flex-wrap: wrap; gap: 8px; }
+.all-label { font-weight: 600; }
+.all-groups { flex: 0 1 360px; min-width: 0; }
+#all-free-panel > input[type="time"] { flex: 0 1 140px; width: auto; min-width: 0; }
 
 /* One segmented control: three equal buttons. The pressed one carries a ring
    and a bolder label, so the state never rests on colour alone. */
@@ -338,6 +347,11 @@ tbody tr:last-child td { border-bottom: none; }
 
 @media (max-width: 480px) {
   body { font-size: 15px; }
+  /* The whole-house label takes its own line, so the three segments span the
+     card width exactly: both their edges line up with the cards below. */
+  #today-actions .wrap-bar { display: block; }
+  .all-label { display: block; margin-bottom: 6px; }
+  .all-groups { flex: 1 1 auto; width: 100%; }
   .wrap { padding: 12px calc(12px + env(safe-area-inset-right)) 12px calc(12px + env(safe-area-inset-left)); }
   .topbar { padding: 10px 12px; padding-top: calc(10px + env(safe-area-inset-top)); }
   .brand { font-size: 15px; }
@@ -353,6 +367,12 @@ tbody tr:last-child td { border-bottom: none; }
   .btn { min-height: 46px; padding: 11px 12px; }
   .btn.big-btn { min-height: 56px; font-size: 17px; }
   .row > .btn { flex: 1 1 40%; }
+  /* The seven weekday chips share one line at every phone width; "Every day"
+     drops to its own row below. The chips container is a .row too, so the
+     .row > .btn rule above would otherwise make them 40%-wide blocks. */
+  .row.day-chips { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+  .row.day-chips > .day-chip { min-width: 0; min-height: 42px; padding: 0 2px; }
+  .row.day-chips > .day-chip:last-child { grid-column: 1 / -1; padding: 0 12px; }
   .live-line { font-size: 18px; }
   .chip button { min-width: 44px; min-height: 44px; }
   .row > input[type="time"] { flex: 1 1 40%; }

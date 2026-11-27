@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
+import pytest
 from fastapi.testclient import TestClient
 
 from timefence import i18n
-from timefence.api import create_app
+from timefence.api import USER_GROUP_KEYS, create_app
 
 from .conftest import FakeAdGuard, locked_conn, make_entry
 from .fakes import StubServer
@@ -424,8 +425,11 @@ def test_status_and_permitted_agree(ready, fake, monkeypatch):
         "permitted",
         "open_now",
         "opens_at",
+        "opens_day",
         "open_until",
+        "open_until_day",
         "free_until",
+        "free_until_day",
         "paused",
     }
     assert group["windows"] == [{"start": start, "end": end, "days": "all"}]
@@ -609,69 +613,561 @@ def event_kinds(client) -> list[str]:
         return [row["kind"] for row in conn.execute("SELECT kind FROM events ORDER BY id")]
 
 
-def test_block_all_and_release_all_are_admin_only_and_keep_group_fields(ready, fake):
-    """Two one-shot admin actions; the per-group fields never change."""
+# --------------------------------------------------------------------------- #
+# the whole-house row: Block / Auto / Free as stored state, not a one-shot write
+# --------------------------------------------------------------------------- #
+
+NOON = datetime(2026, 11, 11, 12, 0, tzinfo=UTC)  # a Wednesday
+MIDNIGHT = int(datetime(2026, 11, 12, 0, 0, tzinfo=UTC).timestamp())
+
+
+def freeze(monkeypatch, client, moment=NOON):
+    """Pin the clock; a CSRF token carries the time it was made, so sign in again."""
+    stamp = int(moment.timestamp())
+    monkeypatch.setattr(time, "time", lambda: stamp)
+    login(client, "admin", ADMIN2["password"])
+    return stamp
+
+
+def all_group_state(client) -> dict:
+    """Every per-group override, exactly as stored."""
+    with locked_conn(client.app) as conn:
+        out = {}
+        for row in conn.execute("SELECT id, paused, force_block_until FROM groups"):
+            free = conn.execute(
+                "SELECT until_ts FROM free_allow WHERE group_id=?", (row["id"],)
+            ).fetchone()
+            out[row["id"]] = {
+                "paused": bool(row["paused"]),
+                "block": int(row["force_block_until"] or 0),
+                "free": int(free["until_ts"]) if free else 0,
+            }
+        return out
+
+
+def seed_house(client) -> dict:
+    """One group in each state the row has to handle, at noon UTC."""
+    inside = make_group(
+        client,
+        name="Inside",
+        services=[],
+        domains=["inside.example"],
+        windows=[{"start": "09:00", "end": "17:00", "days": "all"}],
+    )
+    outside = make_group(
+        client,
+        name="Outside",
+        services=[],
+        domains=["outside.example"],
+        windows=[{"start": "21:00", "end": "23:00", "days": "all"}],
+    )
+    free = make_group(client, name="Free", services=[], domains=["free.example"])
+    blocked = make_group(client, name="Blocked", services=[], domains=["blocked.example"])
+    paused = make_group(client, name="Paused", services=[], domains=["paused.example"])
+    # a deleted group is ignored by every whole-house action
+    gone = make_group(client, name="Gone", services=[], domains=["gone.example"])
+    assert client.delete(f"/api/groups/{gone['id']}").status_code == 200
+    assert client.post(f"/api/groups/{free['id']}/free", json={"until": "18:00"}).status_code == 200
+    assert client.post(f"/api/groups/{blocked['id']}/block", json={}).status_code == 200
+    assert (
+        client.post(f"/api/groups/{paused['id']}/pause", json={"paused": True}).status_code == 200
+    )
+    return {
+        "inside": inside,
+        "outside": outside,
+        "free": free,
+        "blocked": blocked,
+        "paused": paused,
+    }
+
+
+def blocked_domains(fake) -> set[str]:
+    """The domains in TimeFence's own rule section right now."""
+    return {line.strip("|^") for line in fake.rules if line.startswith("||")}
+
+
+def test_block_all_blocks_an_in_hours_group_and_keeps_the_choice(ready, fake, monkeypatch):
+    """The bug: an in-hours group came back unblocked inside the same request."""
     client = ready["client"]
-    allowed = make_group(client, domains=["allowed.example"])
-    before = group_fields(client)
+    freeze(monkeypatch, client)
+    groups = seed_house(client)
+    paused_before = all_group_state(client)[groups["paused"]["id"]]
 
     response = client.post("/api/block-all", json={})
     assert response.status_code == 200, response.text
-    assert response.json() == {"ok": True, "changed": ["services", "domains"]}
-    # the endpoint ran a reconcile pass, so the schedule decides the final state
-    assert fake.ids == []
-    assert fake.rules == []
-    assert group_fields(client) == before
-    assert "admin_block_all" in event_kinds(client)
+    assert response.json() == {"ok": True, "applied": True, "groups": 4}
 
-    released = client.post("/api/release-all", json={})
-    assert released.status_code == 200, released.text
-    assert released.json() == {"ok": True, "changed": []}
-    assert "admin_release_all" in event_kinds(client)
-    assert group_fields(client) == before
-    state = client.get("/api/state").json()["groups"][0]
-    assert state["id"] == allowed["id"]
-    assert state["status"] == "allowed"
+    stored = all_group_state(client)
+    for name in ("inside", "outside", "free", "blocked"):
+        assert stored[groups[name]["id"]] == {"paused": False, "block": MIDNIGHT, "free": 0}
+    assert stored[groups["paused"]["id"]] == paused_before  # never touched
+
+    domains = blocked_domains(fake)
+    assert domains == {
+        "inside.example",
+        "outside.example",
+        "free.example",
+        "blocked.example",
+        "paused.example",
+    }
+
+    # the choice is stored, so the next pass keeps it: not a one-shot write
+    client.app.state.reconciler.run("test")
+    assert all_group_state(client) == stored
+    assert blocked_domains(fake) == domains
+    assert event_kinds(client).count("admin_block_all") == 1
 
 
-def test_block_all_needs_an_admin_and_a_csrf_token(ready):
+def test_the_whole_house_row_reaches_every_owner_and_spares_later_groups(ready, fake, monkeypatch):
     client = ready["client"]
-    without_token = client.post(
-        "/api/block-all", json={}, headers={"X-CSRF-Token": "not-the-token"}
+    freeze(monkeypatch, client)
+    created = client.post(
+        "/api/users", json={"username": "kid", "password": "kid-password", "role": "user"}
     )
-    assert without_token.status_code == 403
-    assert without_token.json()["code"] == "csrf"
+    assert created.status_code == 200, created.text
+    with locked_conn(client.app) as conn:
+        kid = conn.execute("SELECT id FROM users WHERE username='kid'").fetchone()["id"]
+    owned = make_group(client, name="Owned", services=[], domains=["owned.example"], owner_id=kid)
+    assert client.post("/api/block-all", json={}).json()["groups"] == 1
+    assert all_group_state(client)[owned["id"]]["block"] == MIDNIGHT
+
+    # a group created after the action is not retroactively changed
+    later = make_group(client, name="Later", services=[], domains=["later.example"])
+    assert all_group_state(client)[later["id"]] == {"paused": False, "block": 0, "free": 0}
+
+
+def test_every_group_block_lifts_at_local_midnight(ready, fake, monkeypatch):
+    client = ready["client"]
+    freeze(monkeypatch, client)
+    seed_house(client)
+    assert client.post("/api/block-all", json={}).json()["applied"] is True
+
+    # after midnight the forced block is over and each group's own state decides
+    monkeypatch.setattr(time, "time", lambda: MIDNIGHT + 10 * 3600)  # 10:00, in hours
+    login(client, "admin", ADMIN2["password"])  # the session cookie is 12 h old by now
+    client.app.state.reconciler.run("test")
+    assert blocked_domains(fake) == {"outside.example", "paused.example"}
+    state = {g["name"]: g for g in client.get("/api/state").json()["groups"]}
+    assert state["Inside"]["status"] == "allowed"
+    assert state["Outside"]["status"] == "outside_hours"
+
+
+def test_free_all_opens_every_group_until_the_chosen_time(ready, fake, monkeypatch):
+    client = ready["client"]
+    freeze(monkeypatch, client)
+    groups = seed_house(client)
+    # a stored block first: Free must clear it, or it comes back after the free time
+    assert client.post("/api/block-all", json={}).json()["applied"] is True
+
+    until = int(datetime(2026, 11, 11, 13, 0, tzinfo=UTC).timestamp())
+    response = client.post("/api/free-all", json={"until": "13:00"})
+    assert response.status_code == 200, response.text
+    assert response.json() == {"ok": True, "applied": True, "groups": 4, "until": until}
+
+    stored = all_group_state(client)
+    for name in ("inside", "outside", "free", "blocked"):
+        assert stored[groups[name]["id"]] == {"paused": False, "block": 0, "free": until}
+    assert blocked_domains(fake) == {"paused.example"}
+
+    # the free time ends: the schedule decides again, and no old block returns
+    monkeypatch.setattr(time, "time", lambda: until + 300)
+    client.app.state.reconciler.run("test")
+    assert blocked_domains(fake) == {"outside.example", "paused.example"}
+    state = {g["name"]: g for g in client.get("/api/state").json()["groups"]}
+    assert state["Blocked"]["status"] == "allowed"  # its block was cleared by Free
+    assert state["Outside"]["status"] == "outside_hours"
+    assert event_kinds(client).count("admin_free_all") == 1
+
+
+def test_auto_all_cancels_every_block_and_free(ready, fake, monkeypatch):
+    client = ready["client"]
+    freeze(monkeypatch, client)
+    groups = seed_house(client)
+    assert client.post("/api/block-all", json={}).json()["applied"] is True
+
+    response = client.post("/api/auto-all", json={})
+    assert response.status_code == 200, response.text
+    assert response.json() == {"ok": True, "applied": True, "groups": 4}
+    stored = all_group_state(client)
+    for name in ("inside", "outside", "free", "blocked"):
+        assert stored[groups[name]["id"]] == {"paused": False, "block": 0, "free": 0}
+    assert blocked_domains(fake) == {"outside.example", "paused.example"}
+    assert event_kinds(client).count("admin_auto_all") == 1
+
+
+def test_a_per_card_action_wins_over_a_whole_house_one(ready, fake, monkeypatch):
+    client = ready["client"]
+    freeze(monkeypatch, client)
+    groups = seed_house(client)
+    assert client.post("/api/block-all", json={}).json()["applied"] is True
+
+    # the card sends Free and then force/clear: Free alone keeps a stored block
+    gid = groups["inside"]["id"]
+    assert client.post(f"/api/groups/{gid}/free", json={"until": "18:00"}).status_code == 200
+    assert client.post(f"/api/groups/{gid}/force/clear", json={}).status_code == 200
+    stored = all_group_state(client)
+    assert stored[gid]["free"] == int(datetime(2026, 11, 11, 18, 0, tzinfo=UTC).timestamp())
+    assert stored[gid]["block"] == 0
+    assert stored[groups["outside"]["id"]]["block"] == MIDNIGHT
+    client.app.state.reconciler.run("test")
+    assert "inside.example" not in blocked_domains(fake)
+
+
+def test_foreign_targets_survive_every_whole_house_action(ready, fake, monkeypatch):
+    client = ready["client"]
+    freeze(monkeypatch, client)
+    seed_house(client)
+    fake.ids = ["tiktok"]
+    fake.rules = ["||foreign.example^"]
+    for path, payload in (
+        ("/api/block-all", {}),
+        ("/api/free-all", {"until": "13:00"}),
+        ("/api/auto-all", {}),
+    ):
+        response = client.post(path, json=payload)
+        assert response.status_code == 200, response.text
+        assert "tiktok" in fake.ids, path
+        assert "||foreign.example^" in fake.rules, path
+
+
+def test_free_all_needs_a_valid_time_and_changes_nothing_when_it_is_bad(ready, fake, monkeypatch):
+    client = ready["client"]
+    freeze(monkeypatch, client)
+    seed_house(client)
+    before = all_group_state(client)
+    kinds = event_kinds(client)
+    for payload in ({}, {"until": ""}, {"until": "25:00"}, {"until": "noon"}, {"until": None}):
+        response = client.post("/api/free-all", json=payload)
+        assert response.status_code == 400, (payload, response.text)
+        assert response.json()["code"] == "invalid", response.text
+    assert all_group_state(client) == before
+    assert event_kinds(client) == kinds
+
+
+def test_the_never_released_release_route_is_gone(ready):
+    client = ready["client"]
+    assert client.post("/api/release-all", json={}).status_code in {404, 405}
+
+
+def test_the_whole_house_routes_need_an_admin_and_a_csrf_token(ready):
+    client = ready["client"]
+    for path in ("/api/block-all", "/api/free-all", "/api/auto-all"):
+        without_token = client.post(path, json={"until": "13:00"}, headers={"X-CSRF-Token": "no"})
+        assert without_token.status_code == 403, path
+        assert without_token.json()["code"] == "csrf", path
 
     created = client.post(
         "/api/users", json={"username": "kid", "password": "kid-password", "role": "user"}
     )
     assert created.status_code == 200, created.text
     login(client, "kid", "kid-password")
-    refused = client.post("/api/block-all", json={})
-    assert refused.status_code == 403
-    assert refused.json()["code"] == "read_only"
-    assert client.post("/api/release-all", json={}).status_code == 403
+    for path in ("/api/block-all", "/api/free-all", "/api/auto-all"):
+        refused = client.post(path, json={"until": "13:00"})
+        assert refused.status_code == 403, path
+        assert refused.json()["code"] == "read_only", path
 
 
-def test_block_all_is_busy_while_the_reconciler_runs(ready, fake, monkeypatch):
-    """A hands-on action that cannot start is a 503, not an AdGuard 502."""
+def test_a_saved_choice_is_reported_as_not_applied_while_adguard_fails(ready, fake, monkeypatch):
     client = ready["client"]
+    freeze(monkeypatch, client)
+    groups = seed_house(client)
+    fake.fail_all = True
+
+    response = client.post("/api/block-all", json={})
+    assert response.status_code == 200, response.text
+    assert response.json() == {"ok": True, "applied": False, "groups": 4}
+    # the choice is stored even though AdGuard refused: the loop applies it later
+    assert all_group_state(client)[groups["inside"]["id"]]["block"] == MIDNIGHT
+
+    fake.fail_all = False
+    client.app.state.reconciler.run("test")
+    assert "inside.example" in blocked_domains(fake)
+
+
+def test_a_busy_reconciler_still_saves_and_reports_not_applied(ready, fake, monkeypatch):
+    client = ready["client"]
+    freeze(monkeypatch, client)
+    groups = seed_house(client)
     reconciler = client.app.state.reconciler
 
     class _NeverFrees:
         def acquire(self, timeout=None):
             return False
 
+        def release(self):
+            return None
+
     monkeypatch.setattr(reconciler, "_run_lock", _NeverFrees())
+    response = client.post("/api/auto-all", json={})
+    assert response.status_code == 200, response.text
+    assert response.json() == {"ok": True, "applied": False, "groups": 4}
+    assert all_group_state(client)[groups["blocked"]["id"]]["block"] == 0
+
+
+def test_a_credentials_backoff_still_saves_and_reports_not_applied(ready, fake, monkeypatch):
+    client = ready["client"]
+    freeze(monkeypatch, client)
+    seed_house(client)
+    reconciler = client.app.state.reconciler
+    monkeypatch.setattr(reconciler, "_next_adguard_attempt", float("inf"))
+
     response = client.post("/api/block-all", json={})
-    assert response.status_code == 503, response.text
-    assert response.json()["code"] == "busy"
-    released = client.post("/api/release-all", json={})
-    assert released.status_code == 503
-    assert released.json()["code"] == "busy"
-    # nothing was written to AdGuard while the lock was held
-    assert fake.ids == []
-    assert fake.rules == []
+    assert response.status_code == 200, response.text
+    assert response.json() == {"ok": True, "applied": False, "groups": 4}
+    assert blocked_domains(fake) == {"outside.example", "blocked.example", "paused.example"}
+
+
+def fail_on_sql(monkeypatch, conn, needle: str) -> None:
+    """Make the first `conn.execute` whose SQL contains `needle` raise."""
+    real = conn.execute
+
+    def execute(sql, parameters=(), /):
+        if needle in sql:
+            raise RuntimeError("injected write failure")
+        return real(sql, parameters)
+
+    monkeypatch.setattr(conn, "execute", execute, raising=False)
+
+
+WHOLE_HOUSE = [
+    ("block-all", {}),
+    ("free-all", {"until": "13:00"}),
+    ("auto-all", {}),
+]
+
+
+@pytest.mark.parametrize(("route", "payload"), WHOLE_HOUSE)
+@pytest.mark.parametrize("where", ["mid-write", "event"])
+def test_a_whole_house_failure_before_the_commit_changes_nothing(
+    ready, fake, monkeypatch, route, payload, where
+):
+    """All or nothing: a write that dies after the first statement rolls back.
+
+    `mid-write` fails between the DELETE and the UPDATE inside
+    `set_every_group_mode`; `event` fails on the event insert that follows every
+    group write. Either way the stored overrides and the event log are untouched.
+    """
+    client = ready["client"]
+    freeze(monkeypatch, client)
+    seed_house(client)
+    before = all_group_state(client)
+    kinds = event_kinds(client)
+    conn = client.app.state.store.conn
+
+    if where == "mid-write":
+        fail_on_sql(monkeypatch, conn, "UPDATE groups SET force_block_until")
+    else:
+        import timefence.budget as budget_module
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("injected event failure")
+
+        monkeypatch.setattr(budget_module, "log_event", boom)
+
+    with pytest.raises(RuntimeError):
+        client.post(f"/api/{route}", json=payload)
+    monkeypatch.undo()
+
+    assert all_group_state(client) == before
+    assert event_kinds(client) == kinds
+
+
+@pytest.mark.parametrize(("route", "payload"), WHOLE_HOUSE)
+def test_a_failed_commit_changes_nothing(ready, fake, monkeypatch, route, payload):
+    """The commit itself can fail too; the transaction is then rolled back."""
+    client = ready["client"]
+    freeze(monkeypatch, client)
+    seed_house(client)
+    before = all_group_state(client)
+    kinds = event_kinds(client)
+    conn = client.app.state.store.conn
+
+    def boom():
+        raise RuntimeError("disk gone")
+
+    monkeypatch.setattr(conn, "commit", boom)
+    with pytest.raises(RuntimeError):
+        client.post(f"/api/{route}", json=payload)
+    monkeypatch.undo()
+
+    assert all_group_state(client) == before
+    assert event_kinds(client) == kinds
+
+
+# --------------------------------------------------------------------------- #
+# the matrix: every starting state, each whole-house action applied directly
+# --------------------------------------------------------------------------- #
+
+NOON_MATRIX = datetime(2026, 11, 11, 12, 0, tzinfo=UTC)
+NEXT_MIDNIGHT = int(datetime(2026, 11, 12, 0, 0, tzinfo=UTC).timestamp())
+FREE_AT_13 = int(datetime(2026, 11, 11, 13, 0, tzinfo=UTC).timestamp())
+EARLIER = int(datetime(2026, 11, 11, 11, 0, tzinfo=UTC).timestamp())
+
+START_STATES = {
+    # name: (window list, free row in the past/future/None, force block past/future/0)
+    "in_hours": ([{"start": "09:00", "end": "17:00", "days": "all"}], None, 0),
+    "out_of_hours": ([{"start": "21:00", "end": "23:00", "days": "all"}], None, 0),
+    "free_only": ([], FREE_AT_13, 0),
+    "blocked_only": ([], None, NEXT_MIDNIGHT),
+    "free_and_blocked": ([], FREE_AT_13, NEXT_MIDNIGHT),
+    "expired_free": ([], EARLIER, 0),
+    "expired_block": ([], None, EARLIER),
+    "always_open": ([], None, 0),
+}
+
+ACTIONS = {
+    "block-all": ({}, "block"),
+    "free-all": ({"until": "13:00"}, "free"),
+    "auto-all": ({}, "auto"),
+}
+
+
+def build_state(client, windows, free_ts, block_ts, *, paused=False, deleted=False) -> dict:
+    """One group in exactly the requested starting state, and nothing else."""
+    group = make_group(
+        client, name="Subject", services=[], domains=["subject.example"], windows=windows
+    )
+    with locked_conn(client.app) as conn:
+        if free_ts is not None:
+            conn.execute(
+                "INSERT INTO free_allow(group_id, until_ts) VALUES(?,?)", (group["id"], free_ts)
+            )
+        if block_ts:
+            conn.execute(
+                "UPDATE groups SET force_block_until=? WHERE id=?", (block_ts, group["id"])
+            )
+        if paused:
+            conn.execute("UPDATE groups SET paused=1 WHERE id=?", (group["id"],))
+        conn.commit()
+    if deleted:
+        assert client.delete(f"/api/groups/{group['id']}").status_code == 200
+    return group
+
+
+def stored_row(client, gid):
+    with locked_conn(client.app) as conn:
+        row = conn.execute(
+            "SELECT paused, deleted, force_block_until FROM groups WHERE id=?", (gid,)
+        ).fetchone()
+        free = conn.execute("SELECT until_ts FROM free_allow WHERE group_id=?", (gid,)).fetchone()
+    return {
+        "paused": bool(row["paused"]),
+        "deleted": bool(row["deleted"]),
+        "block": int(row["force_block_until"] or 0),
+        "free": int(free["until_ts"]) if free else None,
+    }
+
+
+@pytest.mark.parametrize("action", sorted(ACTIONS))
+@pytest.mark.parametrize("state", sorted(START_STATES))
+@pytest.mark.parametrize("paused", [False, True])
+def test_the_matrix_of_every_starting_state_and_action(
+    ready, fake, monkeypatch, state, paused, action
+):
+    """Every action on a fresh group in that state, never after another action."""
+    client = ready["client"]
+    freeze(monkeypatch, client)
+    windows, free_ts, block_ts = START_STATES[state]
+    group = build_state(client, windows, free_ts, block_ts, paused=paused)
+    before = stored_row(client, group["id"])
+    payload, mode = ACTIONS[action]
+
+    response = client.post(f"/api/{action}", json=payload)
+    assert response.status_code == 200, response.text
+    assert response.json()["groups"] == (0 if paused else 1)
+
+    if paused:
+        # paused always wins and is never written by a whole-house action
+        assert stored_row(client, group["id"]) == before
+        status = "paused"
+    else:
+        after = stored_row(client, group["id"])
+        assert after["block"] == (NEXT_MIDNIGHT if mode == "block" else 0)
+        assert after["free"] == (FREE_AT_13 if mode == "free" else None)
+        status = {
+            "block-all": "blocked_admin",
+            "free-all": "free",
+            "auto-all": {
+                "in_hours": "allowed",
+                "out_of_hours": "outside_hours",
+                "always_open": "allowed",
+            }.get(state, "allowed"),
+        }[action]
+    listed = {g["id"]: g for g in client.get("/api/state").json()["groups"]}
+    assert listed[group["id"]]["status"] == status
+
+    blocked = "subject.example" in blocked_domains(fake)
+    assert blocked is (status not in {"allowed", "free"})  # paused is blocked too
+
+    # one further pass must not move anything
+    snapshot = (stored_row(client, group["id"]), set(fake.rules))
+    client.app.state.reconciler.run("test")
+    assert (stored_row(client, group["id"]), set(fake.rules)) == snapshot
+
+
+@pytest.mark.parametrize("action", sorted(ACTIONS))
+def test_a_deleted_group_is_ignored_by_every_whole_house_action(ready, fake, monkeypatch, action):
+    client = ready["client"]
+    freeze(monkeypatch, client)
+    group = build_state(client, [], FREE_AT_13, NEXT_MIDNIGHT, deleted=True)
+    before = stored_row(client, group["id"])
+    for other in ("a.example", "b.example"):
+        make_group(client, name=other, services=[], domains=[other])
+
+    payload, mode = ACTIONS[action]
+    response = client.post(f"/api/{action}", json=payload)
+    assert response.status_code == 200, response.text
+    assert response.json()["groups"] == 2  # the deleted one is not counted
+    assert stored_row(client, group["id"]) == before
+    assert "subject.example" not in blocked_domains(fake)
+
+
+def free_payload_at(monkeypatch, client, moment, until) -> dict:
+    """Free a group through the real route at a pinned clock, and read the state."""
+    monkeypatch.setattr(time, "time", lambda: int(moment.timestamp()))
+    login(client, "admin", ADMIN2["password"])
+    group = make_group(client, name="Timed", services=[], domains=["timed.example"])
+    response = client.post(f"/api/groups/{group['id']}/free", json={"until": until})
+    assert response.status_code == 200, response.text
+    state = {g["id"]: g for g in client.get("/api/state").json()["groups"]}[group["id"]]
+    return group, state
+
+
+@pytest.mark.parametrize(
+    ("moment", "until", "free_until_day"),
+    [
+        # 23:30 -> 00:30 is tomorrow, and says so
+        (datetime(2026, 11, 11, 23, 30, tzinfo=UTC), "00:30", "tomorrow"),
+        # 09:00 -> 08:00 is tomorrow too: bare it would read as a time already past
+        (datetime(2026, 11, 11, 9, 0, tzinfo=UTC), "08:00", "tomorrow"),
+        # later today stays bare
+        (datetime(2026, 11, 11, 9, 0, tzinfo=UTC), "18:00", None),
+    ],
+)
+def test_free_time_names_its_day_from_the_real_route(
+    ready, monkeypatch, moment, until, free_until_day
+):
+    client = ready["client"]
+    group, state = free_payload_at(monkeypatch, client, moment, until)
+    assert state["status"] == "free"
+    assert state["free_until_day"] == free_until_day
+    assert state["free_until"] == int(
+        (moment.replace(hour=int(until[:2]), minute=int(until[3:])) + timedelta(days=1)).timestamp()
+        if until <= moment.strftime("%H:%M")
+        else moment.replace(hour=int(until[:2]), minute=int(until[3:])).timestamp()
+    )
+    # the kid gets the same day, and nothing more
+    created = client.post(
+        "/api/users", json={"username": "kid", "password": "kid-password", "role": "user"}
+    )
+    assert created.status_code == 200, created.text
+    with locked_conn(client.app) as conn:
+        conn.execute("UPDATE groups SET owner_id=(SELECT id FROM users WHERE username='kid')")
+        conn.commit()
+    login(client, "kid", "kid-password")
+    kid = {g["id"]: g for g in client.get("/api/state").json()["groups"]}[group["id"]]
+    assert kid["free_until_day"] == free_until_day
+    assert set(kid) <= set(USER_GROUP_KEYS)
 
 
 # --------------------------------------------------------------------------- #
@@ -686,11 +1182,14 @@ GROUP_KEYS = {
     "open_now",
     "next_change",
     "opens_at",
+    "opens_day",
     "open_until",
+    "open_until_day",
+    "free_until",
+    "free_until_day",
     "status",
     "permitted",
     "blocked_until",
-    "free_until",
     "force_block_until",
     "paused",
     "owner_id",

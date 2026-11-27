@@ -55,6 +55,7 @@ def test_i18n_keys_used_by_the_server_exist():
 def test_alert_messages_come_from_i18n():
     required = {
         "alert.closed",
+        "alert.closed_day",
         "alert.sync_failing",
         "alert.sync_recovered",
         "alert.test",

@@ -23,11 +23,18 @@ install upgrades on start and keeps every schedule it already had.
   a Clear button (the existing `/free/clear` route) and its apply button is the
   one-tap **Extra time**, defaulting to an hour ahead in the server's timezone.
   The kid screen keeps showing "Free time until HH:MM" with no controls.
-- **Block everything now / Release everything.** Two admin buttons in the Today
-  header block every managed target at once, or lift everything TimeFence owns
-  (foreign AdGuard services and rules always stay). They are one-shot: they
-  never change a group's pause, free time or forced block, and the next
-  reconcile pass still follows each group's own schedule.
+- **An "All groups" row on the Today screen.** One `Block | Auto | Free`
+  control for the whole house, the same segmented control the cards use, so the
+  choice is stored on every group and the 30-second reconcile keeps it. `Block`
+  blocks every group that is not paused until local midnight; `Free` opens a
+  time panel and, once applied, frees every group until then and clears any
+  stored block so it cannot come back; `Auto` clears both and the allowed times
+  take over again. Paused groups are never touched: paused always means
+  blocked. `Block` and `Auto` ask first and say what will happen, `Free` only
+  asks for the time. A segment is highlighted only when every group agrees, and
+  the row disappears when every group is paused. The answer says whether
+  AdGuard Home has applied it yet; if it has not, the change is saved and the
+  next reconcile pass applies it.
 - **Two starter presets** for a new group: School day (09:00–17:00 on weekdays,
   09:00–18:00 at weekends) and No late nights (18:00–01:00 on weekdays,
   17:00–01:00 at weekends). They only fill the editor's fields — nothing is
@@ -44,6 +51,31 @@ install upgrades on start and keeps every schedule it already had.
   migration from an older schema.
 - The day-picker strings and the "days must be all, weekdays or weekends" error
   texts were replaced with the day-list wording.
+
+### Fixed
+
+- **The AdGuard Home address is printed without the password in it.** If
+  `ADGUARD_URL` carried credentials (`http://user:password@host`), the startup
+  log line and `timefence check` printed them as typed. The address is now shown
+  with `***` in place of everything before the host, and the client still gets
+  exactly the URL you configured.
+- **Focus stays put when a refresh lands while a name holds an odd character.**
+  The editor rebuilds a control's identity to put focus back after a poll, and
+  it did not escape a backslash or a line break in the value; a name with one of
+  those could lose focus and the field's place in the page.
+- **A future time now says which day it belongs to.** A group allowed only on
+  Saturdays said "Opens at 16:00" every day of the week, and on a Sunday that
+  is six days early. The kid screen and the Today card now say "Opens tomorrow
+  at 16:00" or "Opens Sat at 16:00", the alert message names the day the same
+  way, and a free time too: at 09:00, "Free until tomorrow at 08:00" no longer
+  reads as a time already past. An ordinary overnight end ("Open until 07:00")
+  keeps its bare time; only a group held open for a whole day or more by chained
+  allowed times shows "Open until tomorrow at 20:00". The day comes from the
+  server's timezone, so a kid's phone clock and zone never decide it.
+- **The day chips fit on one line on a phone.** In the group editor the seven
+  weekday chips were large two-column buttons; they now share one line at every
+  phone width with "Every day" on its own line below, and the page never
+  scrolls sideways, down to a 320 px screen.
 
 ## [1.0.0] - 2026-11-24
 

@@ -35,6 +35,11 @@
   /* A Free tap that has not been confirmed with a time yet. The poll rebuilds
      the controls, so an open panel has to live outside the markup too. */
   var pendingFree = {};
+  /* The whole-house Free panel: open until Apply or Cancel, and a time the
+     admin typed survives a poll. Cancelling, a confirmed Block/Auto and a tab
+     switch drop it, so a stale time can never turn into a nearly-24-hour Free;
+     a failed Apply keeps what was typed. */
+  var allFree = { open: false, choice: null };
 
   var $ = function (sel) { return document.querySelector(sel); };
   var $$ = function (sel, root) {
@@ -168,6 +173,18 @@
     return "auto";
   }
 
+  /* The whole-house row is pressed only when every live group reports the same
+     mode: a mixed house presses nothing, and a paused group never votes. */
+  function allMode(groups) {
+    var live = (groups || []).filter(function (group) { return !group.paused; });
+    if (!live.length) { return ""; }
+    var mode = modeFor(live[0]);
+    for (var index = 1; index < live.length; index += 1) {
+      if (modeFor(live[index]) !== mode) { return ""; }
+    }
+    return mode;
+  }
+
   /* The calls a move from one mode to another needs, in order, as route
      suffixes. Free and a stored block can coexist, so a few moves are two
      calls; the order is chosen so a failed second call still leaves the screen
@@ -282,6 +299,19 @@
     ).filter(function (el) { return el.getClientRects().length > 0; });
   }
 
+  /* A CSS attribute-selector value, escaped so any string round-trips. */
+  function cssAttrValue(value) {
+    // The value sits inside a CSS string, so a backslash starts an escape and a
+    // raw newline ends the string early: escape both, the newlines as the CSS
+    // escapes for those code points, then the quote itself.
+    return String(value)
+      .replace(/\\/g, "\\\\")
+      .replace(/\n/g, "\\a ")
+      .replace(/\r/g, "\\d ")
+      .replace(/\f/g, "\\c ")
+      .replace(/"/g, '\\"');
+  }
+
   /* Identity of the focused control, so a re-render can put focus back. */
   function focusKey(element) {
     if (!element || element === document.body || !element.getAttribute) { return ""; }
@@ -297,7 +327,7 @@
     var selector = "";
     names.forEach(function (name) {
       if (element.getAttribute(name) !== null) {
-        selector += "[" + name + '="' + String(element.getAttribute(name)).replace(/"/g, '\\"') + '"]';
+        selector += "[" + name + '="' + cssAttrValue(element.getAttribute(name)) + '"]';
       }
     });
     return selector;
@@ -337,6 +367,22 @@
   /* One sentence per group, straight from the server payload: no clock maths
      here. `status` comes from the single predicate the API and the kid page
      share, and `opens_at`/`open_until` are already local HH:MM. */
+  /* The server names the local day of a future time ("tomorrow", "sat"), so a
+     bare HH:MM is never read as today when it is not. */
+  function dayWord(day) {
+    var keys = {
+      mon: "card.day_mon",
+      tue: "card.day_tue",
+      wed: "card.day_wed",
+      thu: "card.day_thu",
+      fri: "card.day_fri",
+      sat: "card.day_sat",
+      sun: "card.day_sun"
+    };
+    if (day === "tomorrow") { return t("common.tomorrow"); }
+    return keys[day] ? t(keys[day]) : "";
+  }
+
   function statusFor(group) {
     if (group.status === "paused") {
       return { cls: "warn", short: t("status.short_paused"), text: t("status.paused") };
@@ -345,7 +391,12 @@
       return {
         cls: "warn",
         short: t("status.short_free"),
-        text: t("status.free", { time: clock(group.free_until) })
+        text: group.free_until_day
+          ? t("status.free_until_day", {
+            day: dayWord(group.free_until_day),
+            time: clock(group.free_until)
+          })
+          : t("status.free", { time: clock(group.free_until) })
       };
     }
     if (group.status === "blocked_admin") {
@@ -355,14 +406,21 @@
       return {
         cls: "warn",
         short: t("status.short_closed"),
-        text: t("status.opens_at", { time: group.opens_at || "" })
+        text: group.opens_day
+          ? t("status.opens_day", { day: dayWord(group.opens_day), time: group.opens_at || "" })
+          : t("status.opens_at", { time: group.opens_at || "" })
       };
     }
     if (group.open_until) {
       return {
         cls: "ok",
         short: t("status.short_open"),
-        text: t("status.open_until", { time: group.open_until })
+        text: group.open_until_day
+          ? t("status.open_until_day", {
+            day: dayWord(group.open_until_day),
+            time: group.open_until
+          })
+          : t("status.open_until", { time: group.open_until })
       };
     }
     return { cls: "ok", short: t("status.short_open"), text: t("status.open_all_day") };
@@ -676,8 +734,29 @@
       refreshFreeDefault(card, group);
     });
 
+    paintAllGroups(groups);
+
     var empty = $("#no-groups");
     if (empty) { empty.classList.toggle("hidden", groups.length > 0); }
+  }
+
+  /* The whole-house row, patched in place on every poll: the pressed segment,
+     the panel's visibility and the "(tomorrow)" hint. The open panel and the
+     typed time live outside the markup, so a poll never closes or clears them. */
+  function paintAllGroups(groups) {
+    var bar = $("#today-actions");
+    if (!bar) { return; }
+    var live = (groups || []).filter(function (group) { return !group.paused; });
+    bar.classList.toggle("hidden", role !== "admin" || !live.length);
+    var mode = allMode(groups);
+    $$('[data-action="all-mode"]', bar).forEach(function (button) {
+      button.setAttribute("aria-pressed", button.dataset.mode === mode ? "true" : "false");
+    });
+    var panel = $("#all-free-panel");
+    if (panel) { panel.classList.toggle("hidden", !allFree.open); }
+    var input = $("#all-free-time");
+    var hint = $("#all-free-tomorrow");
+    if (input && hint) { hint.classList.toggle("hidden", !freeTimeIsTomorrow(input.value)); }
   }
 
   /* "Always open" or "2 allowed times": the schedule in a few words. */
@@ -749,8 +828,6 @@
     var isAdmin = role === "admin";
     $("#role-badge").textContent = isAdmin ? "admin" : "user";
     $("#admin-tabs").classList.toggle("hidden", !isAdmin);
-    var todayActions = $("#today-actions");
-    if (todayActions) { todayActions.classList.toggle("hidden", !isAdmin); }
     $$("#admin-tabs .tab").forEach(function (button) {
       button.setAttribute("aria-selected", button.dataset.tab === tab ? "true" : "false");
     });
@@ -1588,9 +1665,15 @@
   /* The server zone decides "tomorrow", so the hint is refreshed here and not
      recomputed from the browser clock. */
   function noteFreeTime(event) {
-    var input = event.target && event.target.closest
-      ? event.target.closest("[data-free-time]")
-      : null;
+    var node = event.target && event.target.closest ? event.target : null;
+    var all = node ? node.closest("[data-all-free-time]") : null;
+    if (all) {
+      allFree.choice = all.value;
+      var allHint = $("#all-free-tomorrow");
+      if (allHint) { allHint.classList.toggle("hidden", !freeTimeIsTomorrow(all.value)); }
+      return;
+    }
+    var input = node ? node.closest("[data-free-time]") : null;
     if (!input) { return; }
     var groupId = String(input.dataset.freeTime);
     freeTimeChoice[groupId] = input.value;
@@ -1630,6 +1713,13 @@
       pendingFree[String(groupId)] = false;
       delete freeTimeChoice[String(groupId)];
       setMode(groupId, to);
+    } else if (action === "all-mode") {
+      openAllGroupsMode(target.dataset.mode || "");
+    } else if (action === "all-free-apply") {
+      applyAllFree();
+    } else if (action === "all-free-cancel") {
+      resetAllFree();
+      paintAllGroups(state ? state.groups : []);
     } else if (action === "free-apply") {
       var freeInput = document.querySelector('[data-free-time="' + groupId + '"]');
       var until = freeTimeChoice[String(groupId)] || defaultFreeTime() ||
@@ -1711,11 +1801,13 @@
      or Space presses the focused one, which is why these are buttons and not
      native radios. */
   document.addEventListener("keydown", function (event) {
-    var button = event.target.closest ? event.target.closest('[data-action="mode"]') : null;
+    var button = event.target.closest
+      ? event.target.closest('[data-action="mode"], [data-action="all-mode"]')
+      : null;
     if (!button) { return; }
-    var group = button.closest("[data-mode-group]");
+    var group = button.closest("[data-mode-group], [data-all-mode-group]");
     if (!group) { return; }
-    var items = $$('[data-action="mode"]', group);
+    var items = $$('[data-action="mode"], [data-action="all-mode"]', group);
     if (items.length < 2) { return; }
     var index = items.indexOf(button);
     var next = null;
@@ -1736,30 +1828,77 @@
   $$("#admin-tabs .tab").forEach(function (button) {
     button.addEventListener("click", function () {
       if (button.dataset.tab !== tab) { alertsTabLoaded = false; }
+      resetAllFree();  // leaving the tab drops a half-typed Free time
       tab = button.dataset.tab;
       render();
     });
   });
 
-  /* "Block everything now" / "Release everything": one admin action for the
-     whole house, behind the same confirm dialog as a delete. Nothing about a
-     single group's pause, free time or forced block is changed. */
-  function allGroupsAction(kind) {
-    var label = kind === "block" ? t("header.block_all") : t("header.release_all");
+  /* "All groups": one row for the whole house, and it stores the choice on
+     every group the same way a card does, so the 30 s loop keeps it. Block and
+     Auto keep a confirm dialog; Free only opens a time panel, so nothing is
+     sent until Apply. */
+  function allGroupsToast(mode, data, until) {
+    var key = mode === "block"
+      ? "toast.block_all"
+      : mode === "auto"
+        ? "toast.auto_all"
+        : "toast.free_all";
+    var text = t(key, { time: until || "" });
+    if (data && data.applied === false) { return text + " " + t("toast.saved_not_applied"); }
+    return text;
+  }
+
+  function resetAllFree() {
+    allFree.open = false;
+    allFree.choice = null;
+  }
+
+  /* Opening starts from the default time: a value typed before a cancel is gone,
+     and Free is never sent until Apply. */
+  function openAllFreePanel() {
+    if (!allFree.open) {
+      allFree.choice = null;
+      var input = $("#all-free-time");
+      if (input) { input.value = defaultFreeTime(); }
+    }
+    allFree.open = true;
+    paintAllGroups(state ? state.groups : []);
+    var box = $("#all-free-time");
+    if (box) { box.focus(); }
+  }
+
+  function allFreeUntil() {
+    var input = $("#all-free-time");
+    return allFree.choice || (input ? input.value : "") || defaultFreeTime();
+  }
+
+  function openAllGroupsMode(mode) {
+    if (mode === "free") {
+      openAllFreePanel();
+      return;
+    }
+    allGroupsConfirm(mode);
+  }
+
+  function allGroupsConfirm(mode) {
+    var block = mode === "block";
     openModal(
-      '<h2>' + esc(label) + "</h2>" +
-      '<p class="sub">' + esc(t("common.confirm")) + "</p>" +
+      "<h2>" + esc(t(block ? "all.block_title" : "all.auto_title")) + "</h2>" +
+      '<p class="sub">' + esc(t(block ? "all.block_body" : "all.auto_body")) + "</p>" +
       '<div class="row mt"><button class="btn" data-action="modal-close">' +
       esc(t("common.cancel")) + "</button>" +
-      '<button class="btn primary" id="all-groups-confirm">' + esc(t("common.yes")) + "</button></div>"
+      '<button class="btn primary" id="all-groups-confirm">' + esc(t("common.yes")) +
+      "</button></div>"
     );
     $("#all-groups-confirm").addEventListener("click", function (event) {
       var button = event.currentTarget;
       button.disabled = true;
-      api("POST", "/api/" + (kind === "block" ? "block-all" : "release-all"), {})
-        .then(function () {
+      api("POST", block ? "/api/block-all" : "/api/auto-all", {})
+        .then(function (data) {
           closeModal();
-          toast(t(kind === "block" ? "toast.blocked_all" : "toast.released_all"));
+          resetAllFree();  // an open Free panel closes with its typed time
+          toast(allGroupsToast(mode, data));
           return refresh();
         })
         .catch(function (error) {
@@ -1769,13 +1908,16 @@
     });
   }
 
-  var blockAllButton = $("#block-all");
-  if (blockAllButton) {
-    blockAllButton.addEventListener("click", function () { allGroupsAction("block"); });
-  }
-  var releaseAllButton = $("#release-all");
-  if (releaseAllButton) {
-    releaseAllButton.addEventListener("click", function () { allGroupsAction("release"); });
+  function applyAllFree() {
+    var until = allFreeUntil();
+    if (!until) { return; }
+    api("POST", "/api/free-all", { until: until })
+      .then(function (data) {
+        resetAllFree();
+        toast(allGroupsToast("free", data, until));
+        return refresh();
+      })
+      .catch(function (error) { toast(error.message); });  // a retry keeps the time
   }
 
   var newGroupButton = $("#new-group");

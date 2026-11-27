@@ -125,6 +125,40 @@ def clock_str(ts: int, tz: ZoneInfo) -> str:
     return datetime.fromtimestamp(ts, tz).strftime("%H:%M")
 
 
+def day_label(now: int, ts: int | None, tz: ZoneInfo, *, whole_day: bool = False) -> str | None:
+    """Which local day a future instant falls on.
+
+    `None` for today's date (the bare time needs no qualifier), `"tomorrow"`
+    for the next local date, otherwise the short weekday of that date. The word
+    comes from local calendar dates, never from dividing seconds by a day, so a
+    DST change and a zone that skips midnight both name the right day.
+
+    `whole_day` is for an end time that follows a *start*: an overnight window's
+    "07:00" on the next date is the natural reading and stays bare, so the label
+    appears only once the end is a whole day or more ahead. A single window is
+    shorter than a day, so only chained or overlapping windows reach that. The
+    day here is the wall clock's too: naive local datetimes are compared, so a
+    25-hour day does not turn 23.5 wall hours into a whole day, and a 23-hour
+    day does not hide one.
+    """
+    if ts is None:
+        return None
+    now_local = datetime.fromtimestamp(now, tz)
+    target_local = datetime.fromtimestamp(ts, tz)
+    today = now_local.date()
+    target = target_local.date()
+    ahead = (target - today).days
+    if ahead <= 0:
+        return None
+    if whole_day and ahead == 1:
+        wall = target_local.replace(tzinfo=None) - now_local.replace(tzinfo=None)
+        if wall < timedelta(days=1):
+            return None
+    if ahead == 1:
+        return "tomorrow"
+    return WINDOW_DAYS_SHORT[target.weekday()]
+
+
 # --------------------------------------------------------------------------- #
 # input normalisation
 # --------------------------------------------------------------------------- #
@@ -668,6 +702,46 @@ def clear_free(conn: sqlite3.Connection, gid: int) -> None:
     conn.commit()
 
 
+ALL_GROUP_MODES = ("block", "free", "auto")
+LIVE_GROUPS = "SELECT id FROM groups WHERE deleted=0 AND paused=0"
+
+
+def set_every_group_mode(
+    conn: sqlite3.Connection, mode: str, now: int, tz: ZoneInfo, until_ts: int = 0
+) -> int:
+    """Apply one mode to every live group (not paused, not deleted); returns how many.
+
+    `block` clears free time and forces a block until the next local midnight,
+    `free` sets the given end and clears any forced block (so the block cannot
+    come back when the free time is over), `auto` clears both.
+
+    The caller owns the commit: the per-group helpers each commit on their own,
+    and half the house in Block and half in Auto would be worse than neither.
+    Paused groups keep their own fields, because paused always wins anyway.
+    """
+    if mode not in ALL_GROUP_MODES:
+        raise ValidationError(f"unknown all-groups mode: {mode}")
+    # Every mode starts by clearing free time: Block and Auto end it, Free
+    # replaces it. Leaving the rows behind would keep a group free after Auto.
+    conn.execute(f"DELETE FROM free_allow WHERE group_id IN ({LIVE_GROUPS})")
+    if mode == "block":
+        conn.execute(
+            "UPDATE groups SET force_block_until=? WHERE deleted=0 AND paused=0",
+            (next_local_midnight(now, tz),),
+        )
+    elif mode == "free":
+        conn.executemany(
+            "INSERT INTO free_allow(group_id, until_ts) VALUES(?,?) "
+            "ON CONFLICT(group_id) DO UPDATE SET until_ts=excluded.until_ts",
+            [(int(row["id"]), int(until_ts)) for row in conn.execute(LIVE_GROUPS)],
+        )
+        conn.execute("UPDATE groups SET force_block_until=0 WHERE deleted=0 AND paused=0")
+    else:
+        conn.execute("UPDATE groups SET force_block_until=0 WHERE deleted=0 AND paused=0")
+    row = conn.execute(f"SELECT COUNT(*) AS n FROM ({LIVE_GROUPS})").fetchone()
+    return int(row["n"])
+
+
 def group_status(
     conn: sqlite3.Connection,
     group: Group,
@@ -711,6 +785,9 @@ def group_state(
     scheduled = schedule_state(group, tz, now)
     open_now, change_ts = scheduled
     status, blocked_until = group_status(conn, group, tz, now, scheduled=scheduled)
+    opens = status == "outside_hours" and change_ts is not None
+    open_end = status == "allowed" and bool(group.windows) and change_ts is not None
+    free = until if until and until > now else None
     return {
         "id": group.id,
         "name": group.name,
@@ -718,16 +795,17 @@ def group_state(
         "windows": [window.as_dict() for window in group.windows],
         "open_now": open_now,
         "next_change": change_ts,
-        "opens_at": clock_str(change_ts, tz) if status == "outside_hours" else None,
-        "open_until": (
-            clock_str(change_ts, tz)
-            if status == "allowed" and group.windows and change_ts is not None
-            else None
-        ),
+        "opens_at": clock_str(change_ts, tz) if opens else None,
+        "opens_day": day_label(now, change_ts, tz) if opens else None,
+        "open_until": clock_str(change_ts, tz) if open_end else None,
+        "open_until_day": day_label(now, change_ts, tz, whole_day=True) if open_end else None,
         "status": status,
         "permitted": status in PERMITTED_STATUSES,
         "blocked_until": blocked_until,
-        "free_until": until if until and until > now else None,
+        "free_until": free,
+        # A free time always ends under 24 h ahead (parse_hhmm), so the whole-day
+        # rule would hide every "tomorrow"; the date alone decides here.
+        "free_until_day": day_label(now, free, tz) if free else None,
         "force_block_until": group.force_block_until if group.force_block_until > now else 0,
         "paused": group.paused,
         "owner_id": group.owner_id,

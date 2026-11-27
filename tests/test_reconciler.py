@@ -198,7 +198,7 @@ def test_reconciler_survives_adguard_errors(store, fake, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# the admin's block everything / release everything, without shutting down
+# the shutdown block and the CLI release: last write, and what only we own
 # --------------------------------------------------------------------------- #
 
 
@@ -207,106 +207,41 @@ def event_kinds(store) -> list[str]:
         return [row["kind"] for row in conn.execute("SELECT kind FROM events ORDER BY id")]
 
 
-def test_manual_block_all_blocks_every_managed_target_and_keeps_the_fields(store, fake):
-    now = ts_utc(2026, 11, 11, 12)
+def test_the_shutdown_block_still_covers_every_managed_target(store, fake):
+    """`block_all` is the last write of the process, not the admin's row."""
+    fake.ids = ["tiktok"]
+    fake.rules = ["||foreign.example^"]
     with store as conn:
-        scheduled = add_group(
-            conn,
-            name="Scheduled",
-            services=("youtube",),
-            domains=("scheduled.example",),
-            windows=[a_window("09:00", "10:00")],
-        )
-        free = add_group(conn, name="Free", services=("roblox",), domains=("free.example",))
-        paused = add_group(
-            conn, name="Paused", services=("instagram",), domains=("paused.example",)
-        )
-        budget.update_group(conn, paused.id, paused=True)
-        budget.set_free_until(conn, free.id, now + 3600)
-        budget.set_force_block(conn, scheduled.id, now + 600)
-        before = {
-            group.name: (group.paused, budget.free_until(conn, group.id), group.force_block_until)
-            for group in budget.list_groups(conn)
-        }
+        add_group(conn, name="Scheduled", services=("youtube",), domains=("scheduled.example",))
+        add_group(conn, name="Free", services=("roblox",), domains=("free.example",))
     reconciler = Reconciler(store, fake, TZ)
 
-    result = reconciler.manual_block_all()
+    result = reconciler.block_all()
 
-    assert result == {"changed": ["services", "domains"], "errors": []}
-    assert fake.ids == ["instagram", "roblox", "youtube"]
+    assert result["errors"] == []
+    assert fake.ids == ["roblox", "tiktok", "youtube"]  # the foreign one stays
     assert fake.rules == [
+        "||foreign.example^",
         SECTION_BEGIN,
         "||free.example^",
-        "||paused.example^",
         "||scheduled.example^",
         SECTION_END,
     ]
-    # not a shutdown: the loop keeps running and will recompute from the fields
-    assert reconciler.closed is False
-    with store as conn:
-        after = {
-            group.name: (group.paused, budget.free_until(conn, group.id), group.force_block_until)
-            for group in budget.list_groups(conn)
-        }
-    assert after == before
-    assert event_kinds(store)[-1] == "admin_block_all"
+    assert reconciler.closed is True
 
 
-def test_manual_block_all_is_idempotent_and_preserves_foreign_targets(store, fake):
-    fake.ids = ["tiktok"]
-    fake.rules = ["||foreign.example^"]
+def test_the_cli_release_lifts_only_what_timefence_owns(store, fake):
+    fake.ids = ["youtube", "tiktok"]
+    fake.rules = ["||foreign.example^", SECTION_BEGIN, "||example.com^", SECTION_END]
     with store as conn:
         add_group(conn, services=("youtube",), domains=("example.com",))
     reconciler = Reconciler(store, fake, TZ)
 
-    first = reconciler.manual_block_all()
-    assert first["changed"] == ["services", "domains"]
-    assert fake.ids == ["tiktok", "youtube"]
-    assert fake.rules == ["||foreign.example^", SECTION_BEGIN, "||example.com^", SECTION_END]
+    result = reconciler.release()
 
-    calls = len(fake.calls)
-    second = reconciler.manual_block_all()
-    assert second == {"changed": [], "errors": []}
-    assert len(fake.calls) == calls
-    assert fake.ids == ["tiktok", "youtube"]
-
-
-def test_manual_release_all_lifts_only_what_timefence_owns(store, fake):
-    fake.ids = ["youtube", "tiktok"]
-    fake.rules = ["||foreign.example^", SECTION_BEGIN, "||example.com^", SECTION_END]
-    with store as conn:
-        group = add_group(conn, services=("youtube",), domains=("example.com",))
-        budget.set_free_until(conn, group.id, ts_utc(2026, 11, 11, 23))
-    reconciler = Reconciler(store, fake, TZ)
-
-    result = reconciler.manual_release_all()
-
-    assert result == {"changed": ["services", "domains"], "errors": []}
+    assert result == {"services": ["youtube"], "rules_removed": 3}  # both markers too
     assert fake.ids == ["tiktok"]  # a foreign service survives
     assert fake.rules == ["||foreign.example^"]  # so does a foreign rule
-    assert reconciler.closed is False
-    with store as conn:
-        assert budget.free_until(conn, group.id) == ts_utc(2026, 11, 11, 23)
-    assert event_kinds(store)[-1] == "admin_release_all"
-
-    # nothing left to lift: no write at all
-    calls = len(fake.calls)
-    assert reconciler.manual_release_all() == {"changed": [], "errors": []}
-    assert len(fake.calls) == calls
-
-
-def test_manual_block_all_reports_an_adguard_error_without_raising(store, fake, monkeypatch):
-    def boom(*args, **kwargs):
-        from timefence.adguard import AdGuardError
-
-        raise AdGuardError("down")
-
-    monkeypatch.setattr(fake, "blocked_services", boom)
-    with store as conn:
-        add_group(conn)
-    result = Reconciler(store, fake, TZ).manual_block_all()
-    assert result["changed"] == []
-    assert result["errors"] == ["down"]
 
 
 # --------------------------------------------------------------------------- #

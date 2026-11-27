@@ -43,18 +43,48 @@
     return Array.isArray(list) ? list : [];
   }
 
+  /* The server names the local day of a future time ("tomorrow", "sat"): the
+     kid's device clock and zone never get a say. */
+  function dayWord(day) {
+    var keys = {
+      mon: "card.day_mon",
+      tue: "card.day_tue",
+      wed: "card.day_wed",
+      thu: "card.day_thu",
+      fri: "card.day_fri",
+      sat: "card.day_sat",
+      sun: "card.day_sun"
+    };
+    if (day === "tomorrow") { return t("common.tomorrow"); }
+    return keys[day] ? t(keys[day]) : "";
+  }
+
   /* One sentence per group, straight from the reduced payload: the server
      already decided whether the group is open, so no clock maths here. */
   function bigLine(group) {
     if (group.status === "free") {
-      return t("kid.free_until", { time: clock(group.free_until) });
+      return group.free_until_day
+        ? t("kid.free_until_day", {
+          day: dayWord(group.free_until_day),
+          time: clock(group.free_until)
+        })
+        : t("kid.free_until", { time: clock(group.free_until) });
     }
     if (group.status === "blocked_admin") { return t("kid.blocked"); }
     if (group.status === "paused") { return t("kid.paused"); }
     if (group.status === "outside_hours") {
-      return t("kid.opens_at", { time: group.opens_at || "" });
+      return group.opens_day
+        ? t("kid.opens_day", { day: dayWord(group.opens_day), time: group.opens_at || "" })
+        : t("kid.opens_at", { time: group.opens_at || "" });
     }
-    if (group.open_until) { return t("kid.open_until", { time: group.open_until }); }
+    if (group.open_until) {
+      return group.open_until_day
+        ? t("kid.open_until_day", {
+          day: dayWord(group.open_until_day),
+          time: group.open_until
+        })
+        : t("kid.open_until", { time: group.open_until });
+    }
     return t("kid.open_all_day");
   }
 

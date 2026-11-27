@@ -333,11 +333,14 @@ def test_group_state_payload_has_the_documented_keys(conn):
         "open_now",
         "next_change",
         "opens_at",
+        "opens_day",
         "open_until",
+        "open_until_day",
         "status",
         "permitted",
         "blocked_until",
         "free_until",
+        "free_until_day",
         "force_block_until",
         "paused",
         "owner_id",
@@ -374,3 +377,200 @@ def test_no_usage_or_budget_helpers_remain():
         "bedtime_state",
     ):
         assert not hasattr(budget, name), name
+
+
+# --------------------------------------------------------------------------- #
+# a future time names its day: "Opens tomorrow at 16:00", "Opens Sat at 16:00"
+# --------------------------------------------------------------------------- #
+
+SATURDAY_ONLY = [{"start": "16:00", "end": "18:00", "days": "sat"}]
+
+
+def _state_at(conn, tz, year, month, day, hour, minute, windows, name="Group"):
+    group = make_group(
+        conn, windows=windows, name=name, services=(), domains=(f"{name.lower()}.test",)
+    )
+    now = int(datetime(year, month, day, hour, minute, tzinfo=tz).timestamp())
+    return budget.group_state(conn, group, tz, now)
+
+
+@pytest.mark.parametrize(
+    ("day", "hour", "opens_at", "opens_day"),
+    [
+        # Friday 2026-11-13: the next opening is Saturday, in one local day
+        (13, 9, "16:00", "tomorrow"),
+        # Saturday before the window: it opens today, so no day is named
+        (14, 9, "16:00", None),
+        # Saturday after the window: the next one is a full week away
+        (14, 19, "16:00", "sat"),
+        # Sunday: six days out
+        (15, 9, "16:00", "sat"),
+        # Monday: five days out
+        (16, 9, "16:00", "sat"),
+    ],
+)
+def test_a_saturday_only_window_names_the_day_it_opens(conn, day, hour, opens_at, opens_day):
+    state = _state_at(conn, TZ, 2026, 11, day, hour, 0, SATURDAY_ONLY)
+    assert state["status"] == "outside_hours"
+    assert state["opens_at"] == opens_at
+    assert state["opens_day"] == opens_day
+
+
+def test_an_overnight_window_keeps_a_bare_end_time(conn):
+    """21:00-07:00: the end is on the next date and that reading is natural."""
+    overnight = [{"start": "21:00", "end": "07:00", "days": "all"}]
+    late = _state_at(conn, TZ, 2026, 11, 13, 23, 0, overnight, "Late")
+    assert (late["status"], late["open_until"], late["open_until_day"]) == (
+        "allowed",
+        "07:00",
+        None,
+    )
+    early = _state_at(conn, TZ, 2026, 11, 14, 3, 0, overnight, "Early")
+    assert (early["status"], early["open_until"], early["open_until_day"]) == (
+        "allowed",
+        "07:00",
+        None,
+    )
+    # outside the window at 12:00 the next opening is tonight, a bare time
+    noon = _state_at(conn, TZ, 2026, 11, 14, 12, 0, overnight, "Noon")
+    assert (noon["status"], noon["opens_at"], noon["opens_day"]) == ("outside_hours", "21:00", None)
+
+
+def test_a_chained_open_span_a_whole_day_out_names_the_end_day(conn):
+    """Chained windows can keep a group open for a whole day or more: reachable."""
+    chained = [
+        {"start": "08:00", "end": "20:00", "days": "mon"},
+        {"start": "20:00", "end": "08:00", "days": "mon"},
+        {"start": "08:00", "end": "20:00", "days": "tue"},
+    ]
+    state = _state_at(conn, TZ, 2026, 11, 16, 9, 0, chained)  # Monday 09:00
+    assert state["status"] == "allowed"
+    ahead = state["next_change"] - ts_on(2026, 11, 16, 9)
+    assert ahead >= 86400, ahead  # the end really is a whole day out
+    assert (state["open_until"], state["open_until_day"]) == ("20:00", "tomorrow")
+
+
+def test_the_day_is_the_server_local_date_not_the_utc_one(tmp_path):
+    """At 20:00 UTC it is already Saturday in Kiritimati (UTC+14)."""
+    kiritimati = ZoneInfo("Pacific/Kiritimati")
+    connection = db.connect(tmp_path / "k.db")
+    try:
+        db.migrate(connection)
+        group = make_group(
+            connection, windows=SATURDAY_ONLY, name="K", services=(), domains=("k.test",)
+        )
+        now = int(datetime(2026, 11, 13, 20, 0, tzinfo=ZoneInfo("UTC")).timestamp())
+        state = budget.group_state(connection, group, kiritimati, now)
+    finally:
+        connection.close()
+    assert datetime.fromtimestamp(now, kiritimati).strftime("%a %d") == "Sat 14"
+    assert datetime.fromtimestamp(now, ZoneInfo("UTC")).strftime("%a %d") == "Fri 13"
+    assert state["opens_at"] == "16:00"
+    assert state["opens_day"] is None  # today in the server's zone
+
+
+def test_the_day_label_survives_a_dst_change(conn):
+    """London jumps on 2027-03-28; the dates, not the seconds, name the day."""
+    london = ZoneInfo("Europe/London")
+    week = _state_at(conn, london, 2027, 3, 27, 23, 30, SATURDAY_ONLY, "Week")
+    assert (week["opens_at"], week["opens_day"]) == ("16:00", "sat")
+    tomorrow = _state_at(
+        conn,
+        london,
+        2027,
+        3,
+        27,
+        23,
+        30,
+        [{"start": "09:00", "end": "10:00", "days": "sun"}],
+        "Tomorrow",
+    )
+    assert (tomorrow["opens_at"], tomorrow["opens_day"]) == ("09:00", "tomorrow")
+
+
+def test_only_outside_hours_names_its_day(conn):
+    always = _state_at(conn, TZ, 2026, 11, 13, 9, 0, [], "Always")
+    assert (always["opens_at"], always["opens_day"]) == (None, None)
+    assert (always["open_until"], always["open_until_day"]) == (None, None)
+
+    blocked = make_group(conn, windows=SATURDAY_ONLY, name="B", services=(), domains=("b.test",))
+    budget.set_force_block(conn, blocked.id, ts_on(2026, 11, 13, 23))
+    blocked = budget.get_group(conn, blocked.id)
+    forced = budget.group_state(conn, blocked, TZ, ts_on(2026, 11, 13, 9))
+    assert (forced["status"], forced["opens_day"], forced["open_until_day"]) == (
+        "blocked_admin",
+        None,
+        None,
+    )
+
+    free = make_group(conn, windows=SATURDAY_ONLY, name="F", services=(), domains=("f.test",))
+    budget.set_free_until(conn, free.id, ts_on(2026, 11, 13, 23))
+    freed = budget.group_state(conn, free, TZ, ts_on(2026, 11, 13, 9))
+    assert (freed["status"], freed["opens_day"], freed["open_until_day"]) == ("free", None, None)
+    assert freed["free_until_day"] is None  # free until 23:00, today
+
+    paused = make_group(
+        conn, windows=SATURDAY_ONLY, paused=True, name="P", services=(), domains=("p.test",)
+    )
+    state = budget.group_state(conn, paused, TZ, ts_on(2026, 11, 13, 9))
+    assert (state["status"], state["opens_day"]) == ("paused", None)
+
+
+def test_free_time_names_the_day_it_ends(conn):
+    """A free end is always under a day away, so the date alone names its day."""
+    group = make_group(conn, windows=(), name="Free", services=(), domains=("free.test",))
+    tonight = budget.parse_hhmm("02:00", ts_on(2026, 11, 13, 23), TZ)
+    budget.set_free_until(conn, group.id, tonight)
+    state = budget.group_state(conn, group, TZ, ts_on(2026, 11, 13, 23))
+    # 23:00 -> 02:00 is tomorrow, and bare it would read as a time already past
+    assert (state["status"], state["free_until_day"]) == ("free", "tomorrow")
+    today = budget.parse_hhmm("21:00", ts_on(2026, 11, 13, 9), TZ)
+    budget.set_free_until(conn, group.id, today)
+    state = budget.group_state(conn, group, TZ, ts_on(2026, 11, 13, 9))
+    assert (state["status"], state["free_until_day"]) == ("free", None)
+
+    later = ts_on(2026, 11, 15, 9)
+    budget.set_free_until(conn, group.id, later)
+    state = budget.group_state(conn, group, TZ, ts_on(2026, 11, 13, 9))
+    assert state["free_until_day"] == "sun"
+
+
+def test_the_whole_day_gate_counts_wall_clock_time_on_an_autumn_day(conn):
+    """London gains an hour on 2026-10-25: 23.5 wall hours read as 24.5 real ones."""
+    london = ZoneInfo("Europe/London")
+    # open from Saturday 10:00 to Sunday 09:30, chained across the 25-hour day
+    windows = [
+        {"start": "10:00", "end": "00:00", "days": "sat"},
+        {"start": "00:00", "end": "09:30", "days": "sun"},
+    ]
+    state = _state_at(conn, london, 2026, 10, 24, 10, 0, windows, "Autumn")
+    assert state["status"] == "allowed"
+    end = datetime.fromtimestamp(state["next_change"], london)
+    now = datetime.fromtimestamp(int(datetime(2026, 10, 24, 10, tzinfo=london).timestamp()), london)
+    assert end.date() > now.date()
+    # under a whole day by the wall clock, even though more than 24 h elapse
+    assert (end.replace(tzinfo=None) - now.replace(tzinfo=None)).total_seconds() < 86400
+    elapsed = state["next_change"] - int(datetime(2026, 10, 24, 10, tzinfo=london).timestamp())
+    assert elapsed >= 86400
+    assert state["open_until_day"] is None  # an overnight-style end, left bare
+
+
+def test_the_whole_day_gate_counts_wall_clock_time_on_a_spring_day(conn):
+    """London loses an hour on 2027-03-28: 24.5 wall hours read as 23.5 real ones."""
+    london = ZoneInfo("Europe/London")
+    windows = [
+        {"start": "01:30", "end": "00:00", "days": "sat"},
+        {"start": "00:00", "end": "02:00", "days": "sun"},
+    ]
+    state = _state_at(conn, london, 2027, 3, 27, 1, 30, windows, "Spring")
+    assert state["status"] == "allowed"
+    end = datetime.fromtimestamp(state["next_change"], london)
+    now = datetime.fromtimestamp(
+        int(datetime(2027, 3, 27, 1, 30, tzinfo=london).timestamp()), london
+    )
+    assert end.date() > now.date()
+    # a whole day out by the wall clock, although fewer than 24 h elapse
+    assert (end.replace(tzinfo=None) - now.replace(tzinfo=None)).total_seconds() >= 86400
+    elapsed = state["next_change"] - int(datetime(2027, 3, 27, 1, 30, tzinfo=london).timestamp())
+    assert elapsed < 86400
+    assert state["open_until_day"] == "tomorrow"  # a full day ahead: named

@@ -38,8 +38,11 @@ GROUP_KEYS = {
     "status",
     "open_now",
     "opens_at",
+    "opens_day",
     "open_until",
+    "open_until_day",
     "free_until",
+    "free_until_day",
     "paused",
 }
 

@@ -246,6 +246,7 @@ def test_group_closed_is_off_by_default(store, tmp_path):
     assert [m.event for m in messages] == ["group_closed"]
     assert messages[0].group == "YouTube"
     assert messages[0].time_text == "13:00"  # the next opening, a local HH:MM
+    assert messages[0].time_day == ""  # ... today, so the time needs no day
     assert sent_keys(store) == {f"closed:{group.id}:{ts_utc(2026, 11, 11, 13)}"}
 
 
@@ -264,6 +265,28 @@ def test_group_closed_fires_once_per_closing(store, tmp_path):
     assert [m.event for m in probe(restarted, ts_utc(2026, 11, 12, 12))] == ["group_closed"]
     assert probe(restarted, ts_utc(2026, 11, 12, 12, 45)) == []
     assert len([key for key in sent_keys(store) if key.startswith("closed:")]) == 2
+
+
+def test_the_closed_alert_names_the_day_of_the_next_opening(store, tmp_path):
+    """A Saturday-only window closes on Saturday; the next opening is a week out."""
+    settings = settings_for(tmp_path)
+    make_group(store, windows=[{"start": "16:00", "end": "18:00", "days": "sat"}])
+    ntfy_config(store)
+    configure(store, events={"group_closed": True})
+    worker = alerts.AlertWorker(store, settings)
+
+    messages = probe(worker, ts_utc(2026, 11, 14, 19))  # Saturday evening
+    assert [m.event for m in messages] == ["group_closed"]
+    assert (messages[0].time_text, messages[0].time_day) == ("16:00", "sat")
+    assert alerts.message_text(messages[0]) == ("YouTube: allowed time is over until Sat at 16:00")
+
+    # the ordinary next-day case names "tomorrow" the same way
+    tomorrow = alerts.Message(
+        event="group_closed", key="k", group="YouTube", time_text="09:00", time_day="tomorrow"
+    )
+    assert alerts.message_text(tomorrow) == (
+        "YouTube: allowed time is over until tomorrow at 09:00"
+    )
 
 
 def test_a_wrapping_window_does_not_alert_again_after_midnight(store, tmp_path):

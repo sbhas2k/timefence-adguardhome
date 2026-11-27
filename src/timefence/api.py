@@ -23,7 +23,7 @@ from . import APP_TITLE, __version__, alerts, budget, credentials, db, i18n, pre
 from .adguard import AdGuardClient, AdGuardError
 from .config import Settings
 from .discover import PublicSuffixList, SuffixList, aggregate, humanize_age, recent_clients
-from .reconciler import BLOCKED_REASONS, BUSY_ERROR, Reconciler, rule_host
+from .reconciler import BLOCKED_REASONS, Reconciler, rule_host
 
 log = logging.getLogger("timefence.web")
 
@@ -53,8 +53,11 @@ USER_GROUP_KEYS = (
     "status",
     "open_now",
     "opens_at",
+    "opens_day",
     "open_until",
+    "open_until_day",
     "free_until",
+    "free_until_day",
     "paused",
 )
 STATIC = Path(__file__).parent / "static"
@@ -418,9 +421,13 @@ def create_app(
             return {}
         return data if isinstance(data, dict) else {}
 
-    def reconcile(reason: str) -> None:
-        """Ask the reconciler to converge; a busy loop is retried by the loop."""
-        reconciler.run(reason, wait=5)
+    def reconcile(reason: str) -> dict:
+        """Ask the reconciler to converge; a busy loop is retried by the loop.
+
+        The run's own result is returned so an admin action can tell whether
+        AdGuard Home has taken the change yet without looking at the state.
+        """
+        return reconciler.run(reason, wait=5)
 
     def set_session_cookie(response: JSONResponse, token: str) -> None:
         response.set_cookie(
@@ -1039,38 +1046,56 @@ def create_app(
             "group": group_payload(group, int(time.time())),
         }
 
-    def _hands_on_error(result: dict):
-        """The one-shot block-all / release-all can only fail two ways: the
-        reconciler still holds its run lock (busy: try again in a moment) or
-        AdGuard Home refused (a real 502). Distinguish them in the response."""
-        errors = result.get("errors") or []
-        if not errors:
-            return None
-        if errors[0] == BUSY_ERROR:
-            return json_error(503, i18n.t("error.try_again_soon"), "busy")
-        return json_error(502, i18n.t("error.adguard", detail=errors[0]), "adguard")
+    def _saved_applied(result: dict | None) -> bool:
+        """Did AdGuard Home take the choice this request just stored?
+
+        A busy run, a shutdown, a credential backoff and any phase error all
+        mean no: the fields are saved, and the 30 s loop applies them later.
+        """
+        if not result:
+            return False
+        if result.get("pending") or result.get("closed") or result.get("skipped"):
+            return False
+        return not result.get("errors")
 
     @app.post(f"{base}/api/block-all")
     def api_block_all(request: Request):
-        """Block every managed target now; the schedule is not changed."""
-        require("admin", request)
-        result = reconciler.manual_block_all()
-        refused = _hands_on_error(result)
-        if refused is not None:
-            return refused
-        reconcile("admin_block_all")
-        return {"ok": True, "changed": result["changed"]}
+        """Block every live group until the next local midnight, and keep it."""
+        sess = require("admin", request)
+        now = int(time.time())
+        with store as conn:
+            groups = budget.set_every_group_mode(conn, "block", now, settings.zone)
+            budget.log_event(conn, "admin_block_all", {"groups": groups, "actor": sess.role})
+        applied = _saved_applied(reconcile("admin_block_all"))
+        return {"ok": True, "applied": applied, "groups": groups}
 
-    @app.post(f"{base}/api/release-all")
-    def api_release_all(request: Request):
-        """Lift what TimeFence owns from AdGuard Home; foreign rules stay."""
-        require("admin", request)
-        result = reconciler.manual_release_all()
-        refused = _hands_on_error(result)
-        if refused is not None:
-            return refused
-        reconcile("admin_release_all")
-        return {"ok": True, "changed": result["changed"]}
+    @app.post(f"{base}/api/free-all")
+    def api_free_all(request: Request, data: dict = Depends(json_body)):
+        """Free every live group until the chosen time; a stored block is cleared."""
+        sess = require("admin", request)
+        now = int(time.time())
+        try:
+            until = budget.parse_hhmm(str(data.get("until", "")), now, settings.zone)
+        except budget.ValidationError as exc:
+            return json_error(400, str(exc), "invalid")
+        with store as conn:
+            groups = budget.set_every_group_mode(conn, "free", now, settings.zone, until_ts=until)
+            budget.log_event(
+                conn, "admin_free_all", {"groups": groups, "until": until, "actor": sess.role}
+            )
+        applied = _saved_applied(reconcile("admin_free_all"))
+        return {"ok": True, "applied": applied, "groups": groups, "until": until}
+
+    @app.post(f"{base}/api/auto-all")
+    def api_auto_all(request: Request):
+        """Let every live group follow its own allowed times again."""
+        sess = require("admin", request)
+        now = int(time.time())
+        with store as conn:
+            groups = budget.set_every_group_mode(conn, "auto", now, settings.zone)
+            budget.log_event(conn, "admin_auto_all", {"groups": groups, "actor": sess.role})
+        applied = _saved_applied(reconcile("admin_auto_all"))
+        return {"ok": True, "applied": applied, "groups": groups}
 
     # ------------------------------------------------------------------ test
     def _probe_hosts(service_id: str, hosts: list[str]) -> list[str]:

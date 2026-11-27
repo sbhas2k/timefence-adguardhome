@@ -21,9 +21,28 @@
     <button type="button" class="btn ghost" data-action="hint-dismiss"
             aria-label="{{ t('alerts.hint_dismiss_label') }}">{{ t("alerts.hint_dismiss") }}</button>
   </div>
-  <div class="between mt hidden" id="today-actions">
-    <button class="btn danger" id="block-all">{{ t("header.block_all") }}</button>
-    <button class="btn" id="release-all">{{ t("header.release_all") }}</button>
+  <div class="all-bar mt hidden" id="today-actions">
+    <div class="between wrap-bar">
+      <span class="all-label" id="all-groups-label">{{ t("all.label") }}</span>
+      <div class="seg all-groups" id="all-groups" role="group" data-all-mode-group="1"
+           aria-labelledby="all-groups-label">
+        <button type="button" class="btn seg-btn" data-action="all-mode" data-mode="block"
+                aria-pressed="false">{{ t("admin.mode_block") }}</button>
+        <button type="button" class="btn seg-btn" data-action="all-mode" data-mode="auto"
+                aria-pressed="false">{{ t("admin.mode_auto") }}</button>
+        <button type="button" class="btn seg-btn" data-action="all-mode" data-mode="free"
+                aria-pressed="false" aria-controls="all-free-panel">{{ t("admin.mode_free") }}</button>
+      </div>
+    </div>
+    <div class="row tight mt hidden" id="all-free-panel">
+      <input type="time" id="all-free-time" data-all-free-time="1"
+             aria-label="{{ t('admin.extra_until') }}">
+      <span class="muted small hidden" id="all-free-tomorrow">{{ t("admin.free_tomorrow") }}</span>
+      <button type="button" class="btn primary" id="all-free-apply"
+              data-action="all-free-apply">{{ t("all.apply") }}</button>
+      <button type="button" class="btn" id="all-free-cancel"
+              data-action="all-free-cancel">{{ t("common.cancel") }}</button>
+    </div>
   </div>
   <div id="groups" class="stack"></div>
   <p class="muted small center hidden" id="no-groups">{{ t("groups.empty") }}</p>

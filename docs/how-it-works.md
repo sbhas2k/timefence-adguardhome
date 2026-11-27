@@ -78,10 +78,26 @@ Each group reports a server-side `status` with a single precedence, and
 
 "Free until" wins over a closed window and over "Block now"; a "Block now"
 wins over an open window. Both are deliberate admin actions, so neither depends
-on the schedule. The API also reports `open_now` and `next_change`, plus
+on the schedule.
+
+The Today screen's **All groups** row writes the same per-group fields for the
+whole house: Block clears free time and forces a block until local midnight,
+Free sets a free-until time and clears any forced block, Auto clears both. The
+choice is stored, so the reconcile loop keeps it on every pass; paused groups
+are never touched and a deleted group is ignored. Each action is one database
+transaction and one event (`admin_block_all`, `admin_free_all`,
+`admin_auto_all`), and the response says whether AdGuard Home applied it yet —
+if not, the next pass does. The API also reports `open_now` and `next_change`, plus
 `opens_at` (when `outside_hours`) and `open_until` (when `allowed` and the group
 has windows) as local `HH:MM` — the kid screen prints those verbatim, and has no
-clock of its own.
+clock of its own. `opens_day`, `open_until_day` and `free_until_day` say which
+local date the time belongs to: `null` for today, `tomorrow`, or the short
+weekday (`sat`) when it is further out, so "Opens Sat at 16:00" never reads as
+today's 16:00. An overnight *end* stays bare unless chained windows keep the
+group open for a whole day or more, which is why `open_until_day` has that extra
+rule; a free time always ends under 24 h ahead, so `free_until_day` simply names
+the date ("Free until tomorrow at 08:00" at 09:00). The server decides all three
+from its own `TZ` — never from a browser clock.
 
 ## Who sees what
 
@@ -91,7 +107,8 @@ group; a `user` sees the groups they own plus the shared ones, on a dedicated
 read-only screen, and the server refuses every mutating `/api/*` call from a
 `user` session with `403 read_only`. The user state payload is reduced to the
 group's identity and schedule — `id`, `name`, `emoji`, `permitted`, `status`,
-`open_now`, `opens_at`, `open_until`, `free_until`, `paused` — with no windows,
+`open_now`, `opens_at`, `opens_day`, `open_until`, `open_until_day`,
+`free_until`, `free_until_day`, `paused` — with no windows,
 services, domains, owner names or AdGuard details.
 
 Allowed times are per group, so "one schedule per child" is "one group per

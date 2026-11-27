@@ -97,6 +97,39 @@ def test_tap_targets_are_at_least_44_pixels():
     assert '<label class="check"><input type="checkbox" id="g-paused"' in js
 
 
+def test_the_phone_day_chips_share_one_line():
+    """Seven weekday chips in one line at phone widths, "Every day" below.
+
+    The chips container is a .row too, so the mobile `.row > .btn` rule made
+    every chip a 40%-wide block; the grid restores the single line.
+    """
+    css = css_text()
+    mobile = css[css.index("@media (max-width: 480px)") :]
+    chips = rule(mobile, ".row.day-chips")
+    assert "display: grid" in chips
+    assert "repeat(7, minmax(0, 1fr))" in chips
+    chip = rule(mobile, ".row.day-chips > .day-chip")
+    assert "min-width: 0" in chip
+    assert "min-height: 42px" in chip
+    every_day = rule(mobile, ".row.day-chips > .day-chip:last-child")
+    assert "grid-column: 1 / -1" in every_day
+
+
+def test_the_today_actions_keep_the_card_gap_when_they_are_shown():
+    """The whole-house row sits above the first card, so it needs the gap below."""
+    css = css_text()
+    assert "margin-bottom: 12px" in rule(css, "#today-actions")
+    assert "margin-top: 12px" in rule(css, ".mt")
+    # the row is display:none when hidden, so the gap goes with it
+    assert "display: none" in rule(css, ".hidden")
+
+    # on a phone the label takes its own line, so the segments span the card width
+    mobile = css[css.index("@media (max-width: 480px)") :]
+    assert "display: block" in rule(mobile, "#today-actions .wrap-bar")
+    assert "display: block" in rule(mobile, ".all-label")
+    assert "width: 100%" in rule(mobile, ".all-groups")
+
+
 def test_settings_forms_have_distinct_save_names():
     html = read("templates", "app.html")
     assert 't("account.save")' in html
@@ -1093,33 +1126,158 @@ def test_the_free_panel_offers_extra_time_and_a_clear_button():
         assert i18n.t(key) != key, key
 
 
-def test_the_today_header_offers_block_all_and_release_all_to_admins():
-    """Two whole-house actions, in the Today header, behind a confirm dialog."""
+def test_the_today_header_offers_one_whole_house_row_to_admins():
+    """One row: an "All groups" label and the same three-segment control."""
     html = read("templates", "app.html")
     assert 'id="today-actions"' in html
-    assert 'id="block-all"' in html
-    assert 'id="release-all"' in html
-    assert 't("header.block_all")' in html
-    assert 't("header.release_all")' in html
+    assert 'id="all-groups-label"' in html
+    assert 't("all.label")' in html
+    for mode in ("block", "auto", "free"):
+        assert f'data-action="all-mode" data-mode="{mode}"' in html, mode
+    assert 'id="all-free-time"' in html
+    assert 'data-action="all-free-apply"' in html
+    assert 'data-action="all-free-cancel"' in html
     for key in (
-        "header.block_all",
-        "header.release_all",
-        "toast.blocked_all",
-        "toast.released_all",
+        "all.label",
+        "all.block_title",
+        "all.block_body",
+        "all.auto_title",
+        "all.auto_body",
+        "all.apply",
+        "toast.block_all",
+        "toast.free_all",
+        "toast.auto_all",
+        "toast.saved_not_applied",
     ):
         assert i18n.t(key) != key, key
+    # the old one-shot pair is gone
+    for stale in ("header.block_all", "header.release_all", "release-all", 'block-all"'):
+        assert stale not in html or stale == 'block-all"', stale
 
     js = read("static", "app.js")
-    # a user account never sees the buttons, and the server refuses the calls
-    render = js_function(js, "render")
-    assert 'todayActions.classList.toggle("hidden", !isAdmin);' in render
-    action = js_function(js, "allGroupsAction")
-    assert 't("common.confirm")' in action
-    assert 't("common.yes")' in action
-    assert '"/api/" + (kind === "block" ? "block-all" : "release-all")' in action
-    assert "refresh()" in action
-    for key in ("block-all", "release-all"):
-        assert f'$("#{key}")' in js, key
+    paint = js_function(js, "paintAllGroups")
+    assert "aria-pressed" in paint
+    assert "button.dataset.mode === mode" in paint
+    assert "allMode(" in paint
+    # an admin with no live group (all paused) sees no row at all
+    assert 'bar.classList.toggle("hidden", role !== "admin" || !live.length);' in paint
+    # the confirm dialog says what will happen, and the routes are the new three
+    confirm = js_function(js, "allGroupsConfirm")
+    assert "all.block_title" in confirm and "all.block_body" in confirm
+    assert "all.auto_title" in confirm and "all.auto_body" in confirm
+    assert '"/api/auto-all"' in confirm or "auto-all" in confirm
+    assert "block-all" in confirm
+    assert "toast.saved_not_applied" in js
+    assert "/api/free-all" in js
+    assert "/api/release-all" not in js
+    # nothing is sent until Apply, and the panel keeps a typed time across polls
+    apply_fn = js_function(js, "applyAllFree")
+    assert "free-all" in apply_fn
+    assert "allFree.choice" in js
+
+
+def all_free_probe_script(js: str) -> str:
+    """The whole-house Free panel's own state: open, cancel, reopen, retry."""
+    return "".join(
+        [
+            "var allFree = { open: false, choice: null };",
+            "var state = { groups: [] };",
+            "var input = { value: '', focused: false,",
+            "  focus: function () { this.focused = true; } };",
+            'function $(sel) { return sel === "#all-free-time" ? input : null; }',
+            "function paintAllGroups() {}",
+            'function defaultFreeTime() { return "12:00"; }',
+            "var steps = [];",
+            "function note(label) {",
+            "  steps.push([label, allFree.open, allFree.choice, input.value, allFreeUntil()]);",
+            "}",
+            js_function(js, "resetAllFree"),
+            js_function(js, "openAllFreePanel"),
+            js_function(js, "allFreeUntil"),
+            "note('start');",
+            "openAllFreePanel();",
+            "note('opened');",
+            "allFree.choice = '22:00'; input.value = '22:00';",
+            "note('typed');",
+            "resetAllFree();",
+            "note('cancelled');",
+            "openAllFreePanel();",
+            "note('reopened');",
+            "allFree.choice = '21:00'; input.value = '21:00';",
+            "note('typed again');",
+            "console.log(JSON.stringify(steps));",
+        ]
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_cancelling_the_whole_house_free_panel_drops_the_typed_time():
+    """A stale time reopened later would mean nearly 24 h of Free."""
+    js = read("static", "app.js")
+    done = subprocess.run(
+        [shutil.which("node"), "-e", all_free_probe_script(js)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == [
+        ["start", False, None, "", "12:00"],
+        ["opened", True, None, "12:00", "12:00"],
+        ["typed", True, "22:00", "22:00", "22:00"],
+        ["cancelled", False, None, "22:00", "22:00"],
+        # reopening starts from the default, not from the cancelled value
+        ["reopened", True, None, "12:00", "12:00"],
+        # a failed Apply keeps what was typed for a retry
+        ["typed again", True, "21:00", "21:00", "21:00"],
+    ]
+    # a confirmed Block/Auto and a tab switch reset the panel too
+    confirm = js_function(js, "allGroupsConfirm")
+    assert "resetAllFree();" in confirm
+    marker = '$$("#admin-tabs .tab").forEach(function (button) {'
+    tabs = js[js.index(marker, js.index(marker) + 1) :]
+    assert "resetAllFree();" in tabs[:400]  # the click handler, not the paint
+
+
+def all_mode_probe_script(js: str) -> str:
+    """allMode over the states the row has to show, executed by node."""
+    groups = [
+        [{"id": 1, "status": "allowed"}, {"id": 2, "status": "outside_hours"}],
+        [{"id": 1, "status": "free"}, {"id": 2, "status": "free"}],
+        [{"id": 1, "status": "blocked_admin"}, {"id": 2, "status": "blocked_admin"}],
+        [{"id": 1, "status": "outside_hours"}, {"id": 2, "status": "blocked_admin"}],
+        [{"id": 1, "status": "outside_hours", "paused": True}],
+        [
+            {"id": 1, "status": "outside_hours"},
+            {"id": 2, "status": "outside_hours", "paused": True},
+        ],
+    ]
+    return "".join(
+        [
+            js_function(js, "modeFor"),
+            js_function(js, "allMode"),
+            "var cases = " + json.dumps(groups) + ";",
+            "console.log(JSON.stringify(cases.map(allMode)));",
+        ]
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_the_whole_house_row_is_pressed_only_when_every_group_agrees():
+    """Mixed groups press nothing; a paused group never votes."""
+    js = read("static", "app.js")
+    done = subprocess.run(
+        [shutil.which("node"), "-e", all_mode_probe_script(js)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == ["auto", "free", "block", "", "", "auto"]
 
 
 # ------------------------------------------------ the allowed-times schedule
@@ -1313,8 +1471,19 @@ def live_probe_script(js: str) -> str:
         "status.free",
         "status.forced",
         "status.open_until",
+        "status.open_until_day",
         "status.opens_at",
+        "status.opens_day",
+        "status.free_until_day",
         "status.open_all_day",
+        "common.tomorrow",
+        "card.day_mon",
+        "card.day_tue",
+        "card.day_wed",
+        "card.day_thu",
+        "card.day_fri",
+        "card.day_sat",
+        "card.day_sun",
     )
     cases = [
         {
@@ -1335,6 +1504,12 @@ def live_probe_script(js: str) -> str:
         {"id": 4, "status": "free", "free_until": 1999999999, "windows": []},
         {"id": 5, "status": "blocked_admin", "force_block_until": 1999999999, "windows": []},
         {"id": 6, "status": "paused", "paused": True, "windows": []},
+        # the opening is not today: the server names the local day
+        {"id": 7, "status": "outside_hours", "opens_at": "16:00", "opens_day": "tomorrow"},
+        {"id": 8, "status": "outside_hours", "opens_at": "16:00", "opens_day": "sat"},
+        {"id": 9, "status": "allowed", "open_until": "20:00", "open_until_day": "tomorrow"},
+        {"id": 10, "status": "allowed", "open_until": "09:00", "open_until_day": "tue"},
+        {"id": 11, "status": "free", "free_until": 1999999999, "free_until_day": "tomorrow"},
     ]
     return "".join(
         [
@@ -1347,6 +1522,7 @@ def live_probe_script(js: str) -> str:
             "}",
             'function esc(value) { return String(value == null ? "" : value); }',
             'function clock() { return "07:30"; }',
+            js_function(js, "dayWord"),
             js_function(js, "statusFor"),
             js_function(js, "liveHtml"),
             "var cases = " + json.dumps(cases) + ";",
@@ -1377,6 +1553,17 @@ def test_the_live_row_names_the_schedule_from_the_payload():
         ["Free until 07:30", '<p class="live-line warn">Free until 07:30</p>'],
         ["Blocked until midnight", '<p class="live-line bad">Blocked until midnight</p>'],
         ["Paused", '<p class="live-line warn">Paused</p>'],
+        ["Opens tomorrow at 16:00", '<p class="live-line warn">Opens tomorrow at 16:00</p>'],
+        ["Opens Sat at 16:00", '<p class="live-line warn">Opens Sat at 16:00</p>'],
+        [
+            "Open until tomorrow at 20:00",
+            '<p class="live-line ok">Open until tomorrow at 20:00</p>',
+        ],
+        ["Open until Tue at 09:00", '<p class="live-line ok">Open until Tue at 09:00</p>'],
+        [
+            "Free until tomorrow at 07:30",
+            '<p class="live-line warn">Free until tomorrow at 07:30</p>',
+        ],
     ]
 
 
@@ -1537,6 +1724,82 @@ def test_the_windows_line_escapes_server_text():
     assert line.count("<") == 2
 
 
+FOCUS_VALUES = [
+    "plain",
+    "with space",
+    'quote"inside',
+    "back\\slash",
+    "trailing\\",
+    'backslash and quote \\" together',
+    "new\nline",
+    "carriage\rreturn",
+    "form\ffeed",
+    '"]}alert(1)//',
+    "ünïcode-Ω",
+    'mixed "a\\b\nc" tail',
+]
+
+
+def focus_probe_script(js: str) -> str:
+    """focusKey with its escaping helper, over attribute values node can check."""
+    helper = "  function cssAttrValue(" in js
+    return "".join(
+        [
+            "var document = { body: {} };",
+            js_function(js, "cssAttrValue") if helper else "",
+            js_function(js, "focusKey"),
+            "function fake(value) {",
+            "  return { getAttribute: function (name) {",
+            '    return name === "data-user" ? value : null;',
+            "  } };",
+            "}",
+            "function decode(selector) {",
+            r'  var m = /^\[data-user="((?:[^"\\]|\\[\s\S])*)"\]$/.exec(selector);',
+            "  if (!m) { return null; }",
+            "  var body = m[1];",
+            '  var out = "";',
+            "  for (var i = 0; i < body.length; i += 1) {",
+            r'    if (body[i] !== "\\") { out += body[i]; continue; }',
+            "    i += 1;",
+            "    var next = body[i];",
+            "    var after = body[i + 1];",
+            r'    if (after === " " && next === "a") { out += "\n"; i += 1; }',
+            r'    else if (after === " " && next === "d") { out += "\r"; i += 1; }',
+            r'    else if (after === " " && next === "c") { out += "\f"; i += 1; }',
+            "    else { out += next; }",
+            "  }",
+            "  return out;",
+            "}",
+            "var cases = " + json.dumps(FOCUS_VALUES) + ";",
+            "console.log(JSON.stringify(cases.map(function (value) {",
+            "  var selector = focusKey(fake(value));",
+            "  return [selector, decode(selector)];",
+            "})));",
+        ]
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_the_focus_selector_round_trips_every_attribute_value():
+    """A CSS string needs the backslash and the newlines escaped, not just `"`."""
+    js = read("static", "app.js")
+    done = subprocess.run(
+        [shutil.which("node"), "-e", focus_probe_script(js)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    got = json.loads(done.stdout)
+    assert len(got) == len(FOCUS_VALUES)
+    for value, (selector, decoded) in zip(FOCUS_VALUES, got, strict=True):
+        assert "\n" not in selector and "\r" not in selector, (value, selector)
+        assert selector.startswith('[data-user="'), (value, selector)
+        assert decoded == value, (value, selector)
+
+
 def signature_probe_script(js: str) -> str:
     """signatureFor with the real modeFor and window token, so edits repaint."""
     base = {
@@ -1619,11 +1882,22 @@ def kid_probe_script(js: str) -> str:
     """bigLine with the real strings, so node can prove the kid text."""
     keys = (
         "kid.open_until",
+        "kid.open_until_day",
         "kid.open_all_day",
         "kid.opens_at",
+        "kid.opens_day",
         "kid.free_until",
+        "kid.free_until_day",
         "kid.blocked",
         "kid.paused",
+        "common.tomorrow",
+        "card.day_mon",
+        "card.day_tue",
+        "card.day_wed",
+        "card.day_thu",
+        "card.day_fri",
+        "card.day_sat",
+        "card.day_sun",
     )
     cases = [
         {"status": "allowed", "open_until": "21:00", "opens_at": None},
@@ -1632,6 +1906,12 @@ def kid_probe_script(js: str) -> str:
         {"status": "free", "free_until": 1999999999},
         {"status": "blocked_admin"},
         {"status": "paused", "paused": True},
+        # the opening is not today: the server names the local day
+        {"status": "outside_hours", "opens_at": "16:00", "opens_day": "tomorrow"},
+        {"status": "outside_hours", "opens_at": "16:00", "opens_day": "sat"},
+        {"status": "allowed", "open_until": "20:00", "open_until_day": "tomorrow"},
+        {"status": "allowed", "open_until": "09:00", "open_until_day": "tue"},
+        {"status": "free", "free_until": 1999999999, "free_until_day": "tomorrow"},
     ]
     return "".join(
         [
@@ -1643,6 +1923,7 @@ def kid_probe_script(js: str) -> str:
             "  });",
             "}",
             'function clock() { return "07:30"; }',
+            js_function(js, "dayWord"),
             js_function(js, "bigLine"),
             "var cases = " + json.dumps(cases) + ";",
             "console.log(JSON.stringify(cases.map(bigLine)));",
@@ -1669,6 +1950,11 @@ def test_the_kid_line_follows_the_schedule_from_the_reduced_payload():
         "Free time until 07:30",
         "Blocked by a parent",
         "Paused by a parent",
+        "Opens tomorrow at 16:00",
+        "Opens Sat at 16:00",
+        "Open until tomorrow at 20:00",
+        "Open until Tue at 09:00",
+        "Free time until tomorrow at 07:30",
     ]
 
 

@@ -20,12 +20,22 @@ USES = re.compile(r"^uses:[ ]*(?P<action>[^\s#]+)")
 INPUT = re.compile(r"^(?P<key>[A-Za-z0-9_-]+):[ ]*(?P<value>[^#]*?)[ ]*$")
 PINNED = re.compile(r"[\"']?ruff==(?P<version>\d+(?:\.\d+)+)[\"']?")
 
-# the inputs each action reads; a `with:` on any other step is a bug
+# The inputs each action reads; a `with:` on any other step is a bug.
 OWNED_INPUTS = {
     "python-version": "actions/setup-python",
     "cache": "actions/setup-python",
     "languages": "github/codeql-action/init",
     "config-file": "github/codeql-action/init",
+    "upload": "github/codeql-action/analyze",
+    "output": "github/codeql-action/analyze",
+}
+
+# "upload" and "output" are ordinary words another action could read for its own
+# purpose, so they are judged only inside the action family that owns them: a
+# `with:` block on anything else keeps them and is not flagged.
+SCOPED_INPUTS = {
+    "upload": "github/codeql-action/",
+    "output": "github/codeql-action/",
 }
 
 
@@ -110,20 +120,24 @@ def parse_step(block: list[str], indent: int, job: str, order: int) -> dict:
     }
 
 
-def owner_of(key: str, value: str) -> str | None:
+def owner_of(key: str, value: str, action: str = "") -> str | None:
     if key == "cache" and value.strip("\"'") != "pip":
         return None
-    return OWNED_INPUTS.get(key)
+    owner = OWNED_INPUTS.get(key)
+    scope = SCOPED_INPUTS.get(key)
+    if scope is not None and not action.startswith(scope):
+        return None
+    return owner
 
 
 def test_every_python_input_belongs_to_setup_python():
     for path in workflow_files():
         for step in parse_steps(path):
             for key, value in step["inputs"].items():
-                owner = owner_of(key, value)
+                action = step["action"] or ""
+                owner = owner_of(key, value, action)
                 if owner is None:
                     continue
-                action = step["action"] or ""
                 assert action.startswith(owner + "@"), (
                     f"{path.name}: '{key}' sits on '{action or step['job']}' "
                     f"in job '{step['job']}' but belongs to {owner}"
@@ -200,3 +214,36 @@ def test_the_workflows_lint_with_the_pinned_ruff():
             assert version in pinned, (
                 f"{path.name}: installs ruff {version}, pyproject.toml pins {pinned.pop()}"
             )
+
+
+def test_a_generic_input_name_is_judged_only_inside_its_own_action():
+    """`upload` and `output` are ordinary words: another action may read them."""
+    assert owner_of("upload", "always", "github/codeql-action/analyze@abc") == (
+        "github/codeql-action/analyze"
+    )
+    assert owner_of("output", "sarif-results", "github/codeql-action/analyze@abc") == (
+        "github/codeql-action/analyze"
+    )
+    # the same names on actions outside that family are none of this check's business
+    assert owner_of("upload", "true", "actions/upload-artifact@abc") is None
+    assert owner_of("output", "bundle", "docker/build-push-action@abc") is None
+    assert owner_of("output", "x") is None  # a step with no `uses:` at all
+
+
+def test_the_codeql_analyze_step_really_carries_its_inputs():
+    """Not vacuous: codeql.yml holds both names, on the analyze step."""
+    seen: dict[str, tuple[str, str]] = {}
+    for path in workflow_files():
+        for step in parse_steps(path):
+            for key in ("upload", "output", "languages", "config-file"):
+                if key in step["inputs"]:
+                    seen[key] = (path.name, step["action"] or "")
+    assert set(seen) == {"upload", "output", "languages", "config-file"}, seen
+    for key, (name, action) in seen.items():
+        assert name == "codeql.yml", (key, name)
+        expected = (
+            "github/codeql-action/analyze@"
+            if key in {"upload", "output"}
+            else "github/codeql-action/init@"
+        )
+        assert action.startswith(expected), (key, action)

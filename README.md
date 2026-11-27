@@ -19,15 +19,15 @@ regenerate it are in [`docs/screenshots/`](docs/screenshots/).
 
 | Kid view (phone) | Kid view (phone, dark) |
 |---|---|
-| <img src="docs/screenshots/kid-390.png" width="260" alt="Kid view on a phone: one line per group saying open until, opens at, or free time until, with a closed group set off in a warm highlight"> | <img src="docs/screenshots/kid-390-dark.png" width="260" alt="The kid view on a phone in dark mode"> |
+| <img src="docs/screenshots/kid-390.png" width="260" alt="Kid view on a phone: one line per group saying opens at 21:00, opens tomorrow at 16:00, open all day or free time until, with the closed groups set off in a warm highlight"> | <img src="docs/screenshots/kid-390-dark.png" width="260" alt="The same kid view on a phone in dark mode"> |
 
-<img src="docs/screenshots/admin-today-1280.png" alt="Admin Today: each group's live state and allowed times by day, Block / Auto / Free, a free group's Extra time and Clear buttons, plus Block everything now and Release everything">
+<img src="docs/screenshots/admin-today-1280.png" alt="Admin Today: the All groups Block / Auto / Free row, then each group's live state with the day of its next opening and its allowed times by day, Block / Auto / Free, and a free group's Extra time and Clear buttons">
 
-<img src="docs/screenshots/groups-1280.png" alt="Groups tab: allowed times, targets and owners, with the AdGuard services picker">
+<img src="docs/screenshots/groups-1280.png" alt="Groups tab: every group with its allowed times, its targets and the Shared (all users) line, an Edit and pause button each, above the Discover domains card">
 
-<img src="docs/screenshots/groups-editor-390.png" width="390" alt="New-group editor on a phone: the starter preset row, time windows with day-of-week chips, services and owner">
+<img src="docs/screenshots/groups-editor-390.png" width="390" alt="New-group editor on a phone: the two starter presets, emoji and name, an allowed time with the seven day chips on one line and Every day below, and the AdGuard services picker button">
 
-<img src="docs/screenshots/alerts-1280.png" alt="Settings, Alerts card: one alert channel (Telegram, ntfy or webhook) and the event toggles">
+<img src="docs/screenshots/alerts-1280.png" alt="Settings, Alerts card: the Telegram channel selected and enabled, its bot token and chat id fields, and the three event toggles">
 
 ## Features
 
@@ -41,7 +41,8 @@ regenerate it are in [`docs/screenshots/`](docs/screenshots/).
   starts on. No windows at all means the group is always open.
 - **Read-only kid accounts with their own screen.** Admins manage everything; a
   `user` account sees only its own groups (plus shared ones) and gets one calm
-  phone-first screen: "Open until 19:00", "Opens at 16:00", "Open all day" or
+  phone-first screen: "Open until 19:00", "Opens at 16:00", "Opens Sat at 16:00",
+  "Open all day" or
   "Blocked by a parent", never a countdown. It cannot change anything, and the
   server enforces that on every route.
 - **Per-account groups.** A group can be owned by a user, so each child has
@@ -51,7 +52,9 @@ regenerate it are in [`docs/screenshots/`](docs/screenshots/).
   midnight, and `Free` asks until when and disables the windows for that long.
   The group list has a pause toggle, and a paused card keeps only Resume. Every
   action is applied once (double taps are ignored while in flight) and confirmed
-  with a toast.
+  with a toast. An **All groups** row at the top does the same for the whole
+  house: the choice is stored on each group, so the reconcile loop keeps it, and
+  a paused group is never changed.
 - **Alerts when it matters.** One Telegram bot, one ntfy topic or one webhook
   (no accounts, no third-party service): a message when a group's allowed time
   is over (off by default until you ask for it), and a warning when AdGuard
