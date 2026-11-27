@@ -343,7 +343,7 @@ def oracle_active(start_min: int, end_min: int, days: str, ts: int, tz: ZoneInfo
     ],
 )
 def test_window_active_agrees_with_the_day_list_oracle(start_min, end_min, offsets):
-    """All 2048 day-set/day/shape combinations: the answer is the oracle's."""
+    """All day-set/day/shape combinations: the answer is the oracle's."""
     window = budget.Window(start_min, end_min, "all")
     for days in day_sets():
         current = budget.Window(start_min, end_min, days)

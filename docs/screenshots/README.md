@@ -30,3 +30,13 @@ TZ=Europe/London python scripts/dev_server.py   # http://127.0.0.1:8099; TZ=UTC 
 Add accounts and sample groups, then capture at 390×844 (phone) and 1280×800
 (desktop), light and dark. Keep each PNG small (well under 150 KB) and make sure
 no browser chrome, address bar or real data is in the frame.
+
+Five captures are taller or narrower than those two sizes, because the content
+does not fit the viewport:
+
+- `admin-today-1280.png` and `admin-today-1280-dark.png` are full-page desktop
+  captures (1280×927), not viewport crops.
+- `admin-today-390.png` (390×968) and `groups-editor-390.png` (390×889) are
+  full-page phone captures.
+- `alerts-1280.png` is a card crop of the Alerts settings panel (748×732), not a
+  full-width desktop frame.

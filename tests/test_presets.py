@@ -88,6 +88,22 @@ def test_the_presets_module_cannot_write_anything():
         assert forbidden not in source, forbidden
 
 
+def test_payload_hands_out_a_deep_copy():
+    """A caller that edits the nested lists cannot reach the module constants."""
+    first = preset_list()
+    first[0]["windows"][0]["start"] = "00:01"
+    first[0]["windows"].append({"start": "23:00", "end": "23:30", "days": "all"})
+    first[0]["domains"].append("example.com")
+
+    second = preset_list()
+    assert second[0]["windows"][0]["start"] == "09:00"
+    assert len(second[0]["windows"]) == 2
+    assert second[0]["domains"] == []
+    assert presets_module.PRESETS["school_day"]["windows"][0]["start"] == "09:00"
+    assert len(presets_module.PRESETS["school_day"]["windows"]) == 2
+    assert presets_module.PRESETS["school_day"]["domains"] == []
+
+
 # --------------------------------------------------------------------------- #
 # the API
 # --------------------------------------------------------------------------- #

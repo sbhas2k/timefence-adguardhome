@@ -17,6 +17,8 @@ nothing (or the wrong things), which is worse than an empty one.
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 PRESETS: dict[str, dict] = {
     "school_day": {
         "name_key": "preset.school_day",
@@ -40,5 +42,9 @@ PRESETS: dict[str, dict] = {
 
 
 def payload() -> list[dict]:
-    """The wire form of every preset, in the order the editor shows them."""
-    return [{"key": key, **preset} for key, preset in PRESETS.items()]
+    """The wire form of every preset, in the order the editor shows them.
+
+    The nested lists are copied, so a caller that edits the answer cannot reach
+    the module constants.
+    """
+    return [{"key": key, **deepcopy(preset)} for key, preset in PRESETS.items()]

@@ -1397,7 +1397,6 @@ def test_the_live_row_has_no_clock_maths_and_no_budget():
 WINDOWS_KEYS = (
     "card.windows_line",
     "card.window_range",
-    "card.window_days_all",
     "card.window_days_some",
     "card.day_mon",
     "card.day_tue",
@@ -1511,7 +1510,6 @@ def test_the_windows_line_names_the_picked_days():
         '<p class="muted small live-windows">Allowed 14:00–15:00 · 18:00–19:00</p>'
     )
     assert i18n.STRINGS["en"]["card.day_mon"] == "Mon"
-    assert i18n.STRINGS["en"]["card.window_days_all"] == "(Mon–Sun)"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")

@@ -170,8 +170,10 @@ ALTER TABLE groups DROP COLUMN weekend_minutes;
 
 # v7: a window's days are `all` or a comma-separated list of day names
 # (`mon,fri`) instead of only the weekday/weekend buckets. SQLite cannot change
-# a CHECK constraint in place, so the table is recreated and its rows mapped:
-# all -> all, weekday -> mon..fri, weekend -> sat,sun. A callable step, like v4,
+# a CHECK constraint in place, so the table is recreated. The day mapping
+# (all -> all, weekday -> mon..fri, weekend -> sat,sun) only reaches rows on a
+# database that really stood at v6 with windows stored: v6 deletes every row of
+# group_windows, so a v5 database maps zero rows. A callable step, like v4,
 # because it rewrites data. A fresh database runs steps 5, 6 and 7 in order, so
 # step 7 drops the v5 table it has just created and replaces it with this one;
 # the runner applies each step once, so that is safe.

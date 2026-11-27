@@ -84,7 +84,6 @@ STRINGS: dict[str, dict[str, str]] = {
         "card.domains_other": "{count} domains",
         "card.windows_line": "Allowed {times}",
         "card.window_range": "{start}–{end}",
-        "card.window_days_all": "(Mon–Sun)",
         "card.window_days_some": "(some days)",
         "card.day_mon": "Mon",
         "card.day_tue": "Tue",
