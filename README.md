@@ -19,13 +19,13 @@ regenerate it are in [`docs/screenshots/`](docs/screenshots/).
 
 | Kid view (phone) | Kid view (phone, dark) |
 |---|---|
-| <img src="docs/screenshots/kid-390.png" width="260" alt="Kid view on a phone: one line per group saying open until or opens at, with the closed group set off in a warm highlight"> | <img src="docs/screenshots/kid-390-dark.png" width="260" alt="The kid view on a phone in dark mode"> |
+| <img src="docs/screenshots/kid-390.png" width="260" alt="Kid view on a phone: one line per group saying open until, opens at, or free time until, with a closed group set off in a warm highlight"> | <img src="docs/screenshots/kid-390-dark.png" width="260" alt="The kid view on a phone in dark mode"> |
 
-<img src="docs/screenshots/admin-today-1280.png" alt="Admin Today: the live schedule line, Block / Auto / Free and quick actions for each group">
+<img src="docs/screenshots/admin-today-1280.png" alt="Admin Today: each group's live state and allowed times by day, Block / Auto / Free, a free group's Extra time and Clear buttons, plus Block everything now and Release everything">
 
 <img src="docs/screenshots/groups-1280.png" alt="Groups tab: allowed times, targets and owners, with the AdGuard services picker">
 
-<img src="docs/screenshots/groups-editor-390.png" width="390" alt="Group editor on a phone, showing the allowed times">
+<img src="docs/screenshots/groups-editor-390.png" width="390" alt="New-group editor on a phone: the starter preset row, time windows with day-of-week chips, services and owner">
 
 <img src="docs/screenshots/alerts-1280.png" alt="Settings, Alerts card: one alert channel (Telegram, ntfy or webhook) and the event toggles">
 

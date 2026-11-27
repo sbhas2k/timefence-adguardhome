@@ -8,14 +8,14 @@ in any capture.
 
 | file | shows |
 |---|---|
-| `kid-390.png` | the read-only kid screen on a phone: one line per group saying open until / opens at, plus a closed group muted |
+| `kid-390.png` | the read-only kid screen on a phone: one line per group saying open until / opens at / free time until, plus a closed group muted |
 | `kid-390-dark.png` | the same kid screen in dark mode |
 | `kid-1280.png` | the kid screen at desktop width |
-| `admin-today-390.png` | the admin Today card on a phone: the live schedule line, Block / Auto / Free and quick actions |
+| `admin-today-390.png` | the admin Today card on a phone: the live schedule line with its per-day times, Block / Auto / Free, the free group's Extra time and Clear buttons, and the Block everything now / Release everything actions |
 | `admin-today-1280.png` | the admin Today view at desktop width |
 | `admin-today-1280-dark.png` | the same view in dark mode |
 | `groups-1280.png` | the Groups tab: allowed times, targets, owners and the AdGuard services picker |
-| `groups-editor-390.png` | the group editor on a phone, with the allowed times |
+| `groups-editor-390.png` | the new-group editor on a phone: the preset row, time windows with day-of-week chips, services and owner |
 | `alerts-1280.png` | Settings → Alerts: one Telegram, ntfy or webhook channel and the event toggles |
 
 ## Regenerating them
