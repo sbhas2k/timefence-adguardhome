@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the project uses [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.0.0] - 2026-11-27
 
 Nothing has to be reconfigured by hand. The database moves to schema v7 and the
 migration writes one verified copy first (`timefence.db.pre-v7.bak`), so a 1.0.x
